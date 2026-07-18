@@ -58,6 +58,8 @@ jobs:
         run: go test ./...
       - name: Race test Etonify runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
+      - name: Resource and performance gate
+        run: bash release/verify_etonify_performance.sh
 
   android:
     name: Build verified Android AAR

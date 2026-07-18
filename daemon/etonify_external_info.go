@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,10 +23,13 @@ import (
 )
 
 const (
-	externalInfoEndpoint = "https://cloudflare.com/cdn-cgi/trace"
-	externalInfoTimeout  = 6 * time.Second
-	externalInfoCacheTTL = 30 * time.Second
-	externalInfoMaxBytes = 64 * 1024
+	externalInfoPrimaryEndpoint  = "https://cloudflare.com/cdn-cgi/trace"
+	externalInfoFallbackEndpoint = "https://api64.ipify.org"
+	externalInfoAttemptTimeout   = 2 * time.Second
+	externalInfoTimeout          = 4500 * time.Millisecond
+	externalInfoCacheTTL         = 30 * time.Second
+	externalInfoStaleTTL         = 2 * time.Minute
+	externalInfoMaxBytes         = 64 * 1024
 )
 
 type outboundExternalInfo struct {
@@ -35,7 +39,8 @@ type outboundExternalInfo struct {
 
 type outboundExternalInfoCacheEntry struct {
 	info      outboundExternalInfo
-	expiresAt time.Time
+	refreshAt time.Time
+	discardAt time.Time
 }
 
 type outboundExternalInfoResolver struct {
@@ -46,6 +51,17 @@ type outboundExternalInfoResolver struct {
 }
 
 type outboundExternalInfoFetcher func(ctx context.Context, instanceContext context.Context, outbound adapter.Outbound) (outboundExternalInfo, error)
+
+type outboundExternalInfoSource struct {
+	name     string
+	endpoint string
+	parse    func([]byte) (outboundExternalInfo, error)
+}
+
+var outboundExternalInfoSources = []outboundExternalInfoSource{
+	{name: "cloudflare", endpoint: externalInfoPrimaryEndpoint, parse: parseOutboundExternalInfo},
+	{name: "ipify", endpoint: externalInfoFallbackEndpoint, parse: parsePlainExternalIP},
+}
 
 func newOutboundExternalInfoResolver() *outboundExternalInfoResolver {
 	return &outboundExternalInfoResolver{
@@ -83,20 +99,30 @@ func (s *StartedService) LookupOutboundExternalInfo(ctx context.Context, request
 
 func (r *outboundExternalInfoResolver) lookup(ctx context.Context, instanceContext context.Context, outbound adapter.Outbound) (outboundExternalInfo, error) {
 	cacheKey := outbound.Tag()
-	if cached, loaded := r.load(cacheKey, time.Now()); loaded {
+	if cached, loaded := r.load(cacheKey, time.Now(), false); loaded {
 		return cached, nil
 	}
 	resultChannel := r.requests.DoChan(cacheKey, func() (any, error) {
-		if cached, loaded := r.load(cacheKey, time.Now()); loaded {
+		if cached, loaded := r.load(cacheKey, time.Now(), false); loaded {
 			return cached, nil
 		}
 		requestContext, cancel := context.WithTimeout(instanceContext, externalInfoTimeout)
 		defer cancel()
 		info, lookupErr := r.fetch(requestContext, instanceContext, outbound)
 		if lookupErr != nil {
+			if instanceErr := instanceContext.Err(); instanceErr != nil {
+				return outboundExternalInfo{}, instanceErr
+			}
+			if stale, loaded := r.load(cacheKey, time.Now(), true); loaded {
+				return stale, nil
+			}
 			return outboundExternalInfo{}, lookupErr
 		}
-		r.store(cacheKey, info, time.Now().Add(externalInfoCacheTTL))
+		if stale, loaded := r.load(cacheKey, time.Now(), true); loaded &&
+			info.countryCode == "" && stale.ip == info.ip {
+			info.countryCode = stale.countryCode
+		}
+		r.store(cacheKey, info, time.Now())
 		return info, nil
 	})
 	select {
@@ -110,23 +136,30 @@ func (r *outboundExternalInfoResolver) lookup(ctx context.Context, instanceConte
 	}
 }
 
-func (r *outboundExternalInfoResolver) load(key string, now time.Time) (outboundExternalInfo, bool) {
+func (r *outboundExternalInfoResolver) load(key string, now time.Time, acceptStale bool) (outboundExternalInfo, bool) {
 	r.access.Lock()
 	defer r.access.Unlock()
 	entry, loaded := r.cache[key]
 	if !loaded {
 		return outboundExternalInfo{}, false
 	}
-	if !now.Before(entry.expiresAt) {
+	if !now.Before(entry.discardAt) {
 		delete(r.cache, key)
+		return outboundExternalInfo{}, false
+	}
+	if !acceptStale && !now.Before(entry.refreshAt) {
 		return outboundExternalInfo{}, false
 	}
 	return entry.info, true
 }
 
-func (r *outboundExternalInfoResolver) store(key string, info outboundExternalInfo, expiresAt time.Time) {
+func (r *outboundExternalInfoResolver) store(key string, info outboundExternalInfo, now time.Time) {
 	r.access.Lock()
-	r.cache[key] = outboundExternalInfoCacheEntry{info: info, expiresAt: expiresAt}
+	r.cache[key] = outboundExternalInfoCacheEntry{
+		info:      info,
+		refreshAt: now.Add(externalInfoCacheTTL),
+		discardAt: now.Add(externalInfoStaleTTL),
+	}
 	r.access.Unlock()
 }
 
@@ -150,7 +183,37 @@ func fetchOutboundExternalInfo(ctx context.Context, instanceContext context.Cont
 		},
 	}
 	defer client.CloseIdleConnections()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, externalInfoEndpoint, nil)
+	return fetchOutboundExternalInfoFromSources(ctx, client, outboundExternalInfoSources)
+}
+
+func fetchOutboundExternalInfoFromSources(ctx context.Context, client *http.Client, sources []outboundExternalInfoSource) (outboundExternalInfo, error) {
+	if len(sources) == 0 {
+		return outboundExternalInfo{}, fmt.Errorf("external info lookup has no configured sources")
+	}
+	var lookupErrors []error
+	for _, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return outboundExternalInfo{}, err
+		}
+		attemptContext, cancel := context.WithTimeout(ctx, externalInfoAttemptTimeout)
+		info, err := fetchOutboundExternalInfoSource(attemptContext, client, source)
+		cancel()
+		if err == nil {
+			return info, nil
+		}
+		lookupErrors = append(lookupErrors, fmt.Errorf("%s: %w", source.name, err))
+	}
+	if err := ctx.Err(); err != nil {
+		return outboundExternalInfo{}, err
+	}
+	return outboundExternalInfo{}, fmt.Errorf("external info lookup failed: %w", errors.Join(lookupErrors...))
+}
+
+func fetchOutboundExternalInfoSource(ctx context.Context, client *http.Client, source outboundExternalInfoSource) (outboundExternalInfo, error) {
+	if source.endpoint == "" || source.parse == nil {
+		return outboundExternalInfo{}, os.ErrInvalid
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.endpoint, nil)
 	if err != nil {
 		return outboundExternalInfo{}, err
 	}
@@ -171,7 +234,7 @@ func fetchOutboundExternalInfo(ctx context.Context, instanceContext context.Cont
 	if len(body) > externalInfoMaxBytes {
 		return outboundExternalInfo{}, fmt.Errorf("external info response is too large")
 	}
-	return parseOutboundExternalInfo(body)
+	return source.parse(body)
 }
 
 func parseOutboundExternalInfo(content []byte) (outboundExternalInfo, error) {
@@ -202,6 +265,14 @@ func parseOutboundExternalInfo(content []byte) (outboundExternalInfo, error) {
 		return outboundExternalInfo{}, fmt.Errorf("external info response does not contain a valid IP address")
 	}
 	return info, nil
+}
+
+func parsePlainExternalIP(content []byte) (outboundExternalInfo, error) {
+	address, err := netip.ParseAddr(strings.TrimSpace(string(content)))
+	if err != nil {
+		return outboundExternalInfo{}, fmt.Errorf("external info response does not contain a valid IP address: %w", err)
+	}
+	return outboundExternalInfo{ip: address.String()}, nil
 }
 
 func isValidCountryCode(countryCode string) bool {

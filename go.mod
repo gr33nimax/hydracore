@@ -6,7 +6,7 @@ require (
 	github.com/AliRizaAynaci/gorl/v2 v2.2.0
 	github.com/Diniboy1123/connect-ip-go v0.0.0-20260409225322-8d7bb0a858a2
 	github.com/anthropics/anthropic-sdk-go v1.26.0
-	github.com/anytls/sing-anytls v0.0.11
+	github.com/anytls/sing-anytls v0.0.13
 	github.com/caddyserver/certmagic v0.25.2
 	github.com/coder/websocket v1.8.14
 	github.com/cretz/bine v0.2.0

@@ -28,6 +28,30 @@ func (d *recordingDialer) ListenPacket(context.Context, M.Socksaddr) (net.Packet
 	return nil, errors.New("not implemented")
 }
 
+type multiplexRecordingDialer struct {
+	recordingDialer
+}
+
+func (*multiplexRecordingDialer) Type() string {
+	return "test"
+}
+
+func (*multiplexRecordingDialer) Tag() string {
+	return "test"
+}
+
+func (*multiplexRecordingDialer) Network() []string {
+	return []string{"tcp"}
+}
+
+func (*multiplexRecordingDialer) Dependencies() []string {
+	return nil
+}
+
+func (*multiplexRecordingDialer) MultiplexEnabled() bool {
+	return true
+}
+
 func TestURLTestUsesHTTPThroughProvidedDialer(t *testing.T) {
 	t.Parallel()
 	methods := make(chan string, 1)
@@ -51,6 +75,34 @@ func TestURLTestUsesHTTPThroughProvidedDialer(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("test endpoint did not receive a request")
+	}
+}
+
+func TestURLTestWarmsUpMultiplexedOutbound(t *testing.T) {
+	t.Parallel()
+	methods := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		methods <- request.Method
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	dialer := new(multiplexRecordingDialer)
+	if _, err := URLTest(context.Background(), server.URL, dialer); err != nil {
+		t.Fatal(err)
+	}
+	if dialer.calls.Load() != 2 {
+		t.Fatalf("unexpected dial count: %d", dialer.calls.Load())
+	}
+	for range 2 {
+		select {
+		case method := <-methods:
+			if method != http.MethodHead {
+				t.Fatalf("unexpected HTTP method: %s", method)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("test endpoint did not receive both requests")
+		}
 	}
 }
 

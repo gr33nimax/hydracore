@@ -30,3 +30,5 @@ logs
 /*.db.backup.*
 /test_download.bin
 /wget-log
+/.codebase-memory/
+/graphify-out/

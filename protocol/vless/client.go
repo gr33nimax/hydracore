@@ -21,6 +21,12 @@ type protocolClient struct {
 	encryption *encryption.Client
 }
 
+type visionDialer func(conn net.Conn, baseConn net.Conn, destination M.Socksaddr, canSplice bool) (net.Conn, error)
+
+func dialEncryptedVision(dial visionDialer, encryptedConn net.Conn, destination M.Socksaddr) (net.Conn, error) {
+	return dial(encryptedConn, encryptedConn, destination, false)
+}
+
 func newProtocolClient(ctx context.Context, userID, flow, encryptionConfig string, logger logger.Logger) (*protocolClient, error) {
 	base, err := vlessProtocol.NewClient(userID, flow, logger)
 	if err != nil {
@@ -67,7 +73,7 @@ func (c *protocolClient) DialEarlyConn(ctx context.Context, conn net.Conn, desti
 	// using the pre-encryption connection as the Vision base fails for raw TCP
 	// and opaque transports such as XHTTP, WebSocket and gRPC. Splicing remains
 	// disabled because the authenticated record layer may not be bypassed.
-	return c.base.DialEarlyConnWithOptions(encryptedConn, encryptedConn, destination, false)
+	return dialEncryptedVision(c.base.DialEarlyConnWithOptions, encryptedConn, destination)
 }
 
 func (c *protocolClient) DialEarlyPacketConn(ctx context.Context, conn net.Conn, destination M.Socksaddr) (*vlessProtocol.PacketConn, error) {

@@ -44,7 +44,7 @@ require (
 	github.com/sagernet/quic-go v0.59.0-sing-box-mod.4
 	github.com/sagernet/sing v0.8.11
 	github.com/sagernet/sing-mux v0.3.5
-	github.com/sagernet/sing-quic v0.6.1
+	github.com/sagernet/sing-quic v0.6.3
 	github.com/sagernet/sing-shadowsocks v0.2.8
 	github.com/sagernet/sing-shadowsocks2 v0.2.1
 	github.com/sagernet/sing-shadowtls v0.2.1-0.20250503051639-fcd445d33c11
@@ -72,6 +72,7 @@ require (
 	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 	howett.net/plist v1.0.1
+	lukechampine.com/blake3 v1.4.1
 	modernc.org/sqlite v1.50.0
 )
 
@@ -220,7 +221,6 @@ require (
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	gopkg.in/yaml.v3 v3.0.1
-	lukechampine.com/blake3 v1.4.1
 )
 
 replace github.com/sagernet/wireguard-go => github.com/shtorm-7/wireguard-go v0.0.2-beta.1-extended-1.4.3

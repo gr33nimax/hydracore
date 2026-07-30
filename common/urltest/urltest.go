@@ -32,6 +32,8 @@ func NewHistoryStorage() *HistoryStorage {
 }
 
 func (s *HistoryStorage) SetHook(hook *observable.Subscriber[struct{}]) {
+	s.access.Lock()
+	defer s.access.Unlock()
 	s.updateHook = hook
 }
 
@@ -41,25 +43,36 @@ func (s *HistoryStorage) LoadURLTestHistory(tag string) *adapter.URLTestHistory 
 	}
 	s.access.RLock()
 	defer s.access.RUnlock()
-	return s.delayHistory[tag]
+	history := s.delayHistory[tag]
+	if history == nil {
+		return nil
+	}
+	historyCopy := *history
+	return &historyCopy
 }
 
 func (s *HistoryStorage) DeleteURLTestHistory(tag string) {
 	s.access.Lock()
 	delete(s.delayHistory, tag)
-	s.notifyUpdated()
+	updateHook := s.updateHook
 	s.access.Unlock()
+	notifyUpdated(updateHook)
 }
 
 func (s *HistoryStorage) StoreURLTestHistory(tag string, history *adapter.URLTestHistory) {
+	if history == nil {
+		s.DeleteURLTestHistory(tag)
+		return
+	}
+	historyCopy := *history
 	s.access.Lock()
-	s.delayHistory[tag] = history
-	s.notifyUpdated()
+	s.delayHistory[tag] = &historyCopy
+	updateHook := s.updateHook
 	s.access.Unlock()
+	notifyUpdated(updateHook)
 }
 
-func (s *HistoryStorage) notifyUpdated() {
-	updateHook := s.updateHook
+func notifyUpdated(updateHook *observable.Subscriber[struct{}]) {
 	if updateHook != nil {
 		updateHook.Emit(struct{}{})
 	}

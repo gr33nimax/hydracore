@@ -45,10 +45,18 @@ type OutboundGroupIterator interface {
 }
 
 type OutboundGroupItem struct {
-	Tag          string
-	Type         string
-	URLTestTime  int64
-	URLTestDelay int32
+	Tag              string
+	Type             string
+	URLTestTime      int64
+	URLTestDelay     int32
+	URLTestStatus    string
+	URLTestError     string
+	URLTestErrorCode string
+}
+
+type OutboundExternalInfo struct {
+	Ip          string
+	CountryCode string
 }
 
 type OutboundGroupItemIterator interface {
@@ -328,10 +336,13 @@ func outboundGroupIteratorFromGRPC(groups *daemon.Groups) OutboundGroupIterator 
 		}
 		for _, item := range g.Items {
 			libboxGroup.itemList = append(libboxGroup.itemList, &OutboundGroupItem{
-				Tag:          item.Tag,
-				Type:         item.Type,
-				URLTestTime:  item.UrlTestTime,
-				URLTestDelay: item.UrlTestDelay,
+				Tag:              item.Tag,
+				Type:             item.Type,
+				URLTestTime:      item.UrlTestTime,
+				URLTestDelay:     item.UrlTestDelay,
+				URLTestStatus:    item.UrlTestStatus,
+				URLTestError:     item.UrlTestError,
+				URLTestErrorCode: item.UrlTestErrorCode,
 			})
 		}
 		libboxGroups = append(libboxGroups, libboxGroup)

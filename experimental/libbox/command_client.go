@@ -475,6 +475,42 @@ func (c *CommandClient) URLTest(groupTag string) error {
 	return err
 }
 
+func (c *CommandClient) URLTestWithURL(groupTag string, urlTestURL string) error {
+	return c.URLTestWithOptions(groupTag, "", "", "", urlTestURL, 0, 0, 0, false)
+}
+
+func (c *CommandClient) URLTestWithOptions(groupTag string, targetOutboundTag string, priorityOutboundTag string, excludeOutboundTag string, urlTestURL string, timeoutMillis int32, concurrency int32, deadlineMillis int32, force bool) error {
+	_, err := callWithResult(c, func(client daemon.StartedServiceClient) (*emptypb.Empty, error) {
+		return client.URLTest(context.Background(), &daemon.URLTestRequest{
+			OutboundTag:         groupTag,
+			UrlTestUrl:          urlTestURL,
+			TargetOutboundTag:   targetOutboundTag,
+			PriorityOutboundTag: priorityOutboundTag,
+			ExcludeOutboundTag:  excludeOutboundTag,
+			TimeoutMillis:       timeoutMillis,
+			Concurrency:         concurrency,
+			DeadlineMillis:      deadlineMillis,
+			Force:               force,
+		})
+	})
+	if err != nil {
+		return E.Cause(err, "url test")
+	}
+	return nil
+}
+
+func (c *CommandClient) LookupOutboundExternalInfo(outboundTag string) (*OutboundExternalInfo, error) {
+	result, err := callWithResult(c, func(client daemon.StartedServiceClient) (*daemon.OutboundExternalInfoResponse, error) {
+		return client.LookupOutboundExternalInfo(context.Background(), &daemon.OutboundExternalInfoRequest{
+			OutboundTag: outboundTag,
+		})
+	})
+	if err != nil {
+		return nil, E.Cause(err, "lookup outbound external info")
+	}
+	return &OutboundExternalInfo{Ip: result.Ip, CountryCode: result.CountryCode}, nil
+}
+
 func (c *CommandClient) SetClashMode(newMode string) error {
 	_, err := callWithResult(c, func(client daemon.StartedServiceClient) (*emptypb.Empty, error) {
 		return client.SetClashMode(context.Background(), &daemon.ClashMode{

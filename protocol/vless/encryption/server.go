@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,7 +72,11 @@ func (i *ServerInstance) Init(nfsSKeysBytes [][]byte, xorMode uint32, secondsFro
 	i.XorMode = xorMode
 	i.SecondsFrom = secondsFrom
 	i.SecondsTo = secondsTo
-	err = ParsePadding(padding, &i.PaddingLens, &i.PaddingGaps)
+	var paddingSegments []string
+	if padding != "" {
+		paddingSegments = strings.Split(padding, ".")
+	}
+	i.PaddingLens, i.PaddingGaps, err = parsePadding(paddingSegments)
 	if err != nil {
 		return
 	}
@@ -126,7 +131,7 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	if i.NfsSKeys == nil {
 		return nil, E.New("uninitialized")
 	}
-	c := NewCommonConn(conn, true)
+	c := newCommonConn(conn, true)
 
 	ivAndRelays := make([]byte, 16+i.RelaysLength)
 	if _, err := io.ReadFull(conn, ivAndRelays); err != nil {
@@ -181,7 +186,7 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 		}
 		relays = relays[32:]
 	}
-	nfsAEAD := NewAEAD(iv, nfsKey, c.UseAES)
+	nfsAEAD := newAEAD(iv, nfsKey, c.useAES)
 
 	encryptedLength := make([]byte, 18)
 	if _, err := io.ReadFull(conn, encryptedLength); err != nil {
@@ -192,8 +197,8 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	}
 	decryptedLength := make([]byte, 2)
 	if _, err := nfsAEAD.Open(decryptedLength[:0], nil, encryptedLength, nil); err != nil {
-		c.UseAES = !c.UseAES
-		nfsAEAD = NewAEAD(iv, nfsKey, c.UseAES)
+		c.useAES = !c.useAES
+		nfsAEAD = newAEAD(iv, nfsKey, c.useAES)
 		if _, err := nfsAEAD.Open(decryptedLength[:0], nil, encryptedLength, nil); err != nil {
 			return nil, err
 		}
@@ -231,13 +236,13 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 		if _, loaded := s.NfsKeys.LoadOrStore([32]byte(nfsKey), true); loaded { // prevents bad client also
 			return nil, E.New("replay detected")
 		}
-		c.UnitedKey = append(s.PfsKey, nfsKey...) // the same nfsKey links the upload & download (prevents server -> client's another request)
-		c.PreWrite = make([]byte, 16)
-		rand.Read(c.PreWrite) // always trust yourself, not the client (also prevents being parsed as TLS thus causing false interruption for "native" and "xorpub")
-		c.AEAD = NewAEAD(c.PreWrite, c.UnitedKey, c.UseAES)
-		c.PeerAEAD = NewAEAD(encryptedTicket, c.UnitedKey, c.UseAES) // unchangeable ctx (prevents server -> server), and different ctx length for upload / download (prevents client -> client)
+		c.unitedKey = append(s.PfsKey, nfsKey...) // the same nfsKey links the upload & download (prevents server -> client's another request)
+		c.preWrite = make([]byte, 16)
+		rand.Read(c.preWrite) // always trust yourself, not the client (also prevents being parsed as TLS thus causing false interruption for "native" and "xorpub")
+		c.aead = newAEAD(c.preWrite, c.unitedKey, c.useAES)
+		c.peerAEAD = newAEAD(encryptedTicket, c.unitedKey, c.useAES) // unchangeable ctx (prevents server -> server), and different ctx length for upload / download (prevents client -> client)
 		if i.XorMode == 2 {
-			c.Conn = NewXorConn(conn, NewCTR(c.UnitedKey, c.PreWrite), NewCTR(c.UnitedKey, iv), 16, 0) // it doesn't matter if the attacker sends client's iv back to the client
+			c.conn = newXORConn(conn, newCTR(c.unitedKey, c.preWrite), newCTR(c.unitedKey, iv), 16, 0) // it doesn't matter if the attacker sends client's iv back to the client
 		}
 		return c, nil
 	}
@@ -270,9 +275,9 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	copy(pfsKey, mlkem768Key)
 	copy(pfsKey[32:], x25519Key)
 	pfsPublicKey := append(encapsulatedPfsKey, x25519SKey.PublicKey().Bytes()...)
-	c.UnitedKey = append(pfsKey, nfsKey...)
-	c.AEAD = NewAEAD(pfsPublicKey, c.UnitedKey, c.UseAES)
-	c.PeerAEAD = NewAEAD(encryptedPfsPublicKey[:1184+32], c.UnitedKey, c.UseAES)
+	c.unitedKey = append(pfsKey, nfsKey...)
+	c.aead = newAEAD(pfsPublicKey, c.unitedKey, c.useAES)
+	c.peerAEAD = newAEAD(encryptedPfsPublicKey[:1184+32], c.unitedKey, c.useAES)
 
 	ticket := [16]byte{}
 	rand.Read(ticket[:])
@@ -296,10 +301,10 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	paddingLength, paddingLens, paddingGaps := CreatePadding(i.PaddingLens, i.PaddingGaps)
 	serverHello := make([]byte, pfsKeyExchangeLength+encryptedTicketLength+paddingLength)
 	nfsAEAD.Seal(serverHello[:0], MaxNonce, pfsPublicKey, nil)
-	c.AEAD.Seal(serverHello[:pfsKeyExchangeLength], nil, ticket[:], nil)
+	c.aead.Seal(serverHello[:pfsKeyExchangeLength], nil, ticket[:], nil)
 	padding := serverHello[pfsKeyExchangeLength+encryptedTicketLength:]
-	c.AEAD.Seal(padding[:0], nil, EncodeLength(paddingLength-18), nil)
-	c.AEAD.Seal(padding[:18], nil, padding[18:paddingLength-16], nil)
+	c.aead.Seal(padding[:0], nil, EncodeLength(paddingLength-18), nil)
+	c.aead.Seal(padding[:18], nil, padding[18:paddingLength-16], nil)
 
 	paddingLens[0] = pfsKeyExchangeLength + encryptedTicketLength + paddingLens[0]
 	for i, l := range paddingLens { // sends padding in a fragmented way, to create variable traffic pattern, before inner VLESS flow takes control
@@ -330,7 +335,7 @@ func (i *ServerInstance) Handshake(conn net.Conn, fallback *[]byte) (*CommonConn
 	}
 
 	if i.XorMode == 2 {
-		c.Conn = NewXorConn(conn, NewCTR(c.UnitedKey, ticket[:]), NewCTR(c.UnitedKey, iv), 0, 0)
+		c.conn = newXORConn(conn, newCTR(c.unitedKey, ticket[:]), newCTR(c.unitedKey, iv), 0, 0)
 	}
 	return c, nil
 }

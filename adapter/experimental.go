@@ -21,8 +21,30 @@ type ClashServer interface {
 }
 
 type URLTestHistory struct {
-	Time  time.Time `json:"time"`
-	Delay uint16    `json:"delay"`
+	Time      time.Time `json:"time"`
+	Delay     uint16    `json:"delay"`
+	Status    string    `json:"status,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	ErrorCode string    `json:"error_code,omitempty"`
+}
+
+const (
+	URLTestStatusAvailable   = "available"
+	URLTestStatusUnavailable = "unavailable"
+)
+
+func URLTestHistoryIsAvailable(history *URLTestHistory) bool {
+	return history != nil && history.Delay > 0
+}
+
+func URLTestHistoryStatus(history *URLTestHistory) string {
+	if URLTestHistoryIsAvailable(history) {
+		return URLTestStatusAvailable
+	}
+	if history == nil {
+		return ""
+	}
+	return history.Status
 }
 
 type URLTestHistoryStorage interface {
@@ -145,6 +167,16 @@ type OutboundGroup interface {
 type URLTestGroup interface {
 	OutboundGroup
 	URLTest(ctx context.Context) (map[string]uint16, error)
+}
+
+// URLTestSelectionRefresher is implemented by URLTest groups that can
+// recalculate their active outbound from the shared URLTest history without
+// starting another probe session.
+//
+// It intentionally remains a separate optional interface so third-party
+// OutboundGroup implementations are not forced to expose mutable state.
+type URLTestSelectionRefresher interface {
+	RefreshURLTestSelection()
 }
 
 func OutboundTag(detour Outbound) string {

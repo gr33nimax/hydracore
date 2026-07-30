@@ -2,296 +2,464 @@ package encryption
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"errors"
+	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/sagernet/sing-box/common/xray/crypto"
+	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
+	N "github.com/sagernet/sing/common/network"
+
 	"golang.org/x/crypto/chacha20poly1305"
+	"golang.org/x/sys/cpu"
 	"lukechampine.com/blake3"
 )
 
-var OutBytesPool = sync.Pool{
-	New: func() any {
-		return make([]byte, 5+8192+16)
-	},
+const (
+	headerLength        = 5
+	ivLength            = 16
+	nonceLength         = 12
+	ticketLength        = 16
+	aeadTagLength       = 16
+	hash256Length       = 32
+	encryptedLengthSize = 2 + aeadTagLength
+	dataChunkSize       = 8192
+	minPacketLength     = 1 + aeadTagLength
+	maxPacketLength     = 16384 + 256
+	minPaddingLength    = encryptedLengthSize + minPacketLength
+	maxTotalPadding     = encryptedLengthSize + 65535
+	maxPaddingSegments  = 16
+	maxPaddingGap       = 5 * time.Second
+	maxPaddingGapTotal  = 10 * time.Second
+	x25519KeySize       = 32
+)
+
+var hasAESGCMHardwareSupport = func() bool {
+	hasAMD64 := cpu.X86.HasAES && cpu.X86.HasPCLMULQDQ && cpu.X86.HasSSE41 && cpu.X86.HasSSSE3
+	hasARM64 := cpu.ARM64.HasAES && cpu.ARM64.HasPMULL
+	hasS390X := cpu.S390X.HasAES && cpu.S390X.HasAESCTR && cpu.S390X.HasGHASH
+	hasPPC64 := runtime.GOARCH == "ppc64" || runtime.GOARCH == "ppc64le"
+	return hasAMD64 || hasARM64 || hasS390X || hasPPC64
+}()
+
+type overrideAESKey struct{}
+
+// OverrideUseAES is intended for deterministic interoperability tests.
+func OverrideUseAES(ctx context.Context, useAES bool) context.Context {
+	return context.WithValue(ctx, overrideAESKey{}, useAES)
 }
 
+func useAESFromContext(ctx context.Context) bool {
+	if value, loaded := ctx.Value(overrideAESKey{}).(bool); loaded {
+		return value
+	}
+	return hasAESGCMHardwareSupport
+}
+
+var (
+	_ net.Conn             = (*CommonConn)(nil)
+	_ N.ReaderWithUpstream = (*CommonConn)(nil)
+	_ N.WriterWithUpstream = (*CommonConn)(nil)
+)
+
+// EncryptionConn identifies the authenticated VLESS record layer while
+// preserving the public marker used by the extended Vision integration.
 type EncryptionConn interface {
 	net.Conn
 	IsEncryptionLayer() bool
 }
 
+// CommonConn is the authenticated record layer used after the key exchange.
+// Read and Write are independently serialized, matching net.Conn's concurrent
+// reader/writer contract without racing the per-direction AEAD nonces.
 type CommonConn struct {
-	net.Conn
-	UseAES      bool
-	Client      *ClientInstance
-	UnitedKey   []byte
-	PreWrite    []byte
-	AEAD        *AEAD
-	PeerAEAD    *AEAD
-	PeerPadding []byte
+	conn        net.Conn
+	useAES      bool
+	client      *Client
+	unitedKey   []byte
+	preWrite    []byte
+	aead        *aeadState
+	peerAEAD    *aeadState
+	peerPadding []byte
+
+	writeAccess sync.Mutex
+	readAccess  sync.Mutex
 	rawInput    bytes.Buffer
 	input       bytes.Reader
 }
 
-func NewCommonConn(conn net.Conn, useAES bool) *CommonConn {
-	return &CommonConn{
-		Conn:   conn,
-		UseAES: useAES,
-	}
+func newCommonConn(conn net.Conn, useAES bool) *CommonConn {
+	return &CommonConn{conn: conn, useAES: useAES}
 }
 
-func (c *CommonConn) Write(b []byte) (int, error) {
-	if len(b) == 0 {
+func (c *CommonConn) Write(payload []byte) (int, error) {
+	if len(payload) == 0 {
 		return 0, nil
 	}
-	outBytes := OutBytesPool.Get().([]byte)
-	defer OutBytesPool.Put(outBytes)
-	for n := 0; n < len(b); {
-		b := b[n:]
-		if len(b) > 8192 {
-			b = b[:8192] // for avoiding another copy() in peer's Read()
+	c.writeAccess.Lock()
+	defer c.writeAccess.Unlock()
+
+	total := len(payload)
+	for len(payload) > 0 {
+		chunk := payload
+		if len(chunk) > dataChunkSize {
+			chunk = chunk[:dataChunkSize]
 		}
-		n += len(b)
-		headerAndData := outBytes[:5+len(b)+16]
-		EncodeHeader(headerAndData, len(b)+16)
-		max := false
-		if bytes.Equal(c.AEAD.Nonce[:], MaxNonce) {
-			max = true
+		payload = payload[len(chunk):]
+
+		preWrite := c.preWrite
+		output := buf.NewSize(len(preWrite) + headerLength + len(chunk) + c.aead.Overhead())
+		outputBytes := output.Extend(output.Cap())
+		position := copy(outputBytes, preWrite)
+		c.preWrite = nil
+		encodeHeader(outputBytes[position:position+headerLength], len(chunk)+c.aead.Overhead())
+		nonceAtMaximum := bytes.Equal(c.aead.nonce[:], maximumNonce)
+		sealed := c.aead.Seal(
+			outputBytes[position+headerLength:position+headerLength],
+			nil,
+			chunk,
+			outputBytes[position:position+headerLength],
+		)
+		if len(sealed) != len(chunk)+c.aead.Overhead() {
+			output.Release()
+			return total - len(payload) - len(chunk), E.New("vless encryption: unexpected sealed record length")
 		}
-		c.AEAD.Seal(headerAndData[:5], nil, b, headerAndData[:5])
-		if max {
-			c.AEAD = NewAEAD(headerAndData, c.UnitedKey, c.UseAES)
+		if nonceAtMaximum {
+			c.aead = newAEAD(outputBytes, c.unitedKey, c.useAES)
 		}
-		if c.PreWrite != nil {
-			headerAndData = append(c.PreWrite, headerAndData...)
-			c.PreWrite = nil
-		}
-		if _, err := c.Conn.Write(headerAndData); err != nil {
-			return 0, err
+		err := writeAll(c.conn, outputBytes)
+		output.Release()
+		if err != nil {
+			return total - len(payload) - len(chunk), err
 		}
 	}
-	return len(b), nil
+	return total, nil
 }
 
-func (c *CommonConn) Read(b []byte) (int, error) {
-	if len(b) == 0 {
+func (c *CommonConn) Read(payload []byte) (int, error) {
+	if len(payload) == 0 {
 		return 0, nil
 	}
-	if c.PeerAEAD == nil { // client's 0-RTT
-		serverRandom := make([]byte, 16)
-		if _, err := io.ReadFull(c.Conn, serverRandom); err != nil {
+	c.readAccess.Lock()
+	defer c.readAccess.Unlock()
+
+	if c.peerAEAD == nil {
+		serverRandom := make([]byte, ivLength)
+		if _, err := io.ReadFull(c.conn, serverRandom); err != nil {
 			return 0, err
 		}
-		c.PeerAEAD = NewAEAD(serverRandom, c.UnitedKey, c.UseAES)
-		if xorConn, ok := c.Conn.(*XorConn); ok {
-			xorConn.PeerCTR = NewCTR(c.UnitedKey, serverRandom)
+		c.peerAEAD = newAEAD(serverRandom, c.unitedKey, c.useAES)
+		if xorConnection, loaded := c.conn.(*xorConn); loaded {
+			xorConnection.setPeerCTR(newCTR(c.unitedKey, serverRandom))
 		}
 	}
-	if c.PeerPadding != nil { // client's 1-RTT
-		if _, err := io.ReadFull(c.Conn, c.PeerPadding); err != nil {
+	if c.peerPadding != nil {
+		if _, err := io.ReadFull(c.conn, c.peerPadding); err != nil {
 			return 0, err
 		}
-		if _, err := c.PeerAEAD.Open(c.PeerPadding[:0], nil, c.PeerPadding, nil); err != nil {
-			return 0, err
+		if _, err := c.peerAEAD.Open(c.peerPadding[:0], nil, c.peerPadding, nil); err != nil {
+			return 0, E.Cause(err, "vless encryption: decrypt peer padding")
 		}
-		c.PeerPadding = nil
+		c.peerPadding = nil
 	}
 	if c.input.Len() > 0 {
-		return c.input.Read(b)
+		return c.input.Read(payload)
 	}
-	peerHeader := [5]byte{}
-	if _, err := io.ReadFull(c.Conn, peerHeader[:]); err != nil {
-		return 0, err
+
+	peerHeader := [headerLength]byte{}
+	if _, err := io.ReadFull(c.conn, peerHeader[:]); err != nil {
+		return 0, c.handlePeerHeaderError(err)
 	}
-	l, err := DecodeHeader(peerHeader[:]) // l: 17~17000
+	recordLength, err := decodeHeader(peerHeader[:])
 	if err != nil {
-		if c.Client != nil && errors.Is(err, ErrInvalidHeader) { // client's 0-RTT
-			c.Client.RWLock.Lock()
-			if bytes.HasPrefix(c.UnitedKey, c.Client.PfsKey) {
-				c.Client.Expire = time.Now() // expired
-			}
-			c.Client.RWLock.Unlock()
-			return 0, E.New("new handshake needed")
-		}
+		return 0, c.handlePeerHeaderError(err)
+	}
+	c.client = nil
+	if c.rawInput.Cap() < recordLength {
+		c.rawInput.Grow(recordLength)
+	}
+	peerData := c.rawInput.Bytes()[:recordLength]
+	if _, err := io.ReadFull(c.conn, peerData); err != nil {
 		return 0, err
 	}
-	c.Client = nil
-	if c.rawInput.Cap() < l {
-		c.rawInput.Grow(l) // no need to use sync.Pool, because we are always reading
+
+	plaintext := peerData[:recordLength-aeadTagLength]
+	if len(plaintext) <= len(payload) {
+		plaintext = payload[:len(plaintext)]
 	}
-	peerData := c.rawInput.Bytes()[:l]
-	if _, err := io.ReadFull(c.Conn, peerData); err != nil {
-		return 0, err
+	var nextAEAD *aeadState
+	if bytes.Equal(c.peerAEAD.nonce[:], maximumNonce) {
+		contextBytes := make([]byte, 0, len(peerHeader)+len(peerData))
+		contextBytes = append(contextBytes, peerHeader[:]...)
+		contextBytes = append(contextBytes, peerData...)
+		nextAEAD = newAEAD(contextBytes, c.unitedKey, c.useAES)
 	}
-	dst := peerData[:l-16]
-	if len(dst) <= len(b) {
-		dst = b[:len(dst)] // avoids another copy()
+	if _, err := c.peerAEAD.Open(plaintext[:0], nil, peerData, peerHeader[:]); err != nil {
+		return 0, E.Cause(err, "vless encryption: decrypt record")
 	}
-	var newAEAD *AEAD
-	if bytes.Equal(c.PeerAEAD.Nonce[:], MaxNonce) {
-		newAEAD = NewAEAD(append(peerHeader[:], peerData...), c.UnitedKey, c.UseAES)
+	if nextAEAD != nil {
+		c.peerAEAD = nextAEAD
 	}
-	_, err = c.PeerAEAD.Open(dst[:0], nil, peerData, peerHeader[:])
-	if newAEAD != nil {
-		c.PeerAEAD = newAEAD
+	if len(plaintext) > len(payload) {
+		copied := copy(payload, plaintext)
+		c.input.Reset(plaintext[copied:])
+		return copied, nil
 	}
-	if err != nil {
-		return 0, err
-	}
-	if len(dst) > len(b) {
-		c.input.Reset(dst[copy(b, dst):])
-		dst = b // for len(dst)
-	}
-	return len(dst), nil
+	return len(plaintext), nil
 }
 
-// Upstream returns the underlying connection, allowing Vision to unwrap and access the TLS connection
-func (c *CommonConn) Upstream() any {
-	return c.Conn
+func (c *CommonConn) handlePeerHeaderError(err error) error {
+	if c.client != nil && E.IsMulti(err, errInvalidHeader) {
+		c.client.expireTicketIfCurrent(c.unitedKey)
+		return E.Extend(err, "new handshake needed")
+	}
+	return err
 }
 
-func (c *CommonConn) IsEncryptionLayer() bool {
-	return true
+func (c *CommonConn) Close() error                      { return common.Close(c.conn) }
+func (c *CommonConn) LocalAddr() net.Addr               { return c.conn.LocalAddr() }
+func (c *CommonConn) RemoteAddr() net.Addr              { return c.conn.RemoteAddr() }
+func (c *CommonConn) SetDeadline(t time.Time) error     { return c.conn.SetDeadline(t) }
+func (c *CommonConn) SetReadDeadline(t time.Time) error { return c.conn.SetReadDeadline(t) }
+func (c *CommonConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
 }
+func (c *CommonConn) WriterReplaceable() bool { return false }
+func (c *CommonConn) ReaderReplaceable() bool { return false }
+func (c *CommonConn) Upstream() any           { return c.conn }
+func (c *CommonConn) IsEncryptionLayer() bool { return true }
 
-type AEAD struct {
+type aeadState struct {
 	cipher.AEAD
-	Nonce [12]byte
+	nonce [nonceLength]byte
 }
 
-func NewAEAD(ctx, key []byte, useAES bool) *AEAD {
-	k := make([]byte, 32)
-	blake3.DeriveKey(k, string(ctx), key)
-	var aead cipher.AEAD
+// AEAD keeps the extended server-facing type name while both sides use the
+// hardened nonce implementation.
+type AEAD = aeadState
+
+func newAEAD(contextBytes, key []byte, useAES bool) *aeadState {
+	subkey := make([]byte, chacha20poly1305.KeySize)
+	blake3.DeriveKey(subkey, string(contextBytes), key)
+	var instance cipher.AEAD
 	if useAES {
-		block, _ := aes.NewCipher(k)
-		aead, _ = cipher.NewGCM(block)
+		block, _ := aes.NewCipher(subkey)
+		instance, _ = cipher.NewGCM(block)
 	} else {
-		aead, _ = chacha20poly1305.New(k)
+		instance, _ = chacha20poly1305.New(subkey)
 	}
-	return &AEAD{AEAD: aead}
+	clear(subkey)
+	return &aeadState{AEAD: instance}
 }
 
-func (a *AEAD) Seal(dst, nonce, plaintext, additionalData []byte) []byte {
+func NewAEAD(contextBytes, key []byte, useAES bool) *AEAD {
+	return newAEAD(contextBytes, key, useAES)
+}
+
+func (a *aeadState) Seal(dst, nonce, plaintext, additionalData []byte) []byte {
 	if nonce == nil {
-		nonce = IncreaseNonce(a.Nonce[:])
+		nonce = increaseNonce(a.nonce[:])
 	}
 	return a.AEAD.Seal(dst, nonce, plaintext, additionalData)
 }
 
-func (a *AEAD) Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) {
+func (a *aeadState) Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) {
 	if nonce == nil {
-		nonce = IncreaseNonce(a.Nonce[:])
+		nonce = increaseNonce(a.nonce[:])
 	}
 	return a.AEAD.Open(dst, nonce, ciphertext, additionalData)
 }
 
-func IncreaseNonce(nonce []byte) []byte {
-	for i := range 12 {
-		nonce[11-i]++
-		if nonce[11-i] != 0 {
+func increaseNonce(nonce []byte) []byte {
+	for index := range nonceLength {
+		nonce[nonceLength-1-index]++
+		if nonce[nonceLength-1-index] != 0 {
 			break
 		}
 	}
 	return nonce
 }
 
-var MaxNonce = bytes.Repeat([]byte{255}, 12)
+var maximumNonce = bytes.Repeat([]byte{0xff}, nonceLength)
+var MaxNonce = maximumNonce
 
-func EncodeLength(l int) []byte {
-	return []byte{byte(l >> 8), byte(l)}
+func IncreaseNonce(nonce []byte) []byte {
+	return increaseNonce(nonce)
 }
 
-func DecodeLength(b []byte) int {
-	return int(b[0])<<8 | int(b[1])
+func encodeLength(length int) []byte {
+	return []byte{byte(length >> 8), byte(length)}
 }
 
-func EncodeHeader(h []byte, l int) {
-	h[0] = 23
-	h[1] = 3
-	h[2] = 3
-	h[3] = byte(l >> 8)
-	h[4] = byte(l)
+func decodeLength(value []byte) int {
+	return int(binary.BigEndian.Uint16(value))
 }
 
-var ErrInvalidHeader = errors.New("invalid header")
+func EncodeLength(length int) []byte {
+	return encodeLength(length)
+}
 
-func DecodeHeader(h []byte) (l int, err error) {
-	l = int(h[3])<<8 | int(h[4])
-	if h[0] != 23 || h[1] != 3 || h[2] != 3 {
-		l = 0
+func DecodeLength(value []byte) int {
+	return decodeLength(value)
+}
+
+func encodeHeader(header []byte, length int) {
+	header[0] = 23
+	header[1] = 3
+	header[2] = 3
+	binary.BigEndian.PutUint16(header[3:], uint16(length))
+}
+
+var errInvalidHeader = E.New("invalid encrypted record header")
+var ErrInvalidHeader = errInvalidHeader
+
+func decodeHeader(header []byte) (int, error) {
+	if len(header) < headerLength {
+		return 0, io.ErrUnexpectedEOF
 	}
-	if l < 17 || l > 17000 { // TODO: TLSv1.3 max length
-		err = fmt.Errorf("%w: %v", ErrInvalidHeader, h[:5]) // DO NOT CHANGE: relied by client's Read()
+	length := int(binary.BigEndian.Uint16(header[3:]))
+	if header[0] != 23 || header[1] != 3 || header[2] != 3 || length < minPacketLength || length > maxPacketLength {
+		return 0, E.Extend(errInvalidHeader, fmt.Sprint(header[:headerLength]))
 	}
-	return
+	return length, nil
 }
 
-func ParsePadding(padding string, paddingLens, paddingGaps *[][3]int) (err error) {
-	if padding == "" {
-		return
+func EncodeHeader(header []byte, length int) {
+	encodeHeader(header, length)
+}
+
+func DecodeHeader(header []byte) (int, error) {
+	return decodeHeader(header)
+}
+
+func parsePadding(segments []string) (paddingLengths, paddingGaps [][3]int, err error) {
+	if len(segments) == 0 {
+		return nil, nil, nil
 	}
-	maxLen := 0
-	for i, s := range strings.Split(padding, ".") {
-		x := strings.Split(s, "-")
-		if len(x) < 3 || x[0] == "" || x[1] == "" || x[2] == "" {
-			return E.New("invalid padding lenth/gap parameter: " + s)
+	if len(segments) > maxPaddingSegments {
+		return nil, nil, E.New("vless encryption: too many padding segments")
+	}
+	maxLength := 0
+	maxGapTotal := time.Duration(0)
+	for index, segment := range segments {
+		parts := strings.Split(segment, "-")
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return nil, nil, E.New("vless encryption: invalid padding length/gap parameter: ", segment)
 		}
-		y := [3]int{}
-		if y[0], err = strconv.Atoi(x[0]); err != nil {
-			return
+		values := [3]int{}
+		for valueIndex := range values {
+			values[valueIndex], err = strconv.Atoi(parts[valueIndex])
+			if err != nil {
+				return nil, nil, E.Cause(err, "vless encryption: parse padding parameter")
+			}
 		}
-		if y[1], err = strconv.Atoi(x[1]); err != nil {
-			return
+		if values[0] < 0 || values[0] > 100 || values[1] < 0 || values[2] < values[1] {
+			return nil, nil, E.New("vless encryption: padding values are outside supported bounds: ", segment)
 		}
-		if y[2], err = strconv.Atoi(x[2]); err != nil {
-			return
+		if index == 0 && (values[0] != 100 || values[1] < minPaddingLength || values[2] < minPaddingLength) {
+			return nil, nil, E.New("vless encryption: first padding length must be unconditional and at least ", minPaddingLength)
 		}
-		if i == 0 && (y[0] < 100 || y[1] < 18+17 || y[2] < 18+17) {
-			return E.New("first padding length must not be smaller than 35")
-		}
-		if i%2 == 0 {
-			*paddingLens = append(*paddingLens, y)
-			maxLen += max(y[1], y[2])
+		if index%2 == 0 {
+			if values[1] > maxTotalPadding || values[2] > maxTotalPadding || maxLength > maxTotalPadding-values[2] {
+				return nil, nil, E.New("vless encryption: total padding length exceeds ", maxTotalPadding)
+			}
+			paddingLengths = append(paddingLengths, values)
+			maxLength += values[2]
 		} else {
-			*paddingGaps = append(*paddingGaps, y)
+			if values[1] > int(maxPaddingGap/time.Millisecond) || values[2] > int(maxPaddingGap/time.Millisecond) {
+				return nil, nil, E.New("vless encryption: a padding gap exceeds ", maxPaddingGap)
+			}
+			maximumGap := time.Duration(values[2]) * time.Millisecond
+			if maxGapTotal > maxPaddingGapTotal-maximumGap {
+				return nil, nil, E.New("vless encryption: total padding gaps exceed ", maxPaddingGapTotal)
+			}
+			maxGapTotal += maximumGap
+			paddingGaps = append(paddingGaps, values)
 		}
 	}
-	if maxLen > 18+65535 {
-		return E.New("total padding length must not be larger than 65553")
+	if maxLength > maxTotalPadding {
+		return nil, nil, E.New("vless encryption: total padding length exceeds ", maxTotalPadding)
 	}
-	return
+	if maxGapTotal > maxPaddingGapTotal {
+		return nil, nil, E.New("vless encryption: total padding gaps exceed ", maxPaddingGapTotal)
+	}
+	return paddingLengths, paddingGaps, nil
 }
 
-func CreatePadding(paddingLens, paddingGaps [][3]int) (length int, lens []int, gaps []time.Duration) {
-	if len(paddingLens) == 0 {
-		paddingLens = [][3]int{{100, 111, 1111}, {50, 0, 3333}}
+func ParsePadding(padding string, paddingLengths, paddingGaps *[][3]int) error {
+	var segments []string
+	if padding != "" {
+		segments = strings.Split(padding, ".")
+	}
+	lengths, gaps, err := parsePadding(segments)
+	if err != nil {
+		return err
+	}
+	*paddingLengths = lengths
+	*paddingGaps = gaps
+	return nil
+}
+
+func createPadding(paddingLengths, paddingGaps [][3]int) (length int, lengths []int, gaps []time.Duration) {
+	if len(paddingLengths) == 0 {
+		paddingLengths = [][3]int{{100, 111, 1111}, {50, 0, 3333}}
 		paddingGaps = [][3]int{{75, 0, 111}}
 	}
-	for _, y := range paddingLens {
-		l := 0
-		if y[0] >= int(crypto.RandBetween(0, 100)) {
-			l = int(crypto.RandBetween(int64(y[1]), int64(y[2])))
+	for _, values := range paddingLengths {
+		value := 0
+		if values[0] >= randomBetween(0, 100) {
+			value = randomBetween(values[1], values[2])
 		}
-		lens = append(lens, l)
-		length += l
+		lengths = append(lengths, value)
+		length += value
 	}
-	for _, y := range paddingGaps {
-		g := 0
-		if y[0] >= int(crypto.RandBetween(0, 100)) {
-			g = int(crypto.RandBetween(int64(y[1]), int64(y[2])))
+	for _, values := range paddingGaps {
+		value := 0
+		if values[0] >= randomBetween(0, 100) {
+			value = randomBetween(values[1], values[2])
 		}
-		gaps = append(gaps, time.Duration(g)*time.Millisecond)
+		gaps = append(gaps, time.Duration(value)*time.Millisecond)
 	}
-	return
+	return length, lengths, gaps
+}
+
+func CreatePadding(paddingLengths, paddingGaps [][3]int) (length int, lengths []int, gaps []time.Duration) {
+	return createPadding(paddingLengths, paddingGaps)
+}
+
+func randomBetween(from, to int) int {
+	if from == to {
+		return from
+	}
+	if to < from {
+		from, to = to, from
+	}
+	return from + rand.IntN(to-from+1)
+}
+
+func writeAll(writer io.Writer, payload []byte) error {
+	for len(payload) > 0 {
+		written, err := writer.Write(payload)
+		if written > 0 {
+			payload = payload[written:]
+		}
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrNoProgress
+		}
+	}
+	return nil
 }

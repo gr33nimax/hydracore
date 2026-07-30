@@ -3,99 +3,158 @@ package encryption
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"io"
 	"net"
+	"sync"
+
+	E "github.com/sagernet/sing/common/exceptions"
 
 	"lukechampine.com/blake3"
 )
 
-func NewCTR(key, iv []byte) cipher.Stream {
-	k := make([]byte, 32)
-	blake3.DeriveKey(k, "VLESS", key) // avoids using key directly
-	block, _ := aes.NewCipher(k)
-	return cipher.NewCTR(block, iv)
+func newCTR(key, initializationVector []byte) cipher.Stream {
+	derivedKey := make([]byte, 32)
+	blake3.DeriveKey(derivedKey, "VLESS", key)
+	block, _ := aes.NewCipher(derivedKey)
+	clear(derivedKey)
+	return cipher.NewCTR(block, initializationVector)
 }
 
-type XorConn struct {
-	net.Conn
-	CTR       cipher.Stream
-	PeerCTR   cipher.Stream
-	OutSkip   int
-	OutHeader []byte
-	InSkip    int
-	InHeader  []byte
+// NewCTR is retained for the extended inbound/server implementation.
+func NewCTR(key, initializationVector []byte) cipher.Stream {
+	return newCTR(key, initializationVector)
 }
+
+// xorConn only wraps CommonConn-owned output buffers. It is intentionally not
+// exposed because the header transformation mutates those transient buffers.
+type xorConn struct {
+	net.Conn
+	writeAccess sync.Mutex
+	readAccess  sync.Mutex
+	ctr         cipher.Stream
+	peerCTR     cipher.Stream
+	outSkip     int
+	outHeader   []byte
+	inSkip      int
+	inHeader    []byte
+}
+
+func newXORConn(conn net.Conn, ctr, peerCTR cipher.Stream, outSkip, inSkip int) *xorConn {
+	return &xorConn{
+		Conn:      conn,
+		ctr:       ctr,
+		peerCTR:   peerCTR,
+		outSkip:   outSkip,
+		outHeader: make([]byte, 0, headerLength),
+		inSkip:    inSkip,
+		inHeader:  make([]byte, 0, headerLength),
+	}
+}
+
+// XorConn and NewXorConn keep the extended server API compatible while the
+// implementation remains shared with the hardened Etonify client.
+type XorConn = xorConn
 
 func NewXorConn(conn net.Conn, ctr, peerCTR cipher.Stream, outSkip, inSkip int) *XorConn {
-	return &XorConn{
-		Conn:      conn,
-		CTR:       ctr,
-		PeerCTR:   peerCTR,
-		OutSkip:   outSkip,
-		OutHeader: make([]byte, 0, 5), // important
-		InSkip:    inSkip,
-		InHeader:  make([]byte, 0, 5), // important
-	}
+	return newXORConn(conn, ctr, peerCTR, outSkip, inSkip)
 }
 
-func (c *XorConn) Write(b []byte) (int, error) {
-	if len(b) == 0 {
+func (c *xorConn) setPeerCTR(peerCTR cipher.Stream) {
+	c.readAccess.Lock()
+	c.peerCTR = peerCTR
+	c.readAccess.Unlock()
+}
+
+func (c *xorConn) Write(payload []byte) (int, error) {
+	if len(payload) == 0 {
 		return 0, nil
 	}
-	for p := b; ; {
-		if len(p) <= c.OutSkip {
-			c.OutSkip -= len(p)
-			break
-		}
-		p = p[c.OutSkip:]
-		c.OutSkip = 0
-		need := 5 - len(c.OutHeader)
-		if len(p) < need {
-			c.OutHeader = append(c.OutHeader, p...)
-			c.CTR.XORKeyStream(p, p)
-			break
-		}
-		c.OutSkip, _ = DecodeHeader(append(c.OutHeader, p[:need]...))
-		c.OutHeader = c.OutHeader[:0]
-		c.CTR.XORKeyStream(p[:need], p[:need])
-		p = p[need:]
-	}
-	if _, err := c.Conn.Write(b); err != nil {
+	c.writeAccess.Lock()
+	defer c.writeAccess.Unlock()
+	if err := c.transformWrite(payload); err != nil {
 		return 0, err
 	}
-	return len(b), nil
+	if err := writeAll(c.Conn, payload); err != nil {
+		return 0, err
+	}
+	return len(payload), nil
 }
 
-func (c *XorConn) Read(b []byte) (int, error) {
-	if len(b) == 0 {
+func (c *xorConn) transformWrite(payload []byte) error {
+	for len(payload) > 0 {
+		if len(payload) <= c.outSkip {
+			c.outSkip -= len(payload)
+			return nil
+		}
+		payload = payload[c.outSkip:]
+		c.outSkip = 0
+		needed := headerLength - len(c.outHeader)
+		if len(payload) < needed {
+			c.outHeader = append(c.outHeader, payload...)
+			c.ctr.XORKeyStream(payload, payload)
+			return nil
+		}
+		header := append(c.outHeader, payload[:needed]...)
+		nextSkip, err := decodeHeader(header)
+		if err != nil {
+			return E.Cause(err, "vless encryption: invalid outgoing xor record")
+		}
+		c.outSkip = nextSkip
+		c.outHeader = c.outHeader[:0]
+		c.ctr.XORKeyStream(payload[:needed], payload[:needed])
+		payload = payload[needed:]
+	}
+	return nil
+}
+
+func (c *xorConn) Read(payload []byte) (int, error) {
+	if len(payload) == 0 {
 		return 0, nil
 	}
-	n, err := c.Conn.Read(b)
-	for p := b[:n]; ; {
-		if len(p) <= c.InSkip {
-			c.InSkip -= len(p)
-			break
-		}
-		p = p[c.InSkip:]
-		c.InSkip = 0
-		need := 5 - len(c.InHeader)
-		if len(p) < need {
-			c.PeerCTR.XORKeyStream(p, p)
-			c.InHeader = append(c.InHeader, p...)
-			break
-		}
-		c.PeerCTR.XORKeyStream(p[:need], p[:need])
-		c.InSkip, _ = DecodeHeader(append(c.InHeader, p[:need]...))
-		c.InHeader = c.InHeader[:0]
-		p = p[need:]
+	c.readAccess.Lock()
+	defer c.readAccess.Unlock()
+	written, readErr := c.Conn.Read(payload)
+	if written == 0 {
+		return 0, readErr
 	}
-	return n, err
+	if err := c.transformRead(payload[:written]); err != nil {
+		return 0, err
+	}
+	return written, readErr
 }
 
-// Upstream returns the underlying connection, allowing Vision to unwrap and access the TLS connection
-func (c *XorConn) Upstream() any {
-	return c.Conn
+func (c *xorConn) transformRead(payload []byte) error {
+	for len(payload) > 0 {
+		if len(payload) <= c.inSkip {
+			c.inSkip -= len(payload)
+			return nil
+		}
+		payload = payload[c.inSkip:]
+		c.inSkip = 0
+		if c.peerCTR == nil {
+			return E.New("vless encryption: peer xor stream is not initialized")
+		}
+		needed := headerLength - len(c.inHeader)
+		if len(payload) < needed {
+			c.peerCTR.XORKeyStream(payload, payload)
+			c.inHeader = append(c.inHeader, payload...)
+			return nil
+		}
+		c.peerCTR.XORKeyStream(payload[:needed], payload[:needed])
+		header := append(c.inHeader, payload[:needed]...)
+		nextSkip, err := decodeHeader(header)
+		if err != nil {
+			return E.Cause(err, "vless encryption: invalid incoming xor record")
+		}
+		c.inSkip = nextSkip
+		c.inHeader = c.inHeader[:0]
+		payload = payload[needed:]
+	}
+	return nil
 }
 
-func (c *XorConn) IsEncryptionLayer() bool {
-	return true
-}
+func (c *xorConn) Upstream() any           { return c.Conn }
+func (c *xorConn) IsEncryptionLayer() bool { return true }
+
+var _ net.Conn = (*xorConn)(nil)
+var _ io.Reader = (*xorConn)(nil)

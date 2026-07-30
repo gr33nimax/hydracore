@@ -2,10 +2,13 @@ package xhttp
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/common/xray/signal/done"
@@ -17,32 +20,51 @@ type splitConn struct {
 	remoteAddr net.Addr
 	localAddr  net.Addr
 	onClose    func()
+
+	closeOnce  sync.Once
+	closeErr   error
+	writerCloseOnce sync.Once
+	readerCloseOnce sync.Once
+	writerCloseErr  error
+	readerCloseErr  error
+	deadlineAccess  sync.Mutex
+	readDeadline    time.Time
+	writeDeadline   time.Time
+	readGeneration  uint64
+	writeGeneration uint64
+	readTimer       *time.Timer
+	writeTimer      *time.Timer
+	readExpired     atomic.Bool
+	writeExpired    atomic.Bool
 }
 
 func (c *splitConn) Write(b []byte) (int, error) {
-	return c.writer.Write(b)
+	written, err := c.writer.Write(b)
+	if err != nil && c.writeExpired.Load() {
+		return written, os.ErrDeadlineExceeded
+	}
+	return written, err
 }
 
 func (c *splitConn) Read(b []byte) (int, error) {
-	return c.reader.Read(b)
+	read, err := c.reader.Read(b)
+	if err != nil && c.readExpired.Load() {
+		return read, os.ErrDeadlineExceeded
+	}
+	return read, err
 }
 
 func (c *splitConn) Close() error {
-	if c.onClose != nil {
-		c.onClose()
-	}
-
-	err := c.writer.Close()
-	err2 := c.reader.Close()
-	if err != nil {
-		return err
-	}
-
-	if err2 != nil {
-		return err2
-	}
-
-	return nil
+	c.closeOnce.Do(func() {
+		c.stopDeadlineTimers()
+		writerErr := c.closeWriter()
+		if c.onClose != nil {
+			c.onClose()
+		}
+		readerErr := c.closeReader()
+		c.closeErr = errors.Join(writerErr, readerErr)
+	})
+	return c.closeErr
 }
 
 func (c *splitConn) LocalAddr() net.Addr {
@@ -53,19 +75,115 @@ func (c *splitConn) RemoteAddr() net.Addr {
 	return c.remoteAddr
 }
 
-func (c *splitConn) SetDeadline(t time.Time) error {
-	// TODO cannot do anything useful
+func (c *splitConn) SetDeadline(deadline time.Time) error {
+	c.setReadDeadline(deadline)
+	c.setWriteDeadline(deadline)
 	return nil
 }
 
-func (c *splitConn) SetReadDeadline(t time.Time) error {
-	// TODO cannot do anything useful
+func (c *splitConn) SetReadDeadline(deadline time.Time) error {
+	c.setReadDeadline(deadline)
 	return nil
 }
 
-func (c *splitConn) SetWriteDeadline(t time.Time) error {
-	// TODO cannot do anything useful
+func (c *splitConn) SetWriteDeadline(deadline time.Time) error {
+	c.setWriteDeadline(deadline)
 	return nil
+}
+
+// NeedAdditionalReadDeadline tells the adapter that this split stream has its
+// own deadline enforcement and should not rely on an underlying socket.
+func (c *splitConn) NeedAdditionalReadDeadline() bool {
+	return true
+}
+
+func (c *splitConn) setReadDeadline(deadline time.Time) {
+	c.deadlineAccess.Lock()
+	if c.readTimer != nil {
+		c.readTimer.Stop()
+		c.readTimer = nil
+	}
+	c.readDeadline = deadline
+	c.readGeneration++
+	generation := c.readGeneration
+	c.readExpired.Store(false)
+	if !deadline.IsZero() {
+		delay := time.Until(deadline)
+		if delay < 0 {
+			delay = 0
+		}
+		c.readTimer = time.AfterFunc(delay, func() { c.expireRead(deadline, generation) })
+	}
+	c.deadlineAccess.Unlock()
+}
+
+func (c *splitConn) setWriteDeadline(deadline time.Time) {
+	c.deadlineAccess.Lock()
+	if c.writeTimer != nil {
+		c.writeTimer.Stop()
+		c.writeTimer = nil
+	}
+	c.writeDeadline = deadline
+	c.writeGeneration++
+	generation := c.writeGeneration
+	c.writeExpired.Store(false)
+	if !deadline.IsZero() {
+		delay := time.Until(deadline)
+		if delay < 0 {
+			delay = 0
+		}
+		c.writeTimer = time.AfterFunc(delay, func() { c.expireWrite(deadline, generation) })
+	}
+	c.deadlineAccess.Unlock()
+}
+
+func (c *splitConn) expireRead(deadline time.Time, generation uint64) {
+	c.deadlineAccess.Lock()
+	if c.readGeneration != generation || c.readDeadline != deadline || deadline.IsZero() {
+		c.deadlineAccess.Unlock()
+		return
+	}
+	c.readTimer = nil
+	c.readExpired.Store(true)
+	c.deadlineAccess.Unlock()
+	_ = c.closeReader()
+}
+
+func (c *splitConn) expireWrite(deadline time.Time, generation uint64) {
+	c.deadlineAccess.Lock()
+	if c.writeGeneration != generation || c.writeDeadline != deadline || deadline.IsZero() {
+		c.deadlineAccess.Unlock()
+		return
+	}
+	c.writeTimer = nil
+	c.writeExpired.Store(true)
+	c.deadlineAccess.Unlock()
+	_ = c.closeWriter()
+}
+
+func (c *splitConn) stopDeadlineTimers() {
+	c.deadlineAccess.Lock()
+	if c.readTimer != nil {
+		c.readTimer.Stop()
+		c.readTimer = nil
+	}
+	if c.writeTimer != nil {
+		c.writeTimer.Stop()
+		c.writeTimer = nil
+	}
+	c.readDeadline = time.Time{}
+	c.writeDeadline = time.Time{}
+	c.deadlineAccess.Unlock()
+}
+
+func (c *splitConn) closeWriter() error {
+	c.writerCloseOnce.Do(func() { c.writerCloseErr = c.writer.Close() })
+	return c.writerCloseErr
+}
+
+func (c *splitConn) closeReader() error {
+	c.readerCloseOnce.Do(func() { c.readerCloseErr = c.reader.Close() })
+	return c.readerCloseErr
 }
 
 type H1Conn struct {

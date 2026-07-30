@@ -8,14 +8,12 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/urltest"
 	"github.com/sagernet/sing-box/experimental/clashapi"
 	"github.com/sagernet/sing-box/experimental/clashapi/trafficontrol"
 	"github.com/sagernet/sing-box/experimental/deprecated"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/protocol/group"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/batch"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/memory"
 	"github.com/sagernet/sing/common/observable"
@@ -53,7 +51,9 @@ type StartedService struct {
 	startedAt               time.Time
 	urlTestSubscriber       *observable.Subscriber[struct{}]
 	urlTestObserver         *observable.Observer[struct{}]
-	urlTestHistoryStorage   *urltest.HistoryStorage
+	urlTestSessionAccess    sync.Mutex
+	urlTestSessions         map[string]*urlTestSession
+	urlTestSessionSequence  uint64
 	clashModeSubscriber     *observable.Subscriber[struct{}]
 	clashModeObserver       *observable.Observer[struct{}]
 
@@ -92,7 +92,7 @@ func NewStartedService(options ServiceOptions) *StartedService {
 		serviceStatusSubscriber:   observable.NewSubscriber[*ServiceStatus](4),
 		logSubscriber:             observable.NewSubscriber[*log.Entry](128),
 		urlTestSubscriber:         observable.NewSubscriber[struct{}](1),
-		urlTestHistoryStorage:     urltest.NewHistoryStorage(),
+		urlTestSessions:           make(map[string]*urlTestSession),
 		clashModeSubscriber:       observable.NewSubscriber[struct{}](1),
 		connectionEventSubscriber: observable.NewSubscriber[trafficontrol.ConnectionEvent](256),
 	}
@@ -498,6 +498,9 @@ func (s *StartedService) readGroups() *Groups {
 			if history := historyStorage.LoadURLTestHistory(adapter.OutboundTag(itemOutbound)); history != nil {
 				item.UrlTestTime = history.Time.Unix()
 				item.UrlTestDelay = int32(history.Delay)
+				item.UrlTestStatus = adapter.URLTestHistoryStatus(history)
+				item.UrlTestError = history.Error
+				item.UrlTestErrorCode = history.ErrorCode
 			}
 			g.Items = append(g.Items, &item)
 		}
@@ -573,57 +576,7 @@ func (s *StartedService) SetClashMode(ctx context.Context, request *ClashMode) (
 }
 
 func (s *StartedService) URLTest(ctx context.Context, request *URLTestRequest) (*emptypb.Empty, error) {
-	s.serviceAccess.RLock()
-	if s.serviceStatus.Status != ServiceStatus_STARTED {
-		s.serviceAccess.RUnlock()
-		return nil, os.ErrInvalid
-	}
-	boxService := s.instance
-	s.serviceAccess.RUnlock()
-	groupTag := request.OutboundTag
-	abstractOutboundGroup, isLoaded := boxService.instance.Outbound().Outbound(groupTag)
-	if !isLoaded {
-		return nil, E.New("outbound group not found: ", groupTag)
-	}
-	outboundGroup, isOutboundGroup := abstractOutboundGroup.(adapter.OutboundGroup)
-	if !isOutboundGroup {
-		return nil, E.New("outbound is not a group: ", groupTag)
-	}
-	urlTest, isURLTest := abstractOutboundGroup.(*group.URLTest)
-	if isURLTest {
-		go urlTest.CheckOutbounds()
-	} else {
-		historyStorage := boxService.urlTestHistoryStorage
-
-		outbounds := common.Filter(common.Map(outboundGroup.All(), func(it string) adapter.Outbound {
-			itOutbound, _ := boxService.instance.Outbound().Outbound(it)
-			return itOutbound
-		}), func(it adapter.Outbound) bool {
-			if it == nil {
-				return false
-			}
-			_, isGroup := it.(adapter.OutboundGroup)
-			return !isGroup
-		})
-		b, _ := batch.New(boxService.ctx, batch.WithConcurrencyNum[any](10))
-		for _, detour := range outbounds {
-			outboundToTest := detour
-			outboundTag := outboundToTest.Tag()
-			b.Go(outboundTag, func() (any, error) {
-				t, err := urltest.URLTest(boxService.ctx, "", outboundToTest)
-				if err != nil {
-					historyStorage.DeleteURLTestHistory(outboundTag)
-				} else {
-					historyStorage.StoreURLTestHistory(outboundTag, &adapter.URLTestHistory{
-						Time:  time.Now(),
-						Delay: t,
-					})
-				}
-				return nil, nil
-			})
-		}
-	}
-	return &emptypb.Empty{}, nil
+	return s.startURLTest(request)
 }
 
 func (s *StartedService) SelectOutbound(ctx context.Context, request *SelectOutboundRequest) (*emptypb.Empty, error) {

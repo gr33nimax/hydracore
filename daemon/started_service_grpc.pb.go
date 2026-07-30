@@ -15,27 +15,28 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	StartedService_StopService_FullMethodName            = "/daemon.StartedService/StopService"
-	StartedService_ReloadService_FullMethodName          = "/daemon.StartedService/ReloadService"
-	StartedService_SubscribeServiceStatus_FullMethodName = "/daemon.StartedService/SubscribeServiceStatus"
-	StartedService_SubscribeLog_FullMethodName           = "/daemon.StartedService/SubscribeLog"
-	StartedService_GetDefaultLogLevel_FullMethodName     = "/daemon.StartedService/GetDefaultLogLevel"
-	StartedService_ClearLogs_FullMethodName              = "/daemon.StartedService/ClearLogs"
-	StartedService_SubscribeStatus_FullMethodName        = "/daemon.StartedService/SubscribeStatus"
-	StartedService_SubscribeGroups_FullMethodName        = "/daemon.StartedService/SubscribeGroups"
-	StartedService_GetClashModeStatus_FullMethodName     = "/daemon.StartedService/GetClashModeStatus"
-	StartedService_SubscribeClashMode_FullMethodName     = "/daemon.StartedService/SubscribeClashMode"
-	StartedService_SetClashMode_FullMethodName           = "/daemon.StartedService/SetClashMode"
-	StartedService_URLTest_FullMethodName                = "/daemon.StartedService/URLTest"
-	StartedService_SelectOutbound_FullMethodName         = "/daemon.StartedService/SelectOutbound"
-	StartedService_SetGroupExpand_FullMethodName         = "/daemon.StartedService/SetGroupExpand"
-	StartedService_GetSystemProxyStatus_FullMethodName   = "/daemon.StartedService/GetSystemProxyStatus"
-	StartedService_SetSystemProxyEnabled_FullMethodName  = "/daemon.StartedService/SetSystemProxyEnabled"
-	StartedService_SubscribeConnections_FullMethodName   = "/daemon.StartedService/SubscribeConnections"
-	StartedService_CloseConnection_FullMethodName        = "/daemon.StartedService/CloseConnection"
-	StartedService_CloseAllConnections_FullMethodName    = "/daemon.StartedService/CloseAllConnections"
-	StartedService_GetDeprecatedWarnings_FullMethodName  = "/daemon.StartedService/GetDeprecatedWarnings"
-	StartedService_GetStartedAt_FullMethodName           = "/daemon.StartedService/GetStartedAt"
+	StartedService_StopService_FullMethodName                = "/daemon.StartedService/StopService"
+	StartedService_ReloadService_FullMethodName              = "/daemon.StartedService/ReloadService"
+	StartedService_SubscribeServiceStatus_FullMethodName     = "/daemon.StartedService/SubscribeServiceStatus"
+	StartedService_SubscribeLog_FullMethodName               = "/daemon.StartedService/SubscribeLog"
+	StartedService_GetDefaultLogLevel_FullMethodName         = "/daemon.StartedService/GetDefaultLogLevel"
+	StartedService_ClearLogs_FullMethodName                  = "/daemon.StartedService/ClearLogs"
+	StartedService_SubscribeStatus_FullMethodName            = "/daemon.StartedService/SubscribeStatus"
+	StartedService_SubscribeGroups_FullMethodName            = "/daemon.StartedService/SubscribeGroups"
+	StartedService_GetClashModeStatus_FullMethodName         = "/daemon.StartedService/GetClashModeStatus"
+	StartedService_SubscribeClashMode_FullMethodName         = "/daemon.StartedService/SubscribeClashMode"
+	StartedService_SetClashMode_FullMethodName               = "/daemon.StartedService/SetClashMode"
+	StartedService_URLTest_FullMethodName                    = "/daemon.StartedService/URLTest"
+	StartedService_LookupOutboundExternalInfo_FullMethodName = "/daemon.StartedService/LookupOutboundExternalInfo"
+	StartedService_SelectOutbound_FullMethodName             = "/daemon.StartedService/SelectOutbound"
+	StartedService_SetGroupExpand_FullMethodName             = "/daemon.StartedService/SetGroupExpand"
+	StartedService_GetSystemProxyStatus_FullMethodName       = "/daemon.StartedService/GetSystemProxyStatus"
+	StartedService_SetSystemProxyEnabled_FullMethodName      = "/daemon.StartedService/SetSystemProxyEnabled"
+	StartedService_SubscribeConnections_FullMethodName       = "/daemon.StartedService/SubscribeConnections"
+	StartedService_CloseConnection_FullMethodName            = "/daemon.StartedService/CloseConnection"
+	StartedService_CloseAllConnections_FullMethodName        = "/daemon.StartedService/CloseAllConnections"
+	StartedService_GetDeprecatedWarnings_FullMethodName      = "/daemon.StartedService/GetDeprecatedWarnings"
+	StartedService_GetStartedAt_FullMethodName               = "/daemon.StartedService/GetStartedAt"
 )
 
 // StartedServiceClient is the client API for StartedService service.
@@ -54,6 +55,7 @@ type StartedServiceClient interface {
 	SubscribeClashMode(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ClashMode], error)
 	SetClashMode(ctx context.Context, in *ClashMode, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	URLTest(ctx context.Context, in *URLTestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	LookupOutboundExternalInfo(ctx context.Context, in *OutboundExternalInfoRequest, opts ...grpc.CallOption) (*OutboundExternalInfoResponse, error)
 	SelectOutbound(ctx context.Context, in *SelectOutboundRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	SetGroupExpand(ctx context.Context, in *SetGroupExpandRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	GetSystemProxyStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*SystemProxyStatus, error)
@@ -238,6 +240,16 @@ func (c *startedServiceClient) URLTest(ctx context.Context, in *URLTestRequest, 
 	return out, nil
 }
 
+func (c *startedServiceClient) LookupOutboundExternalInfo(ctx context.Context, in *OutboundExternalInfoRequest, opts ...grpc.CallOption) (*OutboundExternalInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OutboundExternalInfoResponse)
+	err := c.cc.Invoke(ctx, StartedService_LookupOutboundExternalInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *startedServiceClient) SelectOutbound(ctx context.Context, in *SelectOutboundRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -353,6 +365,7 @@ type StartedServiceServer interface {
 	SubscribeClashMode(*emptypb.Empty, grpc.ServerStreamingServer[ClashMode]) error
 	SetClashMode(context.Context, *ClashMode) (*emptypb.Empty, error)
 	URLTest(context.Context, *URLTestRequest) (*emptypb.Empty, error)
+	LookupOutboundExternalInfo(context.Context, *OutboundExternalInfoRequest) (*OutboundExternalInfoResponse, error)
 	SelectOutbound(context.Context, *SelectOutboundRequest) (*emptypb.Empty, error)
 	SetGroupExpand(context.Context, *SetGroupExpandRequest) (*emptypb.Empty, error)
 	GetSystemProxyStatus(context.Context, *emptypb.Empty) (*SystemProxyStatus, error)
@@ -418,6 +431,10 @@ func (UnimplementedStartedServiceServer) SetClashMode(context.Context, *ClashMod
 
 func (UnimplementedStartedServiceServer) URLTest(context.Context, *URLTestRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method URLTest not implemented")
+}
+
+func (UnimplementedStartedServiceServer) LookupOutboundExternalInfo(context.Context, *OutboundExternalInfoRequest) (*OutboundExternalInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LookupOutboundExternalInfo not implemented")
 }
 
 func (UnimplementedStartedServiceServer) SelectOutbound(context.Context, *SelectOutboundRequest) (*emptypb.Empty, error) {
@@ -657,6 +674,24 @@ func _StartedService_URLTest_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _StartedService_LookupOutboundExternalInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OutboundExternalInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StartedServiceServer).LookupOutboundExternalInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StartedService_LookupOutboundExternalInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StartedServiceServer).LookupOutboundExternalInfo(ctx, req.(*OutboundExternalInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _StartedService_SelectOutbound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SelectOutboundRequest)
 	if err := dec(in); err != nil {
@@ -846,6 +881,10 @@ var StartedService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "URLTest",
 			Handler:    _StartedService_URLTest_Handler,
+		},
+		{
+			MethodName: "LookupOutboundExternalInfo",
+			Handler:    _StartedService_LookupOutboundExternalInfo_Handler,
 		},
 		{
 			MethodName: "SelectOutbound",

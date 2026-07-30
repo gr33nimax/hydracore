@@ -63,8 +63,8 @@ func init() {
 	sharedFlags = append(sharedFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -s -w -buildid=  -checklinkname=0")
 	debugFlags = append(debugFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0")
 
-	sharedTags = append(sharedTags, "with_gvisor", "with_quic", "with_wireguard", "with_masque", "with_mtproxy", "with_trusttunnel", "with_openvpn", "with_sudoku", "with_snell", "with_utls", "with_naive_outbound", "with_clash_api", "badlinkname", "tfogo_checklinkname0")
-	darwinTags = append(darwinTags, "with_dhcp", "grpcnotrace")
+	sharedTags = append(sharedTags, "with_gvisor", "with_quic", "with_dhcp", "with_wireguard", "with_utls", "with_acme", "with_clash_api", "with_masque", "with_mtproxy", "with_ccm", "with_ocm", "with_openvpn", "with_trusttunnel", "with_sudoku", "with_snell", "with_naive_outbound", "badlinkname", "tfogo_checklinkname0")
+	darwinTags = append(darwinTags, "grpcnotrace")
 	// memcTags = append(memcTags, "with_tailscale")
 	sharedTags = append(sharedTags, "with_tailscale", "ts_omit_logtail", "ts_omit_ssh", "ts_omit_drive", "ts_omit_taildrop", "ts_omit_webclient", "ts_omit_doctor", "ts_omit_capture", "ts_omit_kube", "ts_omit_aws", "ts_omit_synology", "ts_omit_bird")
 	notMemcTags = append(notMemcTags, "with_low_memory")

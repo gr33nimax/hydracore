@@ -1,19 +1,19 @@
 # Etonify core
 
-This branch keeps Etonify-specific Android integration on top of a known
-`sing-box` stable revision. Upstream changes and Etonify changes must remain in
-separate commits so the fork can be rebased and audited without copying the
+This branch keeps Etonify-specific Android integration on top of a pinned
+`sing-box-extended` revision. The extended base and Etonify changes remain
+separate commits so the fork can be audited and updated without copying the
 legacy core wholesale.
 
 ## Stable baseline
 
 | Input | Pinned value |
 | --- | --- |
-| Upstream repository | `https://github.com/SagerNet/sing-box.git` |
-| Upstream branch | `stable` |
-| Upstream commit | `7067276170f03034017eb1887f671b7c9f11a5fd` |
-| Nearest release tag | `v1.13.14` |
-| Go toolchain used by upstream Android CI | `1.25.10` |
+| Upstream repository | `https://github.com/shtorm-7/sing-box-extended.git` |
+| Upstream branch | `extended` |
+| Upstream commit | `c243a5b6e5364e4447b706ffcc84b2b68b7655a7` |
+| Nearest release tag | `v1.13.14-extended-2.5.3` |
+| Go toolchain | `1.26.4` |
 | gomobile / gobind | `v0.1.12` |
 | Android NDK | `r28` |
 | OpenJDK | `17` |
@@ -22,6 +22,25 @@ legacy core wholesale.
 The Etonify Android app currently has `minSdk 26`. Keeping the library's
 minimum API at 23 does not re-enable older Android versions in the app; it only
 keeps the upstream libbox build compatible with the app's higher minimum API.
+
+## Extended protocol and service coverage
+
+The Android libbox build enables the complete runnable extended surface:
+gVisor/TUN, QUIC (Hysteria, TUIC, Hysteria 2 and HTTP/3 DNS), DHCP DNS,
+WireGuard and Tailscale endpoints, MASQUE, MTProto proxy, TrustTunnel,
+OpenVPN, Sudoku, Snell, Naive, ACME, CCM, OCM, Manager/Admin Panel,
+Profiler, V2Ray API, uTLS, and Clash API. Protocols without build gates remain
+registered through the normal inbound, outbound, endpoint, DNS, transport, and
+service registries.
+
+Two protocol families intentionally remain stubs in the extended upstream:
+ShadowsocksR inbound/outbound has been removed and the legacy WireGuard
+outbound has been replaced by the WireGuard endpoint. They are not runnable
+protocols omitted by the Android build. The pinned WireGuard dependency also
+removed the legacy three-byte
+`reserved` bind override; Etonify treats `[0, 0, 0]` as absent and rejects
+non-zero legacy values instead of silently changing peer semantics. Cloudflare
+WARP uses the dedicated `warp` endpoint.
 
 ## Baseline verification
 
@@ -82,12 +101,10 @@ known healthy member without waiting for the periodic group check.
 
 ## Mobile XHTTP client profile
 
-The mobile core accepts `xhttp` and the legacy `splithttp` alias for outbound
-V2Ray transports. The implementation is deliberately client-only and supports
-`packet-up`, `stream-up`, and `stream-one`; it does not add an inbound XHTTP
-server or HTTP/3 transport to the Android library. In `auto` mode Reality uses
-`stream-one`, regular TLS/H2 uses `stream-up`, and cleartext HTTP uses
-`packet-up`.
+The mobile core accepts `xhttp` and the legacy `splithttp` alias and preserves
+the extended inbound/server as well as the outbound/client. It supports
+`packet-up`, `stream-up`, and `stream-one`, including HTTP/3 when the QUIC tag
+is enabled.
 
 Mobile resource limits are part of the capability contract:
 
@@ -124,9 +141,10 @@ the hardened mobile outbound/client. The client supports:
 - `native`, `xorpub`, and `random` wire modes;
 - X25519 and ML-KEM-768 relay public keys;
 - AES-GCM on supported hardware and ChaCha20-Poly1305 elsewhere;
-- TCP, UDP, XUDP, Vision, and the configured V2Ray client transport. Vision is
-  intentionally given the original TLS/Reality connection while VLESS uses the
-  encrypted record stream.
+- TCP, UDP, XUDP, Vision, and the configured V2Ray client transport. With
+  post-quantum encryption enabled, Vision inspects the authenticated encryption
+  layer whose upstream preserves the original TLS/Reality/V2Ray transport;
+  splicing cannot bypass that record layer.
 
 Resource and failure bounds are part of the contract: at most eight relay
 keys, a 16 KiB configuration string, 16 padding segments, five seconds per

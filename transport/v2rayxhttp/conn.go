@@ -21,8 +21,8 @@ type splitConn struct {
 	localAddr  net.Addr
 	onClose    func()
 
-	closeOnce  sync.Once
-	closeErr   error
+	closeOnce       sync.Once
+	closeErr        error
 	writerCloseOnce sync.Once
 	readerCloseOnce sync.Once
 	writerCloseErr  error
@@ -177,12 +177,20 @@ func (c *splitConn) stopDeadlineTimers() {
 }
 
 func (c *splitConn) closeWriter() error {
-	c.writerCloseOnce.Do(func() { c.writerCloseErr = c.writer.Close() })
+	c.writerCloseOnce.Do(func() {
+		if c.writer != nil {
+			c.writerCloseErr = c.writer.Close()
+		}
+	})
 	return c.writerCloseErr
 }
 
 func (c *splitConn) closeReader() error {
-	c.readerCloseOnce.Do(func() { c.readerCloseErr = c.reader.Close() })
+	c.readerCloseOnce.Do(func() {
+		if c.reader != nil {
+			c.readerCloseErr = c.reader.Close()
+		}
+	})
 	return c.readerCloseErr
 }
 

@@ -11,18 +11,13 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
-
-	"github.com/gofrs/uuid/v5"
 )
 
 // protocolClient keeps the upstream sing-vmess implementation as the default
 // path and only inserts the optional record layer when encryption is present.
-// In particular, Vision still receives the original TLS/Reality connection.
+// Vision receives that authenticated record layer when encryption is enabled.
 type protocolClient struct {
 	base       *vlessProtocol.Client
-	key        [16]byte
-	flow       string
-	logger     logger.Logger
 	encryption *encryption.Client
 }
 
@@ -31,15 +26,8 @@ func newProtocolClient(ctx context.Context, userID, flow, encryptionConfig strin
 	if err != nil {
 		return nil, err
 	}
-	user, err := uuid.FromString(userID)
-	if err != nil {
-		user = uuid.NewV5(uuid.Nil, userID)
-	}
 	client := &protocolClient{
-		base:   base,
-		key:    user,
-		flow:   flow,
-		logger: logger,
+		base: base,
 	}
 	switch encryptionConfig {
 	case "", "none":
@@ -66,29 +54,20 @@ func (c *protocolClient) encrypt(ctx context.Context, conn net.Conn) (net.Conn, 
 	return encryptedConn, nil
 }
 
-func (c *protocolClient) prepareVision(conn, tlsConn net.Conn) (net.Conn, error) {
-	if c.flow != vlessProtocol.FlowVision {
-		return conn, nil
-	}
-	visionConn, err := vlessProtocol.NewVisionConn(conn, tlsConn, c.key, c.logger)
-	if err != nil {
-		common.Close(tlsConn)
-		return nil, E.Cause(err, "initialize vision")
-	}
-	return visionConn, nil
-}
-
 func (c *protocolClient) DialEarlyConn(ctx context.Context, conn net.Conn, destination M.Socksaddr) (net.Conn, error) {
 	if c.encryption == nil {
 		return c.base.DialEarlyConn(conn, destination)
 	}
-	tlsConn := conn
 	encryptedConn, err := c.encrypt(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
-	remoteConn := vlessProtocol.NewConn(encryptedConn, c.key, vmess.CommandTCP, destination, c.flow)
-	return c.prepareVision(remoteConn, tlsConn)
+	// Vision must inspect the authenticated encryption layer here. Its
+	// Upstream still preserves the original TLS/Reality/V2Ray transport, while
+	// using the pre-encryption connection as the Vision base fails for raw TCP
+	// and opaque transports such as XHTTP, WebSocket and gRPC. Splicing remains
+	// disabled because the authenticated record layer may not be bypassed.
+	return c.base.DialEarlyConnWithOptions(encryptedConn, encryptedConn, destination, false)
 }
 
 func (c *protocolClient) DialEarlyPacketConn(ctx context.Context, conn net.Conn, destination M.Socksaddr) (*vlessProtocol.PacketConn, error) {
@@ -111,20 +90,9 @@ func (c *protocolClient) DialEarlyXUDPPacketConn(ctx context.Context, conn net.C
 	if c.encryption == nil {
 		return c.base.DialEarlyXUDPPacketConn(conn, destination)
 	}
-	tlsConn := conn
 	encryptedConn, err := c.encrypt(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
-	remoteConn := vlessProtocol.NewConn(encryptedConn, c.key, vmess.CommandMux, destination, c.flow)
-	protocolConn, err := c.prepareVision(remoteConn, tlsConn)
-	if err != nil {
-		return nil, err
-	}
-	packetConn := vmess.NewXUDPConn(protocolConn, destination)
-	if err := common.Error(remoteConn.Write(nil)); err != nil {
-		common.Close(tlsConn)
-		return nil, err
-	}
-	return packetConn, nil
+	return c.base.DialEarlyXUDPPacketConn(encryptedConn, destination)
 }

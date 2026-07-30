@@ -22,6 +22,8 @@ CLAUDE.md
 AGENTS.md
 /.claude/
 dist
+!/service/admin_panel/dist/
+!/service/admin_panel/dist/**
 logs
 /*.so
 /*.log
@@ -32,3 +34,4 @@ logs
 /wget-log
 /.codebase-memory/
 /graphify-out/
+/.tools/

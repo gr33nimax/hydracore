@@ -1,6 +1,6 @@
 //go:build !linux
 
-package v2rayxhttp
+package xhttp
 
 import "testing"
 

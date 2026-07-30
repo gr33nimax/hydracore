@@ -29,7 +29,6 @@ type Instance struct {
 	pauseManager          pause.Manager
 	urlTestHistoryStorage *urltest.HistoryStorage
 	externalInfoResolver  *outboundExternalInfoResolver
-	externalInfoResolver  *outboundExternalInfoResolver
 }
 
 func (s *StartedService) CheckConfig(configContent string) error {

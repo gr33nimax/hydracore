@@ -179,11 +179,14 @@ func (h *Inbound) UpdateUsers(users []option.VLESSUser) {
 }
 
 func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
-	canSplice := h.transport == nil
-	if canSplice && h.decryption != nil && h.decryption.IsFullRandomXorMode() {
-		canSplice = false
-	}
-	h.newConnectionExInternal(ctx, conn, metadata, onClose, canSplice)
+	h.newConnectionExInternal(ctx, conn, metadata, onClose, h.visionCanSplice())
+}
+
+func (h *Inbound) visionCanSplice() bool {
+	// Vision's direct mode switches to the upstream connection. Any V2Ray
+	// transport or authenticated encryption layer must therefore remain in the
+	// data path for the lifetime of the connection.
+	return h.transport == nil && h.decryption == nil
 }
 
 func (h *Inbound) newConnectionExInternal(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc, canSplice bool) {

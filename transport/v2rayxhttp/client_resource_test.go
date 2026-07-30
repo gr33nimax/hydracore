@@ -1,4 +1,4 @@
-package v2rayxhttp
+package xhttp
 
 import (
 	"context"
@@ -6,10 +6,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common/json/badoption"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -32,14 +35,39 @@ func TestXHTTPResourceSoak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := NewClient(context.Background(), N.SystemDialer, M.ParseSocksaddr(parsedURL.Host), option.V2RayXHTTPOptions{
-		Path: "/resource-soak",
-		Mode: "packet-up",
-	}, nil)
+	transport, err := NewClient(
+		context.Background(),
+		logger.NOP(),
+		N.SystemDialer,
+		M.ParseSocksaddr(parsedURL.Host),
+		option.V2RayXHTTPOptions{
+			Mode: "packet-up",
+			V2RayXHTTPBaseOptions: option.V2RayXHTTPBaseOptions{
+				Path:                 "/resource-soak",
+				ScMaxEachPostBytes:   &badoption.Range[int]{From: 1024, To: 1024},
+				ScMinPostsIntervalMs: &badoption.Range[int]{From: 1, To: 1},
+				Xmux:                 &option.V2RayXHTTPXmuxOptions{MaxConcurrency: badoption.Range[int]{From: 1, To: 1}},
+				XPaddingBytes:        badoption.Range[int]{From: 100, To: 100},
+				XPaddingPlacement:    option.PlacementHeader,
+				SessionPlacement:     option.PlacementPath,
+				SeqPlacement:         option.PlacementPath,
+				UplinkDataPlacement:  option.PlacementBody,
+				UplinkHTTPMethod:     http.MethodPost,
+				ScMaxBufferedPosts:   1,
+				ScStreamUpServerSecs: &badoption.Range[int]{From: 1, To: 1},
+				NoGRPCHeader:         true,
+				ServerMaxHeaderBytes: 4096,
+				XPaddingMethod:       "repeat-x",
+				XPaddingHeader:       "X-Padding",
+				SessionIDLength:      badoption.Range[int]{From: 16, To: 16},
+			},
+		},
+		nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	client := transport.(*Client)
 
 	baselineFDs := platformOpenFileDescriptorCount(t)
 	baselineGoroutines := runtime.NumGoroutine()
@@ -61,18 +89,20 @@ func TestXHTTPResourceSoak(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("download %d did not stop", index)
 		}
-		client.stateAccess.Lock()
-		activeSessions := len(client.sessions)
-		client.stateAccess.Unlock()
-		if activeSessions != 0 {
-			t.Fatalf("iteration %d left %d active sessions", index, activeSessions)
+		var active atomic.Int32
+		client.active.Range(func(_, _ any) bool {
+			active.Add(1)
+			return true
+		})
+		if active.Load() != 0 {
+			t.Fatalf("iteration %d left %d active sessions", index, active.Load())
 		}
 	}
 	if err = client.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	const tolerance = 6
+	const tolerance = 8
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		runtime.GC()

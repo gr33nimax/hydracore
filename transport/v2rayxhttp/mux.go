@@ -12,6 +12,8 @@ import (
 	"github.com/sagernet/sing-box/option"
 )
 
+const hardXmuxPoolLimit = 16
+
 type XmuxConn interface {
 	Close()
 	IsClosed() bool
@@ -37,6 +39,13 @@ func (c *XmuxClient) Close() {
 	}
 }
 
+func (c *XmuxClient) ForceClose() {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	c.closed = true
+	c.XmuxConn.Close()
+}
+
 func (c *XmuxClient) AddOpenUsage(delta int) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
@@ -58,14 +67,19 @@ type XmuxManager struct {
 	connections int
 	newConnFunc func() XmuxConn
 	xmuxClients []*XmuxClient
+	closed      bool
 	mtx         sync.Mutex
 }
 
 func NewXmuxManager(options option.V2RayXHTTPXmuxOptions, newConnFunc func() XmuxConn) *XmuxManager {
+	connections := options.GetNormalizedMaxConnections().Rand()
+	if connections > hardXmuxPoolLimit {
+		connections = hardXmuxPoolLimit
+	}
 	return &XmuxManager{
 		options:     options,
 		concurrency: options.GetNormalizedMaxConcurrency().Rand(),
-		connections: options.GetNormalizedMaxConnections().Rand(),
+		connections: connections,
 		newConnFunc: newConnFunc,
 		xmuxClients: make([]*XmuxClient, 0),
 	}
@@ -74,8 +88,12 @@ func NewXmuxManager(options option.V2RayXHTTPXmuxOptions, newConnFunc func() Xmu
 func (m *XmuxManager) Close() {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
+	if m.closed {
+		return
+	}
+	m.closed = true
 	for _, xmuxClient := range m.xmuxClients {
-		xmuxClient.Close()
+		xmuxClient.ForceClose()
 	}
 	m.xmuxClients = m.xmuxClients[:0]
 }
@@ -102,6 +120,9 @@ func (m *XmuxManager) newXmuxClient() *XmuxClient {
 func (m *XmuxManager) GetXmuxClient(ctx context.Context) *XmuxClient {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
+	if m.closed {
+		return nil
+	}
 	var evicted []*XmuxClient
 	for i := 0; i < len(m.xmuxClients); {
 		xmuxClient := m.xmuxClients[i]
@@ -135,7 +156,20 @@ func (m *XmuxManager) GetXmuxClient(ctx context.Context) *XmuxClient {
 		xmuxClients = m.xmuxClients
 	}
 	if len(xmuxClients) == 0 {
-		return m.newXmuxClient()
+		if len(m.xmuxClients) < hardXmuxPoolLimit &&
+			(m.connections <= 0 || len(m.xmuxClients) < m.connections) {
+			return m.newXmuxClient()
+		}
+		// The extended API is synchronous and cannot wait for capacity. Once
+		// the hard pool limit is reached, reuse the least-loaded client
+		// instead of creating an unbounded number of physical transports.
+		xmuxClient := m.xmuxClients[0]
+		for _, candidate := range m.xmuxClients[1:] {
+			if candidate.GetOpenUsage() < xmuxClient.GetOpenUsage() {
+				xmuxClient = candidate
+			}
+		}
+		return xmuxClient
 	}
 	i, _ := rand.Int(rand.Reader, big.NewInt(int64(len(xmuxClients))))
 	xmuxClient := xmuxClients[i.Int64()]

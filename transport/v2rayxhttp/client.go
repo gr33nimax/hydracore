@@ -4,6 +4,7 @@ import (
 	"context"
 	gotls "crypto/tls"
 	"io"
+	stdnet "net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -45,7 +46,16 @@ type Client struct {
 	getHTTPClient2  func() (DialerClient, *XmuxClient)
 	xmuxManager     *XmuxManager
 	xmuxManager2    *XmuxManager
+	active          sync.Map
+	closed          atomic.Bool
 }
+
+const (
+	maxPacketUploadBytes = 256 * 1024
+	defaultH2ReadIdle    = 30 * time.Second
+	minimumH2ReadIdle    = 5 * time.Second
+	maximumH2ReadIdle    = 5 * time.Minute
+)
 
 func NewClient(ctx context.Context, logger log.ContextLogger, dialer N.Dialer, serverAddr M.Socksaddr, options option.V2RayXHTTPOptions, tlsConfig tls.Config) (adapter.V2RayClientTransport, error) {
 	if tlsConfig != nil && len(tlsConfig.NextProtos()) == 0 {
@@ -73,6 +83,9 @@ func NewClient(ctx context.Context, logger log.ContextLogger, dialer N.Dialer, s
 	})
 	getHTTPClient := func() (DialerClient, *XmuxClient) {
 		xmuxClient := xmuxManager.GetXmuxClient(ctx)
+		if xmuxClient == nil {
+			return nil, nil
+		}
 		return xmuxClient.XmuxConn.(DialerClient), xmuxClient
 	}
 	baseRequestURL2 := baseRequestURL
@@ -112,6 +125,9 @@ func NewClient(ctx context.Context, logger log.ContextLogger, dialer N.Dialer, s
 		})
 		getHTTPClient2 = func() (DialerClient, *XmuxClient) {
 			xmuxClient2 := xmuxManager2.GetXmuxClient(ctx)
+			if xmuxClient2 == nil {
+				return nil, nil
+			}
 			return xmuxClient2.XmuxConn.(DialerClient), xmuxClient2
 		}
 	}
@@ -128,6 +144,9 @@ func NewClient(ctx context.Context, logger log.ContextLogger, dialer N.Dialer, s
 }
 
 func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
+	if c.closed.Load() {
+		return nil, stdnet.ErrClosed
+	}
 	options := c.options
 	mode := c.options.Mode
 	sessionId := ""
@@ -138,6 +157,9 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 	requestURL2 := c.baseRequestURL2
 	httpClient, xmuxClient := c.getHTTPClient()
 	httpClient2, xmuxClient2 := c.getHTTPClient2()
+	if httpClient == nil || httpClient2 == nil {
+		return nil, stdnet.ErrClosed
+	}
 	if xmuxClient != nil {
 		xmuxClient.AddOpenUsage(1)
 	}
@@ -146,7 +168,8 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 	}
 	var closed atomic.Int32
 	reader, writer := io.Pipe()
-	conn := splitConn{
+	var conn *splitConn
+	conn = &splitConn{
 		writer: writer,
 		onClose: func() {
 			if closed.Add(1) > 1 {
@@ -158,6 +181,7 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 			if xmuxClient2 != nil && xmuxClient2 != xmuxClient {
 				xmuxClient2.AddOpenUsage(-1)
 			}
+			c.active.Delete(conn)
 		},
 	}
 	var err error
@@ -168,15 +192,21 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 		}
 		conn.reader, conn.remoteAddr, conn.localAddr, err = httpClient.OpenStream(ctx, requestURL.String(), sessionId, reader, false)
 		if err != nil { // browser dialer only
+			_ = conn.Close()
 			return nil, err
 		}
-		return &conn, nil
+		if !c.trackConnection(conn) {
+			_ = conn.Close()
+			return nil, stdnet.ErrClosed
+		}
+		return conn, nil
 	} else { // stream-down
 		if xmuxClient2 != nil {
 			xmuxClient2.LeftRequests.Add(-1)
 		}
 		conn.reader, conn.remoteAddr, conn.localAddr, err = httpClient2.OpenStream(ctx, requestURL2.String(), sessionId, nil, false)
 		if err != nil { // browser dialer only
+			_ = conn.Close()
 			return nil, err
 		}
 	}
@@ -186,13 +216,18 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 		}
 		_, _, _, err = httpClient.OpenStream(ctx, requestURL.String(), sessionId, reader, true)
 		if err != nil { // browser dialer only
+			_ = conn.Close()
 			return nil, err
 		}
-		return &conn, nil
+		if !c.trackConnection(conn) {
+			_ = conn.Close()
+			return nil, stdnet.ErrClosed
+		}
+		return conn, nil
 	}
 	scMaxEachPostBytes := options.GetNormalizedScMaxEachPostBytes()
 	scMinPostsIntervalMs := options.GetNormalizedScMinPostsIntervalMs()
-	maxUploadSize := int32(scMaxEachPostBytes.Rand())
+	maxUploadSize := int32(min(scMaxEachPostBytes.Rand(), maxPacketUploadBytes))
 	// WithSizeLimit(0) will still allow single bytes to pass, and a lot of
 	// code relies on this behavior. Subtract 1 so that together with
 	// uploadWriter wrapper, exact size limits can be enforced
@@ -237,6 +272,12 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 				if dynamicXmuxClient != nil && (dynamicXmuxClient.LeftRequests.Add(-1) <= 0 ||
 					(dynamicXmuxClient.UnreusableAt != time.Time{} && lastWrite.After(dynamicXmuxClient.UnreusableAt))) {
 					dynamicHTTPClient, dynamicXmuxClient = c.getHTTPClient()
+					if dynamicHTTPClient == nil {
+						buf.ReleaseMulti(chunk)
+						uploadPipeReader.Interrupt()
+						doSplit.Store(false)
+						break
+					}
 				}
 				go func(hClient DialerClient) {
 					err := hClient.PostPacket(
@@ -256,17 +297,45 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 					<-wroteRequest.Wait()
 				}
 			}
+			// SplitSize transfers ownership of each dispatched chunk to
+			// PostPacket. If a transport error or terminal manager state stops
+			// the loop early, the unsent tail still belongs to this goroutine.
+			buf.ReleaseMulti(remainder)
 		}
 	}()
-	return &conn, nil
+	if !c.trackConnection(conn) {
+		_ = conn.Close()
+		return nil, stdnet.ErrClosed
+	}
+	return conn, nil
 }
 
 func (c *Client) Close() error {
+	if c.closed.Swap(true) {
+		return nil
+	}
+	c.active.Range(func(key, _ any) bool {
+		_ = key.(*splitConn).Close()
+		return true
+	})
 	c.xmuxManager.Close()
 	if c.xmuxManager2 != nil {
 		c.xmuxManager2.Close()
 	}
 	return nil
+}
+
+func (c *Client) trackConnection(conn *splitConn) bool {
+	if c.closed.Load() {
+		_ = conn.Close()
+		return false
+	}
+	c.active.Store(conn, struct{}{})
+	if c.closed.Load() {
+		_ = conn.Close()
+		return false
+	}
+	return true
 }
 
 func decideHTTPVersion(tlsConfig tls.Config) string {
@@ -358,12 +427,12 @@ func createHTTPClient(ctx context.Context, dest M.Socksaddr, dialer N.Dialer, op
 			},
 		}
 	case "2":
-		if keepAlivePeriod == 0 {
-			keepAlivePeriod = net.ChromeH2KeepAlivePeriod
-		}
-		if keepAlivePeriod < 0 {
-			keepAlivePeriod = 0
-		}
+		keepAlivePeriod = normalizedH2ReadIdle(func() int64 {
+			if options.Xmux == nil {
+				return 0
+			}
+			return options.Xmux.HKeepAlivePeriod
+		}())
 		transport = &http2.Transport{
 			DialTLSContext: func(ctxInner context.Context, network string, addr string, cfg *gotls.Config) (net.Conn, error) {
 				return dialContext(ctxInner)
@@ -388,10 +457,31 @@ func createHTTPClient(ctx context.Context, dest M.Socksaddr, dialer N.Dialer, op
 		options: options,
 		client: &http.Client{
 			Transport: transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 		httpVersion:    httpVersion,
 		uploadRawPool:  &sync.Pool{},
 		dialUploadConn: dialContext,
 	}
 	return client
+}
+
+func normalizedH2ReadIdle(configuredSeconds int64) time.Duration {
+	if configuredSeconds < 0 {
+		return 0
+	}
+	if configuredSeconds == 0 {
+		return defaultH2ReadIdle
+	}
+	minimumSeconds := int64(minimumH2ReadIdle / time.Second)
+	maximumSeconds := int64(maximumH2ReadIdle / time.Second)
+	if configuredSeconds <= minimumSeconds {
+		return minimumH2ReadIdle
+	}
+	if configuredSeconds >= maximumSeconds {
+		return maximumH2ReadIdle
+	}
+	return time.Duration(configuredSeconds) * time.Second
 }

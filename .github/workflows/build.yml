@@ -1,4 +1,4 @@
-name: Etonify Core · Cross-platform build
+name: HydraCore · Cross-platform build
 
 on:
   workflow_dispatch:

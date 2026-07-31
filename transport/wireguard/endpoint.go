@@ -43,6 +43,19 @@ type Endpoint struct {
 	pauseCallback  *list.Element[pause.Callback]
 }
 
+type ipcSetter interface {
+	IpcSet(string) error
+}
+
+func configureWireGuardDevice(device ipcSetter, config string) error {
+	if err := device.IpcSet(config); err != nil {
+		// The UAPI document contains private and pre-shared keys. Never attach
+		// it to an error that can reach application or CI logs.
+		return E.Cause(err, "setup wireguard")
+	}
+	return nil
+}
+
 func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 	if options.PrivateKey == "" {
 		return nil, E.New("missing private key")
@@ -251,10 +264,10 @@ func (e *Endpoint) Start(resolve bool) error {
 	for _, peer := range e.peers {
 		ipcConf.WriteString(peer.GenerateIpcLines())
 	}
-	err = wgDevice.IpcSet(ipcConf.String())
+	err = configureWireGuardDevice(wgDevice, ipcConf.String())
 	if err != nil {
 		wgDevice.Close()
-		return E.Cause(err, "setup wireguard: \n", ipcConf.String())
+		return err
 	}
 	e.device = wgDevice
 	e.pause = service.FromContext[pause.Manager](e.options.Context)

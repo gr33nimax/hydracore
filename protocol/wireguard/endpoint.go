@@ -30,6 +30,14 @@ var (
 	_ dialer.PacketDialerWithDestination  = (*Endpoint)(nil)
 )
 
+const (
+	maxWireGuardWorkers          = 64
+	maxWireGuardBuffersPerPool   = 4096
+	maxAmneziaJunkPacketCount    = 128
+	maxAmneziaPacketPaddingBytes = 65_535
+	maxAmneziaHandshakeJunkBytes = 4 * 1024 * 1024
+)
+
 func RegisterEndpoint(registry *endpoint.Registry) {
 	endpoint.Register[option.WireGuardEndpointOptions](registry, C.TypeWireGuard, NewEndpoint)
 }
@@ -46,6 +54,9 @@ type Endpoint struct {
 }
 
 func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.WireGuardEndpointOptions) (adapter.Endpoint, error) {
+	if err := validateEndpointResourceLimits(options); err != nil {
+		return nil, err
+	}
 	ep := &Endpoint{
 		Adapter:        endpoint.NewAdapterWithDialerOptions(C.TypeWireGuard, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.DialerOptions),
 		ctx:            ctx,
@@ -143,6 +154,53 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 	}
 	ep.endpoint = wgEndpoint
 	return ep, nil
+}
+
+// validateEndpointResourceLimits runs during endpoint construction, so both
+// libbox CheckConfig and the real runtime reject dangerous values before the
+// WireGuard device starts. The pinned userspace implementation otherwise feeds
+// workers directly to sync.WaitGroup.Add and allocates Amnezia junk/padding
+// buffers from these publisher-controlled integers.
+func validateEndpointResourceLimits(options option.WireGuardEndpointOptions) error {
+	if options.Workers < 0 || options.Workers > maxWireGuardWorkers {
+		return E.New("wireguard workers must be between 0 and ", maxWireGuardWorkers)
+	}
+	if options.PreallocatedBuffersPerPool > maxWireGuardBuffersPerPool {
+		return E.New("wireguard preallocated_buffers_per_pool must be between 0 and ", maxWireGuardBuffersPerPool)
+	}
+	amnezia := options.Amnezia
+	if amnezia == nil {
+		return nil
+	}
+	if amnezia.JC < 0 || amnezia.JC > maxAmneziaJunkPacketCount {
+		return E.New("wireguard amnezia jc must be between 0 and ", maxAmneziaJunkPacketCount)
+	}
+	if amnezia.JMin < 0 || amnezia.JMin > maxAmneziaPacketPaddingBytes {
+		return E.New("wireguard amnezia jmin must be between 0 and ", maxAmneziaPacketPaddingBytes)
+	}
+	if amnezia.JMax < 0 || amnezia.JMax > maxAmneziaPacketPaddingBytes {
+		return E.New("wireguard amnezia jmax must be between 0 and ", maxAmneziaPacketPaddingBytes)
+	}
+	if amnezia.JMin > amnezia.JMax {
+		return E.New("wireguard amnezia jmin must not exceed jmax")
+	}
+	if int64(amnezia.JC)*int64(amnezia.JMax) > maxAmneziaHandshakeJunkBytes {
+		return E.New("wireguard amnezia junk burst exceeds ", maxAmneziaHandshakeJunkBytes, " bytes")
+	}
+	for _, padding := range []struct {
+		name  string
+		value int
+	}{
+		{"s1", amnezia.S1},
+		{"s2", amnezia.S2},
+		{"s3", amnezia.S3},
+		{"s4", amnezia.S4},
+	} {
+		if padding.value < 0 || padding.value > maxAmneziaPacketPaddingBytes {
+			return E.New("wireguard amnezia ", padding.name, " must be between 0 and ", maxAmneziaPacketPaddingBytes)
+		}
+	}
+	return nil
 }
 
 func (w *Endpoint) Start(stage adapter.StartStage) error {

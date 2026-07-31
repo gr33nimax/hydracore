@@ -8,14 +8,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEtonifyCapabilities(t *testing.T) {
+func TestHydraCoreCapabilities(t *testing.T) {
 	t.Parallel()
 
-	content := EtonifyCapabilities()
-	var capabilities etonifyCapabilitySet
+	content := HydraCoreCapabilities()
+	var capabilities hydraCoreCapabilitySet
 	require.NoError(t, json.Unmarshal([]byte(content), &capabilities))
-	require.Equal(t, etonifyAPIVersion, capabilities.APIVersion)
+	require.Equal(t, hydraCoreAPIVersion, capabilities.APIVersion)
+	require.Equal(t, "io.hydrabox.hydracore", capabilities.CoreID)
+	require.Equal(t, "HydraCore", capabilities.CoreName)
 	require.Equal(t, C.Version, capabilities.CoreVersion)
+	require.Equal(t, "etonify-core", capabilities.UpstreamProject)
 	require.True(t, capabilities.SupportsTargetedURLTest)
 	require.True(t, capabilities.SupportsGroupURLTestSessions)
 	require.True(t, capabilities.SupportsStructuredProbeErrors)
@@ -48,5 +51,27 @@ func TestEtonifyCapabilities(t *testing.T) {
 	require.Equal(t, 8, capabilities.VLESSEncryptionMaxRelays)
 	require.Equal(t, 12_000, capabilities.VLESSEncryptionHandshakeTimeoutMS)
 	require.Equal(t, []string{"system", "gvisor", "mixed"}, capabilities.TUNStacks)
+	require.Equal(t, 1, capabilities.RemotePolicyVersion)
+	require.Equal(t, []string{"$schema", "outbounds", "endpoints"}, capabilities.RemoteSafeTopLevelFields)
+	require.Equal(t, []string{
+		"socks", "http", "vmess", "trojan", "naive", "shadowtls", "vless", "mieru",
+		"anytls", "trusttunnel", "hysteria", "hysteria2", "tuic", "sudoku", "snell",
+	}, capabilities.RemoteSafeOutboundTypes)
+	require.Equal(t, []string{"wireguard"}, capabilities.RemoteSafeEndpointTypes)
+	require.Empty(t, capabilities.RemoteSafeDNSServerTypes)
+	require.Empty(t, capabilities.RemoteSafeProviderTypes)
+
+	for _, unsafeTopLevelField := range []string{"log", "dns", "ntp", "route", "providers", "inbounds", "services", "experimental"} {
+		require.NotContains(t, capabilities.RemoteSafeTopLevelFields, unsafeTopLevelField)
+	}
+	for _, unsafeOutboundType := range []string{
+		"direct", "block", "selector", "urltest", "fallback", "shadowsocks", "ssh", "masque", "openvpn",
+		"tor", "parser", "bond", "failover", "bandwidth-limiter", "connection-limiter", "traffic-limiter", "rate-limiter",
+	} {
+		require.NotContains(t, capabilities.RemoteSafeOutboundTypes, unsafeOutboundType)
+	}
+	for _, unsafeEndpointType := range []string{"warp", "tailscale", "vpn-client", "vpn-server"} {
+		require.NotContains(t, capabilities.RemoteSafeEndpointTypes, unsafeEndpointType)
+	}
 	require.Equal(t, content, EtonifyCapabilities())
 }

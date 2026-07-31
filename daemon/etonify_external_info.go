@@ -218,7 +218,7 @@ func fetchOutboundExternalInfoSource(ctx context.Context, client *http.Client, s
 		return outboundExternalInfo{}, err
 	}
 	request.Header.Set("Accept", "text/plain")
-	request.Header.Set("User-Agent", "Etonify-Core")
+	request.Header.Set("User-Agent", "HydraCore (based on etonify-core)")
 	response, err := client.Do(request)
 	if err != nil {
 		return outboundExternalInfo{}, err

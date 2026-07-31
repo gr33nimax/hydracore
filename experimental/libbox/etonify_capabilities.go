@@ -6,11 +6,17 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 )
 
-const etonifyAPIVersion = 1
+const hydraCoreAPIVersion = 1
 
-type etonifyCapabilitySet struct {
+// Kept for source-compatible in-package tests and downstream patches.
+const etonifyAPIVersion = hydraCoreAPIVersion
+
+type hydraCoreCapabilitySet struct {
 	APIVersion                              int      `json:"api_version"`
+	CoreID                                  string   `json:"core_id"`
+	CoreName                                string   `json:"core_name"`
 	CoreVersion                             string   `json:"core_version"`
+	UpstreamProject                         string   `json:"upstream_project"`
 	SupportsTargetedURLTest                 bool     `json:"supports_targeted_url_test"`
 	SupportsGroupURLTestSessions            bool     `json:"supports_group_url_test_sessions"`
 	SupportsStructuredProbeErrors           bool     `json:"supports_structured_probe_errors"`
@@ -43,17 +49,29 @@ type etonifyCapabilitySet struct {
 	VLESSEncryptionMaxRelays                int      `json:"vless_encryption_max_relays"`
 	VLESSEncryptionHandshakeTimeoutMS       int      `json:"vless_encryption_handshake_timeout_ms"`
 	TUNStacks                               []string `json:"tun_stacks"`
+	RemotePolicyVersion                     int      `json:"remote_policy_version"`
+	RemoteSafeTopLevelFields                []string `json:"remote_safe_top_level_fields"`
+	RemoteSafeOutboundTypes                 []string `json:"remote_safe_outbound_types"`
+	RemoteSafeEndpointTypes                 []string `json:"remote_safe_endpoint_types"`
+	RemoteSafeDNSServerTypes                []string `json:"remote_safe_dns_server_types"`
+	RemoteSafeProviderTypes                 []string `json:"remote_safe_provider_types"`
 }
 
-// EtonifyCapabilities returns the versioned mobile integration contract.
+// Retain the old internal name for source compatibility with downstream tests.
+type etonifyCapabilitySet = hydraCoreCapabilitySet
+
+// HydraCoreCapabilities returns the versioned mobile integration contract.
 //
 // The JSON representation allows newer cores to add optional capabilities
 // without forcing older clients to bind newly introduced Go types. A client
 // must treat a missing or malformed response as the legacy capability set.
-func EtonifyCapabilities() string {
-	capabilities := etonifyCapabilitySet{
-		APIVersion:                           etonifyAPIVersion,
+func HydraCoreCapabilities() string {
+	capabilities := hydraCoreCapabilitySet{
+		APIVersion:                           hydraCoreAPIVersion,
+		CoreID:                               "io.hydrabox.hydracore",
+		CoreName:                             "HydraCore",
 		CoreVersion:                          C.Version,
+		UpstreamProject:                      "etonify-core",
 		SupportsTargetedURLTest:              true,
 		SupportsGroupURLTestSessions:         true,
 		SupportsStructuredProbeErrors:        true,
@@ -82,10 +100,27 @@ func EtonifyCapabilities() string {
 		VLESSEncryptionMaxRelays:             8,
 		VLESSEncryptionHandshakeTimeoutMS:    12_000,
 		TUNStacks:                            []string{"system", "gvisor", "mixed"},
+		// Remote policy v1 advertises only executable leaf types. A type that
+		// embeds another typed outbound/endpoint, fetches executable provider
+		// content, or opens a reverse/local service is deliberately omitted
+		// until HydraCore enforces the same policy recursively at creation time.
+		RemotePolicyVersion:      1,
+		RemoteSafeTopLevelFields: []string{"$schema", "outbounds", "endpoints"},
+		RemoteSafeOutboundTypes:  []string{"socks", "http", "vmess", "trojan", "naive", "shadowtls", "vless", "mieru", "anytls", "trusttunnel", "hysteria", "hysteria2", "tuic", "sudoku", "snell"},
+		RemoteSafeEndpointTypes:  []string{"wireguard"},
+		RemoteSafeDNSServerTypes: []string{},
+		RemoteSafeProviderTypes:  []string{},
 	}
 	content, err := json.Marshal(capabilities)
 	if err != nil {
 		return ""
 	}
 	return string(content)
+}
+
+// EtonifyCapabilities is the deprecated compatibility entry point used by
+// already-generated Etonify libbox bindings. New HydraBox bindings should call
+// HydraCoreCapabilities. Both return the exact same attributed contract.
+func EtonifyCapabilities() string {
+	return HydraCoreCapabilities()
 }

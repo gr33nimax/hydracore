@@ -1,4 +1,4 @@
-name: Etonify Core · Static checks
+name: HydraCore · Static checks
 
 on:
   push:

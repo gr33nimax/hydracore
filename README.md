@@ -1,4 +1,21 @@
-# sing-box-extended
+# HydraCore
+
+HydraCore is the independent core distribution and mobile-integration layer
+used by HydraBox. It is derived from **Etonify's `etonify-core`**, which is
+maintained on top of `sing-box-extended` and ultimately `sing-box`. HydraCore is
+not an official Etonify, MeowTeam, sing-box-extended, or SagerNet release and
+does not claim their authorship, affiliation, endorsement, or trademarks.
+
+The complete source history, existing copyright notices, and license files are
+retained. See [HYDRACORE.md](HYDRACORE.md) for the distribution and compatibility
+contract, [ETONIFY_CORE.md](ETONIFY_CORE.md) for the pinned Etonify integration
+provenance, and [LICENSE](LICENSE) for the GNU GPL terms.
+
+## Preserved upstream sing-box-extended overview
+
+The following project description, community links, and support links are kept
+to credit the extended upstream baseline. They belong to that upstream project
+and are not HydraCore support or evidence of affiliation.
 
 [![license](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)

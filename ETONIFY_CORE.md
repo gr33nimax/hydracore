@@ -1,5 +1,10 @@
 # Etonify core
 
+> This file preserves the Etonify/etonify-core integration history and pinned
+> build provenance. The derivative distribution identity used by HydraBox is
+> documented in [HYDRACORE.md](HYDRACORE.md); this historical name is retained
+> for attribution and compatibility.
+
 This branch keeps Etonify-specific Android integration on top of a pinned
 `sing-box-extended` revision. The extended base and Etonify changes remain
 separate commits so the fork can be audited and updated without copying the

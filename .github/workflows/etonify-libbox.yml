@@ -119,6 +119,8 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
       - name: Prepare provenance
         shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
           source release/ETONIFY_BASELINE
@@ -134,6 +136,13 @@ jobs:
           version="$(git describe --tags --always --dirty)"
           go_actual="$(go version)"
           java_actual="$(java --version 2>&1 | head -n 1)"
+          ndk_revision="$(
+            awk -F= '$1 ~ /^Pkg\.Revision[[:space:]]*$/ {
+              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
+              print $2
+            }' "$ANDROID_NDK_HOME/source.properties"
+          )"
+          test -n "$ndk_revision"
           cat > dist/provenance.json <<EOF
           {
             "artifact": "libbox.aar",
@@ -149,7 +158,8 @@ jobs:
             "go": "${go_actual}",
             "gomobile": "${GOMOBILE_VERSION}",
             "java": "${java_actual}",
-            "android_ndk": "${ANDROID_NDK_VERSION}",
+            "android_ndk": "${ndk_revision}",
+            "android_ndk_requested": "${ANDROID_NDK_VERSION}",
             "android_api": ${LIBBOX_ANDROID_API},
             "build_tags": "${LIBBOX_BUILD_TAGS}"
           }
@@ -187,13 +197,16 @@ jobs:
           (cd dist && sha256sum --check libbox.aar.sha256)
           hydracore_version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           etonify_version="$(tr -d '\r\n' < release/ETONIFY_VERSION)"
+          source release/ETONIFY_BASELINE
           jq --exit-status \
             --arg commit "$GITHUB_SHA" \
             --arg hydracore_version "$hydracore_version" \
             --arg etonify_version "$etonify_version" \
+            --arg android_ndk_requested "$ANDROID_NDK_VERSION" \
             '.source_commit == $commit and
              .hydracore_version == $hydracore_version and
-             .etonify_version == $etonify_version' \
+             .etonify_version == $etonify_version and
+             .android_ndk_requested == $android_ndk_requested' \
             dist/provenance.json >/dev/null
       - name: Create or update draft release
         shell: bash

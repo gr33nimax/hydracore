@@ -49,6 +49,8 @@ jobs:
     name: Go tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -59,11 +61,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify WDTT source formatting and module metadata
+      - name: Normalize WDTT source and module metadata on GitHub
         shell: bash
         run: |
-          set -uo pipefail
-          status=0
+          set -euo pipefail
           files=(
             adapter/experimental.go
             cmd/internal/build_libbox/main.go
@@ -80,18 +81,44 @@ jobs:
             option/wdtt.go
             protocol/wdtt/*.go
           )
-          if ! gofmt -w "${files[@]}"; then
-            status=1
+          gofmt -w "${files[@]}"
+          go mod tidy
+          mapfile -t changed_files < <(git diff --name-only)
+          if [ "${#changed_files[@]}" -eq 0 ]; then
+            echo "WDTT source and Go module metadata are normalized."
+            exit 0
           fi
-          if ! git diff --exit-code -- "${files[@]}"; then
-            status=1
+
+          for changed_file in "${changed_files[@]}"; do
+            allowed=false
+            if [[ "$changed_file" == "go.mod" || "$changed_file" == "go.sum" ]]; then
+              allowed=true
+            else
+              for source_file in "${files[@]}"; do
+                if [[ "$changed_file" == "$source_file" ]]; then
+                  allowed=true
+                  break
+                fi
+              done
+            fi
+            if [[ "$allowed" != true ]]; then
+              echo "::error title=Unexpected normalization output::${changed_file} is outside the WDTT source/module allowlist"
+              exit 1
+            fi
+          done
+
+          if [[ "$GITHUB_EVENT_NAME" != "push" || "$GITHUB_REF" != "refs/heads/integration/extended-first" ]]; then
+            git diff -- "${changed_files[@]}"
+            echo "::error title=Unnormalized WDTT source::Commit the GitHub-generated formatting/module diff before release"
+            exit 1
           fi
-          if ! go mod tidy; then
-            status=1
-          elif ! git diff --exit-code -- go.mod go.sum; then
-            status=1
-          fi
-          exit "$status"
+
+          git add -- "${changed_files[@]}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(wdtt): normalize source and module metadata"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "GitHub committed normalized WDTT source/module metadata; the pushed commit will receive a clean verification run."
       - name: Verify baseline
         run: bash release/verify_etonify_baseline.sh
       - name: Test

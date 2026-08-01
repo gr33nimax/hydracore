@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/gr33nimax/hydracore/security/advisories/new
+    about: Report vulnerabilities privately. Do not publish secrets or exploits.
+  - name: HydraBox client issues
+    url: https://github.com/gr33nimax/hydrabox/issues
+    about: Use the client repository for UI, import, subscription, and Android app issues.

@@ -1,10 +1,10 @@
-site_name: sing-box
-site_url: https://sing-box.sagernet.org/
-site_author: nekohasekai
-repo_url: https://github.com/SagerNet/sing-box
-repo_name: SagerNet/sing-box
-copyright: Copyright &copy; 2022 nekohasekai
-site_description: The universal proxy platform.
+site_name: HydraCore
+site_url: https://gr33nimax.github.io/hydracore/
+site_author: HydraCore contributors
+repo_url: https://github.com/gr33nimax/hydracore
+repo_name: gr33nimax/hydracore
+copyright: HydraCore distribution; upstream notices are retained in the source tree
+site_description: Maintained networking runtime for the Hydra self-hosted VPN stack.
 remote_branch: docs
 edit_uri: ""
 theme:
@@ -218,7 +218,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/SagerNet/sing-box
+      link: https://github.com/gr33nimax/hydracore
   generator: false
 plugins:
   - search

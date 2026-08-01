@@ -49,7 +49,7 @@ WARP uses the dedicated `warp` endpoint.
 
 ## Baseline verification
 
-Run the Go checks before adding Etonify functionality:
+Run the Go checks before adding HydraCore functionality:
 
 ```sh
 go test ./...
@@ -72,7 +72,7 @@ It also emits matching generated Java source JARs. Etonify consumes only
 `libbox.aar` and `libbox-sources.jar`; the legacy artifacts are retained at this
 stage only because the unmodified upstream build command produces them.
 
-The `Etonify libbox` workflow runs the complete Go package suite on Linux,
+The `HydraCore · Android libbox` workflow runs the complete Go package suite on Linux,
 builds with pinned tools, and uploads the main AAR together with its source JAR,
 SHA-256, source archive, and build provenance. A workflow artifact is not a
 release: it must still pass the client migration and device test matrix before

@@ -1,5 +1,5 @@
 version: 2
-project_name: sing-box
+project_name: hydracore
 builds:
   - &template
     id: main
@@ -545,8 +545,8 @@ signs:
   - artifacts: checksum
 release:
   github:
-    owner: shtorm-7
-    name: sing-box-extended
+    owner: gr33nimax
+    name: hydracore
   draft: true
   prerelease: auto
   mode: replace

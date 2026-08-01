@@ -1,133 +1,92 @@
 # HydraCore
 
-HydraCore is the independent core distribution and mobile-integration layer
-used by HydraBox. It is derived from **Etonify's `etonify-core`**, which is
-maintained on top of `sing-box-extended` and ultimately `sing-box`. HydraCore is
-not an official Etonify, MeowTeam, sing-box-extended, or SagerNet release and
-does not claim their authorship, affiliation, endorsement, or trademarks.
+[![Android libbox](https://github.com/gr33nimax/hydracore/actions/workflows/etonify-libbox.yml/badge.svg?branch=extended-integration)](https://github.com/gr33nimax/hydracore/actions/workflows/etonify-libbox.yml)
+[![Static checks](https://github.com/gr33nimax/hydracore/actions/workflows/lint.yml/badge.svg?branch=extended-integration)](https://github.com/gr33nimax/hydracore/actions/workflows/lint.yml)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-The complete source history, existing copyright notices, and license files are
-retained. See [HYDRACORE.md](HYDRACORE.md) for the distribution and compatibility
-contract, [ETONIFY_CORE.md](ETONIFY_CORE.md) for the pinned Etonify integration
-provenance, and [LICENSE](LICENSE) for the GNU GPL terms.
+**Maintained networking runtime for the Hydra self-hosted VPN stack.**
 
-## Preserved upstream sing-box-extended overview
+HydraCore is the core distribution used by
+[HydraBox](https://github.com/gr33nimax/hydrabox). It produces a verified
+Android `libbox.aar`, publishes a versioned mobile capability contract, and
+keeps the native sing-box configuration as the protocol-schema authority.
 
-The following project description, community links, and support links are kept
-to credit the extended upstream baseline. They belong to that upstream project
-and are not HydraCore support or evidence of affiliation.
+HydraCore is not a VPN service and does not manage customers or subscriptions.
+In the complete stack, [HYDRA Ultimate](https://github.com/gr33nimax/HYDRA-ULTIMATE)
+owns the self-hosted server and subscription layer, HydraBox owns the client
+experience, and HydraCore executes the accepted native configuration.
 
-[![license](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
-[![go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
-[![codeberg](https://img.shields.io/badge/mirror-codeberg-2185D0.svg)](https://codeberg.org/shtorm-7/sing-box-extended)
-[![telegram](https://img.shields.io/badge/telegram-chat-26A5E4.svg?logo=telegram)](https://t.me/sing_box_extended)
-
-Sing-box with extended features.
-
-## 🔥 Features
-
-### Protocols
-- **WARP** — Cloudflare WARP integration through WireGuard
-- **MASQUE** — Cloudflare MASQUE proxy over QUIC / HTTP-2
-- **MTProxy** — Telegram MTProxy server with FakeTLS and domain fronting
-- **Mieru** — Secure, hard to classify, hard to probe network protocol
-- **OpenVPN** — OpenVPN client with tls-auth, tls-crypt and tls-crypt-v2 support
-- **TrustTunnel** — AdGuard's obfuscated VPN protocol, indistinguishable from HTTPS traffic
-- **Sudoku** — Traffic obfuscation protocol based on 4×4 Sudoku puzzles with low-entropy fingerprints
-- **Snell** — Lightweight encrypted proxy (v1–v5) with TLS / HTTP obfuscation
-- **SSH** — SSH client and server with certificate authentication and upstream fallback
-- **VPN** — Routed tunnel over any TCP sing-box protocol
-- **Bond** — Link aggregation for increasing throughput
-- **Fallback** — Outbound group with priority-based switching
-- **Failover** — Automatic outbound switching with session recovery for high availability
-
-### DNS
-- **SDNS (DNSCrypt)** — Encrypted DNS queries for enhanced privacy
-- **DNS Fallback** — Sequential / parallel queries across upstream resolvers
-
-### Limiters
-- **Bandwidth Limiter** — Upload / download / bidirectional rate limiting
-- **Connection Limiter** — Concurrent connection control
-- **Traffic Limiter** — Per-user traffic quotas
-- **Rate Limiter** — Request rate limiting
-
-### Encryption & Obfuscation
-- **Amnezia 2.0** — WireGuard traffic obfuscation
-- **VLESS encryption** — XRAY encryption for VLESS protocol
-
-### Transports
-- **mKCP** — Reliable UDP-based transport
-- **XHTTP** — Modern XRAY transport
-
-### Services
-- **Admin Panel** — Web-based management interface
-- **Manager** — Management service for configuring users, nodes, limiters
-- **Manager API (HTTP/gRPC)** — HTTP and gRPC API for the Manager
-- **Node Manager API** — Service for connecting nodes to remote manager
-
-### Miscellaneous
-- **Providers** — Outbound subscriptions from local files, inline lists, or remote URLs (sing-box JSON, Clash YAML, SIP008, share links)
-- **Link Parser** — Outbound configured from a share link (VLESS, VMess, Shadowsocks, Trojan, Hysteria, Hysteria2, TUIC)
-- **Extended WireGuard options** — Advanced configuration capabilities
-- **Unified Delay** — Unified latency measurement
-
-## 📚 Examples
-
-Configuration examples are available here:
-
-https://github.com/shtorm-7/sing-box-extended/tree/extended/examples
-
-## Support the Project
-
-If you want to support the project, you can donate to the following addresses.
-
-#### Tribute
-
-**[RUB Donate](https://web.tribute.tg/d/JxY)**
-
-**[EUR Donate](https://web.tribute.tg/d/JxZ)**
-
-**[USD Donate](https://web.tribute.tg/d/Jy1)**
-
-#### TRX (Tron)
-```
-TSWU6VUZ4FcUghYDmbbhK15gRVvhvBgW3F
-```
-#### TON
-```
-UQAyD2UuT5kCP6lZQlhFL0hyNibDXNE4nIo_RSLVSYAtD7N1
-```
-#### Solana
-```
-CJu8ickwRCwNE71uVFjYf1UveyCkRp9Xo44rhPcQpeFL
-```
-#### Bitcoin
-```
-bc1qqx97p8k4dchqkyd47s4vf74hrqdfnmhqvcja7x
-```
-#### Ethereum
-```
-0xAcc5919C22F2B3fAa0ec7E8BaD142da5B375FBF6
+```text
+HYDRA Ultimate  ->  encrypted subscription  ->  HydraBox  ->  HydraCore
+server/control                                  client        runtime
 ```
 
-## License
+## Supported distribution
 
-```
-Copyright (C) 2022 by nekohasekai <contact-sagernet@sekai.icu>
+- Android-first `libbox.aar` and generated Java bindings.
+- Reproducible source archive, checksums, and machine-readable provenance for
+  every HydraCore prerelease.
+- Versioned `HydraCoreCapabilities()` identity and remote-safety manifest for
+  HydraBox Subscription v1.
+- Extended sing-box client surface, including WireGuard/AmneziaWG, VLESS,
+  VMess, Trojan, Hysteria 2, TUIC, AnyTLS, ShadowTLS, XHTTP, OpenVPN,
+  TrustTunnel, MASQUE, MTProxy, Snell, Naive, and the inherited routing/DNS
+  stack when their documented build tags are enabled.
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+The Android AAR is the supported HydraCore deliverable today. Other inherited
+sing-box build and packaging targets remain in the source tree, but are not a
+Hydra release promise unless they appear in a HydraCore release.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+## Releases
 
-You should have received a copy of the GNU General Public License
-along with this program. If not, see <http://www.gnu.org/licenses/>.
+Use assets from [HydraCore Releases](https://github.com/gr33nimax/hydracore/releases),
+not an arbitrary branch build. A release contains:
 
-In addition, no derivative work may use the name or imply association
-with this application without prior consent.
-```
+- `libbox.aar` and generated sources;
+- SHA-256 checksums;
+- an attributed source archive;
+- `provenance.json` with the source commit and pinned toolchain.
+
+The current compatibility line is recorded in
+[`release/HYDRACORE_VERSION`](release/HYDRACORE_VERSION) and the exact upstream
+baseline in [`release/ETONIFY_BASELINE`](release/ETONIFY_BASELINE).
+
+## Compatibility policy
+
+The public distribution identity is `io.hydrabox.hydracore`.
+`HydraCoreCapabilities()` is the preferred binding. The inherited
+`EtonifyCapabilities()` entry point, Go module path, native package names, and
+`libbox.aar` filename intentionally remain compatible so existing bindings and
+clients are not broken by the public rename.
+
+Remote subscriptions are fail-closed: HydraBox activates a native document only
+when the runtime exposes an exact supported capability and remote-safety
+contract. See [HYDRACORE.md](HYDRACORE.md) for the contract and
+[ROADMAP.md](ROADMAP.md) for planned work.
+
+## Development
+
+The authoritative gates run in GitHub Actions:
+
+- complete Go test suite on Linux;
+- targeted race and resource gates;
+- WireGuard/libbox configuration checks;
+- Android AAR build with pinned Go, gomobile, JDK, NDK, and build tags;
+- artifact checksum and provenance verification.
+
+Contributions should target `extended-integration`. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and use
+[SECURITY.md](SECURITY.md) for vulnerability reports.
+
+## Lineage and license
+
+HydraCore is an independent derivative of
+[Etonify's `etonify-core`](https://github.com/yamixdev/etonify-core/tree/etonify-dev),
+which is maintained on top of
+[`sing-box-extended`](https://github.com/shtorm-7/sing-box-extended) and
+ultimately [`sing-box`](https://github.com/SagerNet/sing-box). HydraCore is not
+affiliated with or endorsed by those projects.
+
+The source history and existing notices are retained. See
+[ETONIFY_CORE.md](ETONIFY_CORE.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+and [LICENSE](LICENSE).

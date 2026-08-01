@@ -1,0 +1,31 @@
+name: HydraCore proposal
+description: Propose a runtime or capability improvement.
+title: "[Proposal]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What concrete self-hosted Hydra use case is blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed contract
+      description: Describe runtime behavior, compatibility, and required capability changes.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Remote-safety and resource limits
+      description: Explain trust boundaries, validation, and bounded resource behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives

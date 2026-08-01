@@ -23,14 +23,12 @@ var (
 	bucketExpand   = []byte("group_expand")
 	bucketMode     = []byte("clash_mode")
 	bucketRuleSet  = []byte("rule_set")
-	bucketWDTT     = []byte("wdtt")
 
 	bucketNameList = []string{
 		string(bucketSelected),
 		string(bucketExpand),
 		string(bucketMode),
 		string(bucketRuleSet),
-		string(bucketWDTT),
 		string(bucketRDRC),
 	}
 
@@ -38,7 +36,6 @@ var (
 )
 
 var _ adapter.CacheFile = (*CacheFile)(nil)
-var _ adapter.WDTTDeviceIDStore = (*CacheFile)(nil)
 
 type CacheFile struct {
 	ctx               context.Context
@@ -438,29 +435,6 @@ func (c *CacheFile) SaveMASQUEConfig(tag string, set *adapter.SavedBinary) error
 			return err
 		}
 		return bucket.Put([]byte(tag), configBinary)
-	})
-}
-
-func (c *CacheFile) LoadWDTTDeviceID() string {
-	var deviceID string
-	_ = c.view(func(t *bbolt.Tx) error {
-		bucket := c.bucket(t, bucketWDTT)
-		if bucket == nil {
-			return os.ErrNotExist
-		}
-		deviceID = string(bucket.Get([]byte("device_id")))
-		return nil
-	})
-	return deviceID
-}
-
-func (c *CacheFile) SaveWDTTDeviceID(deviceID string) error {
-	return c.batch(func(t *bbolt.Tx) error {
-		bucket, err := c.createBucket(t, bucketWDTT)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte("device_id"), []byte(deviceID))
 	})
 }
 

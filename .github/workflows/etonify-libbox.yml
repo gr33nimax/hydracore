@@ -4,12 +4,9 @@ on:
   push:
     branches:
       - extended-integration
-      - integration/extended-first
     paths:
       - '.github/workflows/etonify-libbox.yml'
       - 'HYDRACORE.md'
-      - 'ETONIFY_CORE.md'
-      - 'THIRD_PARTY_NOTICES.md'
       - '**/*.go'
       - 'adapter/**'
       - 'cmd/**'
@@ -49,8 +46,6 @@ jobs:
     name: Go tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    permissions:
-      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -61,72 +56,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Normalize WDTT source and module metadata on GitHub
-        shell: bash
-        run: |
-          set -euo pipefail
-          files=(
-            adapter/experimental.go
-            cmd/internal/build_libbox/main.go
-            constant/proxy.go
-            experimental/cachefile/cache.go
-            experimental/libbox/etonify_capabilities.go
-            experimental/libbox/etonify_capabilities_test.go
-            experimental/libbox/config_wdtt_test.go
-            experimental/libbox/etonify_capabilities_wdtt.go
-            experimental/libbox/etonify_capabilities_wdtt_stub.go
-            include/registry.go
-            include/wdtt.go
-            include/wdtt_stub.go
-            option/wdtt.go
-            protocol/wdtt/*.go
-          )
-          gofmt -w "${files[@]}"
-          go mod tidy
-          mapfile -t changed_files < <(git diff --name-only)
-          if [ "${#changed_files[@]}" -eq 0 ]; then
-            echo "WDTT source and Go module metadata are normalized."
-            exit 0
-          fi
-
-          for changed_file in "${changed_files[@]}"; do
-            allowed=false
-            if [[ "$changed_file" == "go.mod" || "$changed_file" == "go.sum" ]]; then
-              allowed=true
-            else
-              for source_file in "${files[@]}"; do
-                if [[ "$changed_file" == "$source_file" ]]; then
-                  allowed=true
-                  break
-                fi
-              done
-            fi
-            if [[ "$allowed" != true ]]; then
-              echo "::error title=Unexpected normalization output::${changed_file} is outside the WDTT source/module allowlist"
-              exit 1
-            fi
-          done
-
-          if [[ "$GITHUB_EVENT_NAME" != "push" || "$GITHUB_REF" != "refs/heads/integration/extended-first" ]]; then
-            git diff -- "${changed_files[@]}"
-            echo "::error title=Unnormalized WDTT source::Commit the GitHub-generated formatting/module diff before release"
-            exit 1
-          fi
-
-          git add -- "${changed_files[@]}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore(wdtt): normalize source and module metadata"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
-          echo "GitHub committed normalized WDTT source/module metadata; this run continues against the normalized worktree."
       - name: Verify baseline
         run: bash release/verify_etonify_baseline.sh
       - name: Test
         run: go test ./...
       - name: Test WireGuard libbox config gate
         run: go test -tags with_wireguard ./experimental/libbox
-      - name: Test WDTT endpoint and capability gate
-        run: go test -tags with_wireguard,with_wdtt ./protocol/wdtt ./experimental/libbox
       - name: Race test HydraCore inherited runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
       - name: Resource and performance gate
@@ -177,35 +112,9 @@ jobs:
       - name: Install pinned gomobile
         run: make lib_install
       - name: Build libbox
-        shell: bash
         run: |
-          set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-          build_log="$RUNNER_TEMP/hydracore-libbox-build.log"
-          if make lib_android 2>&1 | tee "$build_log"; then
-            exit 0
-          fi
-          python3 - "$build_log" <<'PY'
-          import sys
-          from pathlib import Path
-
-          lines = [
-              line.rstrip()
-              for line in Path(sys.argv[1]).read_text(
-                  encoding="utf-8",
-                  errors="replace",
-              ).splitlines()
-              if line.strip()
-          ]
-          summary = "\n".join(lines[-80:])[-8000:]
-          escaped = (
-              summary.replace("%", "%25")
-              .replace("\r", "%0D")
-              .replace("\n", "%0A")
-          )
-          print(f"::error title=HydraCore Android build failed::{escaped}")
-          PY
-          exit 1
+          make lib_android
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
       - name: Prepare provenance

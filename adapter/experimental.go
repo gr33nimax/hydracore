@@ -88,13 +88,6 @@ type CacheFile interface {
 	SaveSubscription(tag string, sub *SavedBinary) error
 }
 
-// WDTTDeviceIDStore is an optional cache extension. Keeping it separate from
-// CacheFile preserves compatibility with third-party cache implementations.
-type WDTTDeviceIDStore interface {
-	LoadWDTTDeviceID() string
-	SaveWDTTDeviceID(deviceID string) error
-}
-
 type SavedBinary struct {
 	Content     []byte
 	LastUpdated time.Time

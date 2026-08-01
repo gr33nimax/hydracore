@@ -32,7 +32,7 @@ keeps the upstream libbox build compatible with the app's higher minimum API.
 
 The Android libbox build enables the complete runnable extended surface:
 gVisor/TUN, QUIC (Hysteria, TUIC, Hysteria 2 and HTTP/3 DNS), DHCP DNS,
-WireGuard, WDTT, and Tailscale endpoints, MASQUE, MTProto proxy, TrustTunnel,
+WireGuard and Tailscale endpoints, MASQUE, MTProto proxy, TrustTunnel,
 OpenVPN, Sudoku, Snell, Naive, ACME, CCM, OCM, Manager/Admin Panel,
 Profiler, V2Ray API, uTLS, and Clash API. Protocols without build gates remain
 registered through the normal inbound, outbound, endpoint, DNS, transport, and
@@ -46,12 +46,6 @@ removed the legacy three-byte
 `reserved` bind override; Etonify treats `[0, 0, 0]` as absent and rejects
 non-zero legacy values instead of silently changing peer semantics. Cloudflare
 WARP uses the dedicated `warp` endpoint.
-
-The WDTT endpoint adapts the wire protocol and anonymous VK Calls TURN flow
-from `SpaceNeuroX/proxy-turn-vk-android` at the commit recorded in
-`THIRD_PARTY_NOTICES.md`. HydraCore owns its runtime device identity, TURN
-allocations, loopback bridge, and dynamic WireGuard endpoint. HydraBox exposes
-it only through authenticated HydraBox Subscription JWE.
 
 ## Baseline verification
 

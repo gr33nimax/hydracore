@@ -25,21 +25,13 @@ product branding.
 
 ## Remote subscription policy
 
-The capability document publishes remote policy v2 as an exact allowlist, not
+The capability document publishes remote policy v1 as an exact allowlist, not
 as a claim that every field of every HydraCore schema type is safe for an
-untrusted remote publisher. v2 permits only `$schema`, `outbounds`, and
+untrusted remote publisher. v1 permits only `$schema`, `outbounds`, and
 `endpoints`; its outbound list contains leaf client protocols and its endpoint
-list contains userspace WireGuard plus the subscription-only `wdtt` endpoint.
-Policy v2 inherits every v1 graph, authority, and resource restriction. WDTT
-additionally requires authenticated HydraBox JWE and a closed endpoint schema;
-the stable device identity, local bridge, TURN credentials, and dynamic
-WireGuard authority remain owned by HydraCore. Classic AmneziaWG parameters
-are covered. DNS servers, providers, rule sets, composite/reverse types, local
-paths and service-capable objects require a later policy and explicit recursive
+list contains userspace WireGuard after the client applies the v1 field policy.
+Classic AmneziaWG parameters are covered; qWDTT `i*`, `j*`, and `itime` fields
+are deliberately outside v1 and must be rejected before runtime creation. DNS
+servers, providers, rule sets, composite/reverse types, local paths and
+service-capable objects require a later policy and explicit recursive
 validation. Older AARs without this manifest must fail closed.
-
-The WDTT transport is built with `with_wdtt`, starts lazily on first endpoint
-use, and routes WDTT DNS, VK HTTPS, and TURN UDP through HydraCore's
-dialer/resolver/protect boundary. HydraBox rejects direct WDTT links and raw
-sing-box imports; the only supported product path is a profile in encrypted
-HydraBox Subscription v1 whose entrypoint names a policy-v2 WDTT endpoint.

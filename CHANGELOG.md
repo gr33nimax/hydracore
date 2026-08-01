@@ -11,6 +11,14 @@
 - Moved WDTT work out of the stable line and preserved it in the
   `wdtt-archive` branch for possible future research.
 
+## v1.13.14-extended-hydracore.4
+
+- Published the canonical HydraCore repository identity and project contract.
+- Removed the deferred WDTT experiment from the stable source and capability
+  line while preserving it in `wdtt-archive`.
+- Retained the `.2` runtime behavior and compatibility identity on the pinned
+  upstream baseline.
+
 ## v1.13.14-extended-hydracore.2
 
 - Published a provenance-bound Android `libbox.aar` from the pinned

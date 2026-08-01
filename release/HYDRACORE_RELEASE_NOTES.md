@@ -24,3 +24,11 @@ inherited integration.
 Protocol coverage and compatibility limitations are documented in
 `ETONIFY_CORE.md`; HydraCore does not relabel unsupported upstream stubs as
 runnable protocols.
+
+## HydraCore revision 4
+
+- Establishes `gr33nimax/hydracore` as the canonical public repository.
+- Keeps the stable runtime free of the deferred WDTT experiment; that history
+  remains available in `wdtt-archive`.
+- Adds a focused product, compatibility, roadmap, contribution, security, and
+  third-party documentation set for the Hydra self-hosted VPN stack.

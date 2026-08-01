@@ -45,16 +45,16 @@ func (*silentLoggerFactory) NewLogger(string) logging.LeveledLogger { return &si
 
 type silentLogger struct{}
 
-func (*silentLogger) Trace(string)                    {}
-func (*silentLogger) Tracef(string, ...interface{})   {}
-func (*silentLogger) Debug(string)                    {}
-func (*silentLogger) Debugf(string, ...interface{})   {}
-func (*silentLogger) Info(string)                     {}
-func (*silentLogger) Infof(string, ...interface{})    {}
-func (*silentLogger) Warn(string)                     {}
-func (*silentLogger) Warnf(string, ...interface{})    {}
-func (*silentLogger) Error(string)                    {}
-func (*silentLogger) Errorf(string, ...interface{})   {}
+func (*silentLogger) Trace(string)                  {}
+func (*silentLogger) Tracef(string, ...interface{}) {}
+func (*silentLogger) Debug(string)                  {}
+func (*silentLogger) Debugf(string, ...interface{}) {}
+func (*silentLogger) Info(string)                   {}
+func (*silentLogger) Infof(string, ...interface{})  {}
+func (*silentLogger) Warn(string)                   {}
+func (*silentLogger) Warnf(string, ...interface{})  {}
+func (*silentLogger) Error(string)                  {}
+func (*silentLogger) Errorf(string, ...interface{}) {}
 
 type connectedPacketConn struct{ net.Conn }
 

@@ -56,8 +56,8 @@ type Endpoint struct {
 	options   option.WDTTEndpointOptions
 	dialer    coreDialer
 
-	started   atomic.Bool
-	closed    atomic.Bool
+	started    atomic.Bool
+	closed     atomic.Bool
 	startOnce  sync.Once
 	finishOnce sync.Once
 	ready      chan struct{}

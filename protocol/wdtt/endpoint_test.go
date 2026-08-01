@@ -34,7 +34,9 @@ func TestNormalizeAndValidateOptionsRejectsPublisherControlledRuntimeState(t *te
 	}{
 		{"workers", func(options *option.WDTTEndpointOptions) { options.Workers = maximumWorkers + 1 }},
 		{"hash count", func(options *option.WDTTEndpointOptions) { options.VKHashes = []string{"a", "b", "c", "d", "e"} }},
-		{"hash URL", func(options *option.WDTTEndpointOptions) { options.VKHashes = []string{"https://vk.com/call/join/hash"} }},
+		{"hash URL", func(options *option.WDTTEndpointOptions) {
+			options.VKHashes = []string{"https://vk.com/call/join/hash"}
+		}},
 		{"password delimiter", func(options *option.WDTTEndpointOptions) { options.Password = "secret|injected" }},
 		{"auth mode", func(options *option.WDTTEndpointOptions) { options.VKAuth = "account" }},
 		{"anonymous path", func(options *option.WDTTEndpointOptions) { options.VKAnonPath = "legacy" }},

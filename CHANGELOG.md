@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Moved the stable product line to `main` and reduced the public branch surface.
+- Removed the inherited upstream documentation site and unsupported packaging
+  workflows from the HydraCore repository.
+- Consolidated lineage, license, and compatibility attribution in `CREDITS.md`
+  and `THIRD_PARTY_NOTICES.md`.
 - Established `hydracore` as the canonical repository and public distribution
   name while retaining upstream module, ABI, and capability aliases.
 - Reframed HydraCore as the maintained Android runtime for the Hydra
@@ -10,6 +15,13 @@
   documentation.
 - Moved WDTT work out of the stable line and preserved it in the
   `wdtt-archive` branch for possible future research.
+
+## v1.13.14-extended-hydracore.5
+
+- Published the standalone HydraCore repository structure on `main`.
+- Retained complete GPL/source lineage while removing inherited product-facing
+  Etonify and sing-box documentation surfaces.
+- Preserved the stable runtime behavior and deferred WDTT archive.
 
 ## v1.13.14-extended-hydracore.4
 

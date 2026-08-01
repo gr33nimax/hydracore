@@ -1,11 +1,11 @@
-name: HydraCore · Android libbox (based on etonify-core)
+name: HydraCore · Verified Android runtime
 
 on:
   push:
     branches:
-      - extended-integration
+      - main
     paths:
-      - '.github/workflows/etonify-libbox.yml'
+      - '.github/workflows/hydracore.yml'
       - 'HYDRACORE.md'
       - '**/*.go'
       - 'adapter/**'
@@ -31,7 +31,7 @@ on:
       - 'Makefile'
   pull_request:
     branches:
-      - extended-integration
+      - main
   workflow_dispatch:
 
 permissions:
@@ -176,7 +176,7 @@ jobs:
     name: Publish verified test prerelease
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/extended-integration'
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: android
@@ -216,7 +216,7 @@ jobs:
           set -euo pipefail
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           test -n "$version"
-          title="HydraCore ${version} — Android test build based on etonify-core"
+          title="HydraCore ${version} — verified Android runtime"
 
           if gh release view "$version" --json isDraft > release-state.json 2>/dev/null; then
             if [[ "$(jq -r '.isDraft' release-state.json)" != "true" ]]; then

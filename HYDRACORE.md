@@ -1,9 +1,8 @@
 # HydraCore distribution contract
 
-HydraCore is the maintained networking runtime used by HydraBox. It is an
-independent derivative of `etonify-core`, built from the pinned
-`sing-box-extended` baseline documented in [ETONIFY_CORE.md](ETONIFY_CORE.md).
-It does not claim upstream authorship, affiliation, or endorsement.
+HydraCore is the maintained networking runtime used by HydraBox. Its public
+contract is defined here; source lineage, licenses, and retained compatibility
+identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Public identity and compatibility
 

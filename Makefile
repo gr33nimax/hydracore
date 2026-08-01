@@ -300,16 +300,6 @@ lib_install:
 	go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.12
 	go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.12
 
-docs:
-	venv/bin/mkdocs serve
-
-publish_docs:
-	venv/bin/mkdocs gh-deploy -m "Update" --force --ignore-version --no-history
-
-docs_install:
-	python3 -m venv venv
-	source ./venv/bin/activate && pip install --force-reinstall mkdocs-material=="9.7.2" mkdocs-static-i18n=="1.2.*"
-
 clean:
 	rm -rf bin dist sing-box
 	rm -f $(shell go env GOPATH)/sing-box

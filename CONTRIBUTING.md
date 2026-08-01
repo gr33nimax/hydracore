@@ -5,7 +5,7 @@ HydraBox while preserving the pinned upstream lineage.
 
 ## Pull requests
 
-- Target the `extended-integration` branch.
+- Target the `main` branch.
 - Keep upstream syncs, mobile integration, and behavior changes in separate
   commits when practical.
 - Add regression coverage for runtime behavior and capability changes.
@@ -23,4 +23,4 @@ race/resource, baseline, and Android AAR jobs required for its scope pass.
 
 When a problem reproduces in an unmodified upstream project, link the upstream
 issue or fix and keep attribution intact. HydraCore-specific support requests
-belong in this repository rather than upstream Etonify or sing-box channels.
+belong in this repository rather than the support channels of upstream projects.

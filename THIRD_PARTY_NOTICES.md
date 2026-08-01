@@ -4,13 +4,12 @@ HydraCore is an independent derivative distribution. This file summarizes
 major lineage; dependency-specific licenses and copyright notices in the source
 tree remain authoritative.
 
-## Etonify / etonify-core
+## Mobile integration lineage
 
 HydraCore retains mobile integration derived from
-[`yamixdev/etonify-core`](https://github.com/yamixdev/etonify-core/tree/etonify-dev).
-Its historical integration and pinned revision are documented in
-[ETONIFY_CORE.md](ETONIFY_CORE.md). HydraCore is not an official Etonify or
-MeowTeam release.
+[`yamixdev/etonify-core`](https://github.com/yamixdev/etonify-core). The exact
+lineage and compatibility identifiers are documented in
+[CREDITS.md](CREDITS.md). HydraCore is not an official release of that project.
 
 ## sing-box-extended
 

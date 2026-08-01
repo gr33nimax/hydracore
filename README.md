@@ -1,92 +1,58 @@
 # HydraCore
 
-[![Android libbox](https://github.com/gr33nimax/hydracore/actions/workflows/etonify-libbox.yml/badge.svg?branch=extended-integration)](https://github.com/gr33nimax/hydracore/actions/workflows/etonify-libbox.yml)
-[![Static checks](https://github.com/gr33nimax/hydracore/actions/workflows/lint.yml/badge.svg?branch=extended-integration)](https://github.com/gr33nimax/hydracore/actions/workflows/lint.yml)
+[![HydraCore checks](https://github.com/gr33nimax/hydracore/actions/workflows/hydracore.yml/badge.svg?branch=main)](https://github.com/gr33nimax/hydracore/actions/workflows/hydracore.yml)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 
-**Maintained networking runtime for the Hydra self-hosted VPN stack.**
+**Maintained Android networking runtime for the Hydra self-hosted VPN stack.**
 
-HydraCore is the core distribution used by
-[HydraBox](https://github.com/gr33nimax/hydrabox). It produces a verified
-Android `libbox.aar`, publishes a versioned mobile capability contract, and
-keeps the native sing-box configuration as the protocol-schema authority.
-
-HydraCore is not a VPN service and does not manage customers or subscriptions.
-In the complete stack, [HYDRA Ultimate](https://github.com/gr33nimax/HYDRA-ULTIMATE)
-owns the self-hosted server and subscription layer, HydraBox owns the client
-experience, and HydraCore executes the accepted native configuration.
+HydraCore validates and executes native networking configurations accepted by
+[HydraBox](https://github.com/gr33nimax/hydrabox). The supported distribution
+is a versioned, provenance-bound Android `libbox.aar`; HydraCore is not a VPN
+service, subscription server, or control panel.
 
 ```text
 HYDRA Ultimate  ->  encrypted subscription  ->  HydraBox  ->  HydraCore
 server/control                                  client        runtime
 ```
 
-## Supported distribution
+## What HydraCore ships
 
-- Android-first `libbox.aar` and generated Java bindings.
-- Reproducible source archive, checksums, and machine-readable provenance for
-  every HydraCore prerelease.
-- Versioned `HydraCoreCapabilities()` identity and remote-safety manifest for
+- Android `libbox.aar` and generated Java bindings.
+- SHA-256 checksums, generated sources, attributed source archive, and
+  machine-readable build provenance for every release.
+- `HydraCoreCapabilities()` with an exact versioned remote-safety contract for
   HydraBox Subscription v1.
-- Extended sing-box client surface, including WireGuard/AmneziaWG, VLESS,
-  VMess, Trojan, Hysteria 2, TUIC, AnyTLS, ShadowTLS, XHTTP, OpenVPN,
-  TrustTunnel, MASQUE, MTProxy, Snell, Naive, and the inherited routing/DNS
-  stack when their documented build tags are enabled.
+- WireGuard/AmneziaWG, VLESS, VMess, Trojan, Hysteria 2, TUIC, AnyTLS,
+  ShadowTLS, XHTTP, OpenVPN, TrustTunnel, MASQUE, MTProxy, Snell, Naive, and
+  the inherited routing/DNS runtime enabled by the published build tags.
 
-The Android AAR is the supported HydraCore deliverable today. Other inherited
-sing-box build and packaging targets remain in the source tree, but are not a
-Hydra release promise unless they appear in a HydraCore release.
+Other build targets present in the source tree are not HydraCore release
+targets unless a HydraCore release explicitly includes them.
 
 ## Releases
 
-Use assets from [HydraCore Releases](https://github.com/gr33nimax/hydracore/releases),
-not an arbitrary branch build. A release contains:
+Install only artifacts from [HydraCore Releases](https://github.com/gr33nimax/hydracore/releases).
+HydraBox pins the release tag, source commit, download URL, and digest and
+rejects a mismatched runtime before build or activation.
 
-- `libbox.aar` and generated sources;
-- SHA-256 checksums;
-- an attributed source archive;
-- `provenance.json` with the source commit and pinned toolchain.
-
-The current compatibility line is recorded in
-[`release/HYDRACORE_VERSION`](release/HYDRACORE_VERSION) and the exact upstream
-baseline in [`release/ETONIFY_BASELINE`](release/ETONIFY_BASELINE).
-
-## Compatibility policy
-
-The public distribution identity is `io.hydrabox.hydracore`.
-`HydraCoreCapabilities()` is the preferred binding. The inherited
-`EtonifyCapabilities()` entry point, Go module path, native package names, and
-`libbox.aar` filename intentionally remain compatible so existing bindings and
-clients are not broken by the public rename.
-
-Remote subscriptions are fail-closed: HydraBox activates a native document only
-when the runtime exposes an exact supported capability and remote-safety
-contract. See [HYDRACORE.md](HYDRACORE.md) for the contract and
-[ROADMAP.md](ROADMAP.md) for planned work.
+The public distribution identity is `io.hydrabox.hydracore`. Compatibility
+identifiers required by existing native bindings remain stable; they are not
+public product names. The exact contract is documented in
+[HYDRACORE.md](HYDRACORE.md).
 
 ## Development
 
-The authoritative gates run in GitHub Actions:
+The authoritative checks run in GitHub Actions: the complete Go suite,
+race/resource gates, WireGuard configuration checks, pinned Android AAR build,
+and checksum/provenance validation.
 
-- complete Go test suite on Linux;
-- targeted race and resource gates;
-- WireGuard/libbox configuration checks;
-- Android AAR build with pinned Go, gomobile, JDK, NDK, and build tags;
-- artifact checksum and provenance verification.
+Contributions target `main`. Read [CONTRIBUTING.md](CONTRIBUTING.md) and report
+security issues according to [SECURITY.md](SECURITY.md).
 
-Contributions should target `extended-integration`. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and use
-[SECURITY.md](SECURITY.md) for vulnerability reports.
+## Credits and license
 
-## Lineage and license
-
-HydraCore is an independent derivative of
-[Etonify's `etonify-core`](https://github.com/yamixdev/etonify-core/tree/etonify-dev),
-which is maintained on top of
-[`sing-box-extended`](https://github.com/shtorm-7/sing-box-extended) and
-ultimately [`sing-box`](https://github.com/SagerNet/sing-box). HydraCore is not
-affiliated with or endorsed by those projects.
-
-The source history and existing notices are retained. See
-[ETONIFY_CORE.md](ETONIFY_CORE.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
-and [LICENSE](LICENSE).
+HydraCore preserves the complete source history, copyright notices, and
+corresponding source required by its GPL-3.0-or-later lineage. Project lineage,
+pinned baselines, retained compatibility identifiers, and non-affiliation
+notices are recorded in [CREDITS.md](CREDITS.md),
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and [LICENSE](LICENSE).

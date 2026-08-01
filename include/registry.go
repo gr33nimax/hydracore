@@ -148,6 +148,7 @@ func EndpointRegistry() *endpoint.Registry {
 	vpn.RegisterClientEndpoint(registry)
 
 	registerWireGuardEndpoint(registry)
+	registerWDTTEndpoint(registry)
 	registerTailscaleEndpoint(registry)
 
 	return registry

@@ -7,8 +7,11 @@ require (
 	github.com/Diniboy1123/connect-ip-go v0.0.0-20260409225322-8d7bb0a858a2
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/anytls/sing-anytls v0.0.13
+	github.com/bogdanfinn/fhttp v0.6.8
+	github.com/bogdanfinn/tls-client v1.14.0
 	github.com/caddyserver/certmagic v0.25.3-0.20260421143802-60d9d8b415d6
 	github.com/coder/websocket v1.8.14
+	github.com/cbeuw/connutil v1.0.1
 	github.com/cretz/bine v0.2.0
 	github.com/database64128/tfo-go/v2 v2.3.2
 	github.com/enfein/mieru/v3 v3.33.0
@@ -31,6 +34,10 @@ require (
 	github.com/mholt/acmez/v3 v3.1.6
 	github.com/miekg/dns v1.1.72
 	github.com/openai/openai-go/v3 v3.26.0
+	github.com/pion/dtls/v3 v3.1.2
+	github.com/pion/logging v0.2.4
+	github.com/pion/transport/v4 v4.0.1
+	github.com/pion/turn/v5 v5.0.2
 	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/rasky/go-lzo v0.0.0-20200203143853-96a758eda86e
 	github.com/sagernet/asc-go v0.0.0-20241217030726-d563060fe4e1

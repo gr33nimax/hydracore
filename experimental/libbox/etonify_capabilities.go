@@ -50,6 +50,11 @@ type hydraCoreCapabilitySet struct {
 	VLESSEncryptionMaxRelays                int      `json:"vless_encryption_max_relays"`
 	VLESSEncryptionHandshakeTimeoutMS       int      `json:"vless_encryption_handshake_timeout_ms"`
 	TUNStacks                               []string `json:"tun_stacks"`
+	SupportsWDTT                            bool     `json:"supports_wdtt"`
+	WDTTMaxWorkers                          int      `json:"wdtt_max_workers"`
+	WDTTMaxHashes                           int      `json:"wdtt_max_hashes"`
+	WDTTAuthModes                           []string `json:"wdtt_auth_modes"`
+	WDTTObfsModes                           []string `json:"wdtt_obfs_modes"`
 	RemotePolicyVersion                     int      `json:"remote_policy_version"`
 	RemoteSafeTopLevelFields                []string `json:"remote_safe_top_level_fields"`
 	RemoteSafeOutboundTypes                 []string `json:"remote_safe_outbound_types"`
@@ -102,14 +107,20 @@ func HydraCoreCapabilities() string {
 		VLESSEncryptionMaxRelays:             8,
 		VLESSEncryptionHandshakeTimeoutMS:    12_000,
 		TUNStacks:                            []string{"system", "gvisor", "mixed"},
-		// Remote policy v1 advertises only executable leaf types. A type that
+		SupportsWDTT:                         wdttIncluded,
+		WDTTMaxWorkers:                       36,
+		WDTTMaxHashes:                        4,
+		WDTTAuthModes:                        []string{"anonymous"},
+		WDTTObfsModes:                        []string{"audio", "video"},
+		// Remote policy v2 retains the v1 executable leaf set and adds only the
+		// bounded WDTT endpoint when this build includes it. A type that
 		// embeds another typed outbound/endpoint, fetches executable provider
 		// content, or opens a reverse/local service is deliberately omitted
 		// until HydraCore enforces the same policy recursively at creation time.
-		RemotePolicyVersion:      1,
+		RemotePolicyVersion:      2,
 		RemoteSafeTopLevelFields: []string{"$schema", "outbounds", "endpoints"},
 		RemoteSafeOutboundTypes:  []string{"socks", "http", "vmess", "trojan", "naive", "shadowtls", "vless", "mieru", "anytls", "trusttunnel", "hysteria", "hysteria2", "tuic", "sudoku", "snell"},
-		RemoteSafeEndpointTypes:  []string{"wireguard"},
+		RemoteSafeEndpointTypes:  remoteSafeEndpointTypes(),
 		RemoteSafeDNSServerTypes: []string{},
 		RemoteSafeProviderTypes:  []string{},
 	}
@@ -118,6 +129,14 @@ func HydraCoreCapabilities() string {
 		return ""
 	}
 	return string(content)
+}
+
+func remoteSafeEndpointTypes() []string {
+	types := []string{"wireguard"}
+	if wdttIncluded {
+		types = append(types, "wdtt")
+	}
+	return types
 }
 
 // EtonifyCapabilities is the deprecated compatibility entry point used by

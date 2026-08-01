@@ -7,6 +7,8 @@ on:
     paths:
       - '.github/workflows/hydracore.yml'
       - 'HYDRACORE.md'
+      - 'ETONIFY_CORE.md'
+      - 'THIRD_PARTY_NOTICES.md'
       - '**/*.go'
       - 'adapter/**'
       - 'cmd/**'
@@ -56,12 +58,47 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Verify WDTT source formatting and module metadata
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          files=(
+            adapter/experimental.go
+            cmd/internal/build_libbox/main.go
+            constant/proxy.go
+            experimental/cachefile/cache.go
+            experimental/libbox/etonify_capabilities.go
+            experimental/libbox/etonify_capabilities_test.go
+            experimental/libbox/config_wdtt_test.go
+            experimental/libbox/etonify_capabilities_wdtt.go
+            experimental/libbox/etonify_capabilities_wdtt_stub.go
+            include/registry.go
+            include/wdtt.go
+            include/wdtt_stub.go
+            option/wdtt.go
+            protocol/wdtt/*.go
+          )
+          if ! gofmt -w "${files[@]}"; then
+            status=1
+          fi
+          if ! git diff --exit-code -- "${files[@]}"; then
+            status=1
+          fi
+          if ! go mod tidy; then
+            status=1
+          elif ! git diff --exit-code -- go.mod go.sum; then
+            status=1
+          fi
+          exit "$status"
       - name: Verify baseline
         run: bash release/verify_etonify_baseline.sh
       - name: Test
         run: go test ./...
       - name: Test WireGuard libbox config gate
         run: go test -tags with_wireguard ./experimental/libbox
+      - name: Test WDTT endpoint and capability gate
+        run: go test -tags with_wireguard,with_wdtt ./protocol/wdtt ./experimental/libbox
       - name: Race test HydraCore inherited runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
       - name: Resource and performance gate

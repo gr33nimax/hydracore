@@ -17,6 +17,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -56,6 +57,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -116,6 +118,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -150,6 +153,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -184,6 +188,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -218,6 +223,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -252,6 +258,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -302,6 +309,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -360,6 +368,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api
@@ -431,6 +440,7 @@ builds:
       - with_quic
       - with_dhcp
       - with_wireguard
+      - with_wdtt
       - with_utls
       - with_acme
       - with_clash_api

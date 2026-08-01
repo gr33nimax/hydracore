@@ -173,7 +173,7 @@ jobs:
           retention-days: 14
 
   draft-release:
-    name: Prepare draft test release
+    name: Publish verified test prerelease
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/extended-integration'
@@ -208,7 +208,7 @@ jobs:
              .etonify_version == $etonify_version and
              .android_ndk_requested == $android_ndk_requested' \
             dist/provenance.json >/dev/null
-      - name: Create or update draft release
+      - name: Create, populate, and publish prerelease
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,3 +239,7 @@ jobs:
           fi
 
           gh release upload "$version" dist/* --clobber
+          gh release edit "$version" \
+            --draft=false \
+            --prerelease \
+            --latest=false

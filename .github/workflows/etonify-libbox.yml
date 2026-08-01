@@ -118,7 +118,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore(wdtt): normalize source and module metadata"
           git push origin "HEAD:${GITHUB_REF_NAME}"
-          echo "GitHub committed normalized WDTT source/module metadata; the pushed commit will receive a clean verification run."
+          echo "GitHub committed normalized WDTT source/module metadata; this run continues against the normalized worktree."
       - name: Verify baseline
         run: bash release/verify_etonify_baseline.sh
       - name: Test
@@ -177,9 +177,35 @@ jobs:
       - name: Install pinned gomobile
         run: make lib_install
       - name: Build libbox
+        shell: bash
         run: |
+          set -euo pipefail
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-          make lib_android
+          build_log="$RUNNER_TEMP/hydracore-libbox-build.log"
+          if make lib_android 2>&1 | tee "$build_log"; then
+            exit 0
+          fi
+          python3 - "$build_log" <<'PY'
+          import sys
+          from pathlib import Path
+
+          lines = [
+              line.rstrip()
+              for line in Path(sys.argv[1]).read_text(
+                  encoding="utf-8",
+                  errors="replace",
+              ).splitlines()
+              if line.strip()
+          ]
+          summary = "\n".join(lines[-80:])[-8000:]
+          escaped = (
+              summary.replace("%", "%25")
+              .replace("\r", "%0D")
+              .replace("\n", "%0A")
+          )
+          print(f"::error title=HydraCore Android build failed::{escaped}")
+          PY
+          exit 1
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
       - name: Prepare provenance

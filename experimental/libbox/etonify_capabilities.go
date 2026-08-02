@@ -2,7 +2,10 @@ package libbox
 
 import (
 	"encoding/json"
+	"time"
 
+	"github.com/gr33nimax/hydra-wdtt/pkg/access"
+	"github.com/gr33nimax/hydra-wdtt/pkg/workers"
 	C "github.com/sagernet/sing-box/constant"
 )
 
@@ -51,7 +54,13 @@ type hydraCoreCapabilitySet struct {
 	VLESSEncryptionHandshakeTimeoutMS       int      `json:"vless_encryption_handshake_timeout_ms"`
 	TUNStacks                               []string `json:"tun_stacks"`
 	SupportsWDTT                            bool     `json:"supports_wdtt"`
+	SupportsWDTTCredentialBridge            bool     `json:"supports_wdtt_credential_bridge"`
+	SupportsWDTTHotRotation                 bool     `json:"supports_wdtt_hot_rotation"`
+	WDTTMinWorkers                          int      `json:"wdtt_min_workers"`
+	WDTTRecommendedWorkers                  int      `json:"wdtt_recommended_workers"`
 	WDTTMaxWorkers                          int      `json:"wdtt_max_workers"`
+	WDTTLeaseTTLSeconds                     int      `json:"wdtt_lease_ttl_seconds"`
+	WDTTLeaseRefreshAfterSeconds            int      `json:"wdtt_lease_refresh_after_seconds"`
 	WDTTMaxHashes                           int      `json:"wdtt_max_hashes"`
 	WDTTAuthModes                           []string `json:"wdtt_auth_modes"`
 	WDTTObfsModes                           []string `json:"wdtt_obfs_modes"`
@@ -108,9 +117,15 @@ func HydraCoreCapabilities() string {
 		VLESSEncryptionHandshakeTimeoutMS:    12_000,
 		TUNStacks:                            []string{"system", "gvisor", "mixed"},
 		SupportsWDTT:                         wdttIncluded,
-		WDTTMaxWorkers:                       36,
+		SupportsWDTTCredentialBridge:         wdttIncluded,
+		SupportsWDTTHotRotation:              wdttIncluded,
+		WDTTMinWorkers:                       workers.Minimum,
+		WDTTRecommendedWorkers:               workers.Recommended,
+		WDTTMaxWorkers:                       workers.Maximum,
+		WDTTLeaseTTLSeconds:                  int(access.SessionTTL / time.Second),
+		WDTTLeaseRefreshAfterSeconds:         int(access.SessionRefreshAfter / time.Second),
 		WDTTMaxHashes:                        4,
-		WDTTAuthModes:                        []string{"anonymous"},
+		WDTTAuthModes:                        []string{"auto", "anonymous", "account"},
 		WDTTObfsModes:                        []string{"audio", "video"},
 		// Remote policy v2 retains the v1 executable leaf set and adds only the
 		// bounded WDTT endpoint when this build includes it. A type that

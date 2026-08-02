@@ -23,9 +23,15 @@ identity.
   `credential_ref`; direct links and raw sing-box imports are unsupported.
 - Uses persistent device grants for offline cold start and 15-minute leases
   refreshed after 10 minutes through the established VK-relayed transport.
+- Warms a parallel lease generation, waits for 9 server-acknowledged workers,
+  switches traffic atomically, and drains the previous generation without a
+  VPN restart.
+- Uses anonymous VK Calls authentication first and accepts process-local,
+  short-lived account TURN credentials only for the captcha fallback.
 - Requires at least 9 workers and recommends 18 workers per user.
-- Preserves stable runtime device binding in the HydraCore cache and starts no
-  TURN allocations until a WDTT profile is actually selected or used.
+- Receives the stable subscription device identity from HydraBox; legacy WDTT
+  password profiles retain the existing HydraCore cache behavior.
+- Starts no TURN allocations until a WDTT profile is actually selected or used.
 
 ## HydraCore revision 6
 

@@ -5,40 +5,29 @@ package wdtt
 import (
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 
+	hydrawrap "github.com/gr33nimax/hydra-wdtt/pkg/wrap"
 	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/crypto/hkdf"
 )
 
-const wrapKeyLength = 32
+const wrapKeyLength = hydrawrap.KeySize
 
 func deriveWrapKey(password string) ([]byte, error) {
-	key := make([]byte, wrapKeyLength)
-	reader := hkdf.New(
-		sha256.New,
-		[]byte(password),
-		[]byte("WDTT-WRAP-v1"),
-		[]byte("rtp-obfs/chacha20poly1305"),
-	)
-	if _, err := io.ReadFull(reader, key); err != nil {
-		return nil, fmt.Errorf("derive WDTT WRAP key: %w", err)
-	}
-	return key, nil
+	return hydrawrap.DeriveKey(password)
 }
 
 type obfsConfig struct {
 	ssrc        uint32
 	payloadType uint8
 	paddingMax  int
+	keyHint     *hydrawrap.KeyHint
 }
 
-func newObfsConfig(mode string) (*obfsConfig, error) {
+func newObfsConfig(mode string, hints ...hydrawrap.KeyHint) (*obfsConfig, error) {
 	var randomBytes [4]byte
 	if _, err := rand.Read(randomBytes[:]); err != nil {
 		return nil, fmt.Errorf("initialize WDTT obfuscation: %w", err)
@@ -51,6 +40,10 @@ func newObfsConfig(mode string) (*obfsConfig, error) {
 	if strings.EqualFold(mode, "video") {
 		config.payloadType = 96
 		config.paddingMax = 60
+	}
+	if len(hints) > 0 {
+		hint := hints[0]
+		config.keyHint = &hint
 	}
 	return config, nil
 }
@@ -103,6 +96,9 @@ func wrapPacket(aead cipher.AEAD, payload []byte, config *obfsConfig, state *obf
 		paddingRandom = int(randomByte[0]) % config.paddingMax
 	}
 	paddingLength := paddingRandom + 1
+	if config.keyHint != nil {
+		paddingLength += 10
+	}
 	output := make([]byte, 12+len(payload)+aead.Overhead()+paddingLength)
 	output[0] = 0x80 | 0x20
 	output[1] = config.payloadType & 0x7F
@@ -111,12 +107,9 @@ func wrapPacket(aead cipher.AEAD, payload []byte, config *obfsConfig, state *obf
 	binary.BigEndian.PutUint32(output[8:12], config.ssrc)
 	sealed := aead.Seal(output[12:12], buildNonce(config.ssrc, sequence, timestamp), payload, output[:12])
 	paddingStart := 12 + len(sealed)
-	if paddingRandom > 0 {
-		if _, err := rand.Read(output[paddingStart : paddingStart+paddingRandom]); err != nil {
-			return nil, fmt.Errorf("generate WDTT padding: %w", err)
-		}
+	if err := hydrawrap.FillRTPPadding(output[paddingStart:], config.keyHint); err != nil {
+		return nil, fmt.Errorf("generate WDTT padding: %w", err)
 	}
-	output[len(output)-1] = byte(paddingLength)
 	return output, nil
 }
 

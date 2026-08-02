@@ -10,10 +10,10 @@ import (
 
 func validEndpointOptions() option.WDTTEndpointOptions {
 	return option.WDTTEndpointOptions{
-		Server:     "203.0.113.10",
-		ServerPort: 56000,
-		Password:   "subscription-secret",
-		VKHashes:   []string{"8UkewARpV0aJoWheFZlR942el6unTZvhneulo-eU8gA"},
+		Server:        "203.0.113.10",
+		ServerPort:    56000,
+		CredentialRef: "wdtt:user-1:device-1",
+		VKHashes:      []string{"8UkewARpV0aJoWheFZlR942el6unTZvhneulo-eU8gA"},
 	}
 }
 
@@ -22,7 +22,7 @@ func TestNormalizeAndValidateOptionsDefaults(t *testing.T) {
 	if err := normalizeAndValidateOptions(&options); err != nil {
 		t.Fatal(err)
 	}
-	if options.Workers != defaultWorkers || options.Obfs != "audio" || options.VKAuth != "anonymous" || options.VKAnonPath != "vkcalls" {
+	if options.Workers != defaultWorkers || options.Obfs != "audio" || options.VKAuth != "auto" || options.VKAnonPath != "vkcalls" {
 		t.Fatalf("unexpected defaults: %+v", options)
 	}
 }
@@ -33,10 +33,12 @@ func TestNormalizeAndValidateOptionsRejectsPublisherControlledRuntimeState(t *te
 		mutate func(*option.WDTTEndpointOptions)
 	}{
 		{"workers", func(options *option.WDTTEndpointOptions) { options.Workers = maximumWorkers + 1 }},
+		{"workers below minimum", func(options *option.WDTTEndpointOptions) { options.Workers = 8 }},
+		{"workers not grouped", func(options *option.WDTTEndpointOptions) { options.Workers = 10 }},
 		{"hash count", func(options *option.WDTTEndpointOptions) { options.VKHashes = []string{"a", "b", "c", "d", "e"} }},
 		{"hash URL", func(options *option.WDTTEndpointOptions) { options.VKHashes = []string{"https://vk.com/call/join/hash"} }},
-		{"password delimiter", func(options *option.WDTTEndpointOptions) { options.Password = "secret|injected" }},
-		{"auth mode", func(options *option.WDTTEndpointOptions) { options.VKAuth = "account" }},
+		{"credential ref", func(options *option.WDTTEndpointOptions) { options.CredentialRef = "bad/ref" }},
+		{"auth mode", func(options *option.WDTTEndpointOptions) { options.VKAuth = "browser" }},
 		{"anonymous path", func(options *option.WDTTEndpointOptions) { options.VKAnonPath = "legacy" }},
 	}
 	for _, test := range tests {
@@ -47,6 +49,15 @@ func TestNormalizeAndValidateOptionsRejectsPublisherControlledRuntimeState(t *te
 				t.Fatal("expected options to be rejected")
 			}
 		})
+	}
+}
+
+func TestNormalizeAndValidateOptionsAllowsLegacyServer(t *testing.T) {
+	options := validEndpointOptions()
+	options.CredentialRef = ""
+	options.Password = "legacy-password"
+	if err := normalizeAndValidateOptions(&options); err != nil {
+		t.Fatal(err)
 	}
 }
 

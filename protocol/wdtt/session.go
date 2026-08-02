@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/cbeuw/connutil"
+	"github.com/gr33nimax/hydra-wdtt/pkg/access"
+	hydrawrap "github.com/gr33nimax/hydra-wdtt/pkg/wrap"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/pion/logging"
@@ -37,6 +39,27 @@ type turnCredentials struct {
 	username string
 	password string
 	urls     []string
+}
+
+type sessionPurpose uint8
+
+const (
+	sessionPurposeConfigure sessionPurpose = iota
+	sessionPurposeAuthenticate
+	sessionPurposeRenew
+)
+
+type sessionAuthorization struct {
+	credentialRef string
+	deviceID      string
+	token         string
+	workerCount   int
+	legacy        bool
+}
+
+type sessionConfiguration struct {
+	content string
+	lease   *access.IssuedLease
 }
 
 type silentLoggerFactory struct{}
@@ -74,13 +97,16 @@ func runSession(
 	peer *net.UDPAddr,
 	credentials *turnCredentials,
 	wrapKey []byte,
+	keyHint hydrawrap.KeyHint,
 	obfsMode string,
 	dispatcher *dispatcher,
 	localPort uint16,
-	deviceID string,
-	password string,
-	requestConfiguration bool,
-	configurationCh chan<- string,
+	authorization sessionAuthorization,
+	purpose sessionPurpose,
+	generation int,
+	configurationCh chan<- sessionConfiguration,
+	renewalCh chan<- access.IssuedLease,
+	ready func(),
 ) error {
 	if len(credentials.urls) == 0 {
 		return fmt.Errorf("WDTT TURN credentials contain no UDP relay")
@@ -143,7 +169,7 @@ func runSession(
 	if err != nil {
 		return err
 	}
-	obfuscation, err := newObfsConfig(obfsMode)
+	obfuscation, err := newObfsConfig(obfsMode, keyHint)
 	if err != nil {
 		return err
 	}
@@ -254,12 +280,20 @@ func runSession(
 		return fmt.Errorf("complete WDTT DTLS handshake: %w", err)
 	}
 
-	if requestConfiguration {
-		configuration, configErr := requestConfig(dtlsConnection, localPort, deviceID, password)
-		if configErr != nil {
-			return configErr
+	switch purpose {
+	case sessionPurposeConfigure:
+		var configuration sessionConfiguration
+		if authorization.legacy {
+			configuration.content, err = requestConfig(dtlsConnection, localPort, authorization.deviceID, authorization.token)
+		} else {
+			var lease access.IssuedLease
+			configuration.content, lease, err = requestHydraConfig(dtlsConnection, localPort, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount)
+			configuration.lease = &lease
 		}
-		if configuration == "" {
+		if err != nil {
+			return err
+		}
+		if configuration.content == "" {
 			return errConfigUnavailable
 		}
 		select {
@@ -267,11 +301,29 @@ func runSession(
 		case <-sessionContext.Done():
 			return context.Cause(sessionContext)
 		}
-	} else if err = sendAuth(dtlsConnection, deviceID, password); err != nil {
-		return err
+	case sessionPurposeAuthenticate:
+		if authorization.legacy {
+			err = sendAuth(dtlsConnection, authorization.deviceID, authorization.token)
+		} else {
+			err = sendHydraAuth(dtlsConnection, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount)
+		}
+		if err != nil {
+			return err
+		}
+	case sessionPurposeRenew:
+		lease, renewErr := renewHydraLease(dtlsConnection, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount)
+		if renewErr != nil {
+			return renewErr
+		}
+		select {
+		case renewalCh <- lease:
+			return nil
+		case <-sessionContext.Done():
+			return context.Cause(sessionContext)
+		}
 	}
 
-	slot := dispatcher.register(sessionID)
+	slot := dispatcher.register(sessionID, generation)
 	defer func() {
 		dispatcher.unregister(slot)
 		for {
@@ -283,6 +335,9 @@ func runSession(
 			}
 		}
 	}()
+	if ready != nil {
+		ready()
+	}
 	stopDTLS := context.AfterFunc(sessionContext, func() { _ = dtlsConnection.SetDeadline(time.Now()) })
 	defer stopDTLS()
 

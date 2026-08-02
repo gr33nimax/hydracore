@@ -41,6 +41,11 @@ HydraCore's `protocol/wdtt` package adapts protocol behavior from:
 - Reviewed commit: `2dd5d37f18a0475a786a90d69feb7c503e33bdf3`
 - Project license: GNU General Public License version 3
 
+The shared Hydra access, control, worker-policy, and WRAP implementation is
+consumed from `github.com/gr33nimax/hydra-wdtt`, the Hydra-maintained fork of
+that project. This revision pins module commit
+`f0ee824e5e316c644cfdbe4479ebd7fdc4cf6f0f`.
+
 The adapted areas include the WDTT application handshake, anonymous VK Calls
 TURN credential flow, Pion TURN/DTLS relay layout, packet dispatcher behavior,
 and dynamic WireGuard configuration exchange. HydraCore substantially changes

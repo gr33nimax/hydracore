@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/gr33nimax/hydra-wdtt/pkg/workers"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/endpoint"
 	"github.com/sagernet/sing-box/common/dialer"
@@ -29,8 +30,8 @@ import (
 )
 
 const (
-	defaultWorkers       = 9
-	maximumWorkers       = 36
+	defaultWorkers       = workers.Recommended
+	maximumWorkers       = workers.Maximum
 	maximumHashes        = 4
 	maximumHashLength    = 256
 	maximumPasswordBytes = 1024
@@ -109,8 +110,18 @@ func normalizeAndValidateOptions(options *option.WDTTEndpointOptions) error {
 	if options.ServerPort == 0 {
 		return E.New("WDTT server_port must be between 1 and 65535")
 	}
-	if options.Password == "" || len(options.Password) > maximumPasswordBytes || strings.ContainsAny(options.Password, "|\r\n\x00") {
-		return E.New("WDTT password must be non-empty, at most ", maximumPasswordBytes, " bytes, and must not contain protocol delimiters")
+	options.CredentialRef = strings.TrimSpace(options.CredentialRef)
+	if options.CredentialRef == "" && options.Password == "" {
+		return E.New("WDTT credential_ref is required")
+	}
+	if options.CredentialRef != "" && options.Password != "" {
+		return E.New("WDTT credential_ref and legacy password are mutually exclusive")
+	}
+	if options.CredentialRef != "" && !validCredentialReference(options.CredentialRef) {
+		return E.New("WDTT credential_ref is invalid")
+	}
+	if options.Password != "" && (len(options.Password) > maximumPasswordBytes || strings.ContainsAny(options.Password, "|\r\n\x00")) {
+		return E.New("WDTT legacy password must be at most ", maximumPasswordBytes, " bytes and must not contain protocol delimiters")
 	}
 	if len(options.VKHashes) == 0 || len(options.VKHashes) > maximumHashes {
 		return E.New("WDTT vk_hashes must contain between 1 and ", maximumHashes, " entries")
@@ -127,12 +138,11 @@ func normalizeAndValidateOptions(options *option.WDTTEndpointOptions) error {
 		seenHashes[hash] = struct{}{}
 		options.VKHashes[index] = hash
 	}
-	if options.Workers == 0 {
-		options.Workers = defaultWorkers
+	normalizedWorkers, workersErr := workers.Normalize(options.Workers)
+	if workersErr != nil {
+		return E.New(workersErr)
 	}
-	if options.Workers < 1 || options.Workers > maximumWorkers {
-		return E.New("WDTT workers must be between 1 and ", maximumWorkers)
-	}
+	options.Workers = normalizedWorkers
 	options.Obfs = strings.ToLower(strings.TrimSpace(options.Obfs))
 	if options.Obfs == "" {
 		options.Obfs = "audio"
@@ -142,10 +152,14 @@ func normalizeAndValidateOptions(options *option.WDTTEndpointOptions) error {
 	}
 	options.VKAuth = strings.ToLower(strings.TrimSpace(options.VKAuth))
 	if options.VKAuth == "" {
-		options.VKAuth = "anonymous"
+		if options.CredentialRef != "" {
+			options.VKAuth = "auto"
+		} else {
+			options.VKAuth = "anonymous"
+		}
 	}
-	if options.VKAuth != "anonymous" {
-		return E.New(`WDTT vk_auth currently supports "anonymous" only`)
+	if options.VKAuth != "auto" && options.VKAuth != "anonymous" && options.VKAuth != "account" {
+		return E.New(`WDTT vk_auth must be "auto", "anonymous", or "account"`)
 	}
 	options.VKAnonPath = strings.ToLower(strings.TrimSpace(options.VKAnonPath))
 	if options.VKAnonPath == "" {
@@ -262,6 +276,16 @@ func (e *Endpoint) initialize() {
 	}
 	localPort := uint16(localConnection.LocalAddr().(*net.UDPAddr).Port)
 	deviceID := loadOrCreateDeviceID(e.ctx, e.logger)
+	credentialSecret := e.options.Password
+	if e.options.CredentialRef != "" {
+		var loaded bool
+		deviceID, credentialSecret, loaded = loadRuntimeCredential(e.options.CredentialRef)
+		if !loaded {
+			_ = localConnection.Close()
+			e.finishInitialization(E.New("HydraBox did not provide WDTT credential material for ", e.options.CredentialRef))
+			return
+		}
+	}
 	wdttTransport, err := newTransport(
 		e.ctx,
 		e.logger,
@@ -270,10 +294,12 @@ func (e *Endpoint) initialize() {
 		localConnection,
 		localPort,
 		deviceID,
-		e.options.Password,
+		e.options.CredentialRef,
+		credentialSecret,
 		e.options.VKHashes,
 		e.options.Workers,
 		e.options.Obfs,
+		e.options.VKAuth,
 	)
 	if err != nil {
 		_ = localConnection.Close()
@@ -344,7 +370,7 @@ func (e *Endpoint) initialize() {
 	e.mu.Lock()
 	e.inner = inner
 	e.mu.Unlock()
-	e.logger.Info("WDTT endpoint initialized with ", e.options.Workers, " lazy TURN workers")
+	e.logger.Info("WDTT endpoint initialized with ", e.options.Workers, " lazy TURN workers and VK auth mode ", e.options.VKAuth)
 	e.finishInitialization(nil)
 }
 

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'agent/**'
     paths:
       - '.github/workflows/hydracore.yml'
       - 'HYDRACORE.md'
@@ -91,6 +92,30 @@ jobs:
             status=1
           fi
           exit "$status"
+      - name: Upload CI-normalized WDTT source and module metadata
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hydracore-normalized-source-${{ github.sha }}
+          path: |
+            go.mod
+            go.sum
+            adapter/experimental.go
+            cmd/internal/build_libbox/main.go
+            constant/proxy.go
+            experimental/cachefile/cache.go
+            experimental/libbox/etonify_capabilities.go
+            experimental/libbox/etonify_capabilities_test.go
+            experimental/libbox/config_wdtt_test.go
+            experimental/libbox/etonify_capabilities_wdtt.go
+            experimental/libbox/etonify_capabilities_wdtt_stub.go
+            include/registry.go
+            include/wdtt.go
+            include/wdtt_stub.go
+            option/wdtt.go
+            protocol/wdtt
+          if-no-files-found: error
+          retention-days: 3
       - name: Verify baseline
         run: bash release/verify_etonify_baseline.sh
       - name: Test

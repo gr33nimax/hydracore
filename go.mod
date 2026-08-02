@@ -22,6 +22,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gofrs/uuid/v5 v5.4.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
+	github.com/gr33nimax/hydra-wdtt v0.0.0-20260802110746-f0ee824e5e31
 	github.com/huandu/go-sqlbuilder v1.39.1
 	github.com/insomniacslk/dhcp v0.0.0-20260220084031-5adc3eb26f91
 	github.com/jackc/pgx/v5 v5.8.0

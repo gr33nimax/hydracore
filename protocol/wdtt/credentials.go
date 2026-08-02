@@ -34,7 +34,10 @@ const (
 	credentialLifetime    = 8 * time.Minute
 )
 
-var errVKCaptchaRequired = errors.New("VK anonymous call authentication requires captcha")
+var (
+	errVKCaptchaRequired           = errors.New("VK anonymous call authentication requires captcha")
+	errVKAccountCredentialsRequired = errors.New("HydraBox VK WebView credentials are required")
+)
 
 type contextDialer struct{ dialer coreDialer }
 
@@ -47,7 +50,9 @@ func (d *contextDialer) DialContext(ctx context.Context, network string, address
 }
 
 type credentialFetcher struct {
-	dialer coreDialer
+	dialer        coreDialer
+	credentialRef string
+	authMode      string
 
 	mu      sync.Mutex
 	entries map[string]*credentialEntry
@@ -60,11 +65,19 @@ type credentialEntry struct {
 	ready       chan struct{}
 }
 
-func newCredentialFetcher(dialer coreDialer) *credentialFetcher {
-	return &credentialFetcher{dialer: dialer, entries: make(map[string]*credentialEntry)}
+func newCredentialFetcher(dialer coreDialer, credentialRef string, authMode string) *credentialFetcher {
+	return &credentialFetcher{dialer: dialer, credentialRef: credentialRef, authMode: authMode, entries: make(map[string]*credentialEntry)}
 }
 
 func (f *credentialFetcher) get(ctx context.Context, hash string) (*turnCredentials, error) {
+	if f.authMode == "account" || f.authMode == "auto" {
+		if credentials, loaded := loadRuntimeAccountCredentials(f.credentialRef); loaded {
+			return credentials, nil
+		}
+		if f.authMode == "account" {
+			return nil, errVKAccountCredentialsRequired
+		}
+	}
 	for {
 		f.mu.Lock()
 		entry := f.entries[hash]
@@ -88,6 +101,14 @@ func (f *credentialFetcher) get(ctx context.Context, hash string) (*turnCredenti
 		f.mu.Unlock()
 
 		credentials, err := fetchAnonymousTurnCredentials(ctx, f.dialer, hash)
+		if errors.Is(err, errVKCaptchaRequired) && f.authMode == "auto" {
+			if accountCredentials, loaded := loadRuntimeAccountCredentials(f.credentialRef); loaded {
+				credentials = accountCredentials
+				err = nil
+			} else {
+				err = errVKAccountCredentialsRequired
+			}
+		}
 		f.mu.Lock()
 		entry.fetching = false
 		if err == nil {

@@ -33,8 +33,9 @@ func releasePacket(buffer []byte) {
 }
 
 type workerSlot struct {
-	id     int
-	sendCh chan []byte
+	id         int
+	generation int
+	sendCh     chan []byte
 }
 
 type dispatcher struct {
@@ -45,6 +46,8 @@ type dispatcher struct {
 
 	mu         sync.Mutex
 	workers    []*workerSlot
+	active     []*workerSlot
+	activeGeneration int
 	clientAddr net.Addr
 	roundRobin int
 	chunkCount int
@@ -58,6 +61,7 @@ func newDispatcher(ctx context.Context, localConn net.PacketConn) *dispatcher {
 		cancel:    cancel,
 		localConn: localConn,
 		returnCh:  make(chan []byte, returnQueueSize),
+		activeGeneration: 1,
 	}
 	d.waitGroup.Add(2)
 	go d.readLoop()
@@ -71,12 +75,29 @@ func (d *dispatcher) close() {
 	d.waitGroup.Wait()
 }
 
-func (d *dispatcher) register(id int) *workerSlot {
-	slot := &workerSlot{id: id, sendCh: make(chan []byte, workerSendQueueSize)}
+func (d *dispatcher) register(id int, generation int) *workerSlot {
+	slot := &workerSlot{id: id, generation: generation, sendCh: make(chan []byte, workerSendQueueSize)}
 	d.mu.Lock()
 	d.workers = append(d.workers, slot)
+	if generation == d.activeGeneration {
+		d.active = append(d.active, slot)
+	}
 	d.mu.Unlock()
 	return slot
+}
+
+func (d *dispatcher) activateGeneration(generation int) {
+	d.mu.Lock()
+	d.activeGeneration = generation
+	d.active = d.active[:0]
+	for _, slot := range d.workers {
+		if slot.generation == generation {
+			d.active = append(d.active, slot)
+		}
+	}
+	d.roundRobin = 0
+	d.chunkCount = 0
+	d.mu.Unlock()
 }
 
 func (d *dispatcher) unregister(slot *workerSlot) {
@@ -87,10 +108,16 @@ func (d *dispatcher) unregister(slot *workerSlot) {
 			break
 		}
 	}
-	if len(d.workers) == 0 {
+	for index, candidate := range d.active {
+		if candidate == slot {
+			d.active = append(d.active[:index], d.active[index+1:]...)
+			break
+		}
+	}
+	if len(d.active) == 0 {
 		d.roundRobin = 0
-	} else if d.roundRobin >= len(d.workers) {
-		d.roundRobin %= len(d.workers)
+	} else if d.roundRobin >= len(d.active) {
+		d.roundRobin %= len(d.active)
 	}
 	d.chunkCount = 0
 	d.mu.Unlock()
@@ -118,7 +145,7 @@ func (d *dispatcher) readLoop() {
 			releasePacket(packet)
 			continue
 		}
-		workerCount := len(d.workers)
+		workerCount := len(d.active)
 		if workerCount == 0 {
 			d.mu.Unlock()
 			releasePacket(packet)
@@ -127,7 +154,7 @@ func (d *dispatcher) readLoop() {
 		index := d.roundRobin % workerCount
 		sent := false
 		select {
-		case d.workers[index].sendCh <- packet:
+		case d.active[index].sendCh <- packet:
 			sent = true
 			d.chunkCount++
 			if d.chunkCount >= dispatchChunkSize {
@@ -138,7 +165,7 @@ func (d *dispatcher) readLoop() {
 			for offset := 1; offset < workerCount; offset++ {
 				alternate := (index + offset) % workerCount
 				select {
-				case d.workers[alternate].sendCh <- packet:
+				case d.active[alternate].sendCh <- packet:
 					sent = true
 					d.roundRobin = alternate
 					d.chunkCount = 1

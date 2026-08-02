@@ -5,6 +5,7 @@ package wdtt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -209,7 +210,7 @@ func (t *transport) runWorker(generation *workerGeneration, workerID int, hash s
 				t.configurationClaimed.Store(false)
 			}
 			if errors.Is(err, errVKCaptchaRequired) || errors.Is(err, errVKAccountCredentialsRequired) {
-				t.reportInitializationError(err)
+				t.reportInitializationError(annotateCredentialChallenge(err, t.credentialRef))
 				return
 			}
 			t.logger.WarnContext(generation.ctx, "WDTT worker ", workerID, " could not acquire VK TURN credentials: ", err)
@@ -264,6 +265,13 @@ func (t *transport) runWorker(generation *workerGeneration, workerID int, hash s
 			return
 		}
 	}
+}
+
+func annotateCredentialChallenge(err error, credentialRef string) error {
+	if err == nil || credentialRef == "" {
+		return err
+	}
+	return fmt.Errorf("%w for credential_ref %q", err, credentialRef)
 }
 
 func (t *transport) workerAuthorization(ctx context.Context, requestConfiguration bool) (sessionAuthorization, error) {

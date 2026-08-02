@@ -28,6 +28,8 @@ identity.
   VPN restart.
 - Uses anonymous VK Calls authentication first and accepts process-local,
   short-lived account TURN credentials only for the captcha fallback.
+- Identifies account/captcha challenges by non-secret `credential_ref`, so a
+  subscription with multiple WDTT endpoints opens the matching VK flow.
 - Requires at least 9 workers and recommends 18 workers per user.
 - Receives the stable subscription device identity from HydraBox; legacy WDTT
   password profiles retain the existing HydraCore cache behavior.

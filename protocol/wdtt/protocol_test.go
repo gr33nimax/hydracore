@@ -22,7 +22,8 @@ func TestSendHydraAuthWaitsForServerAcceptance(t *testing.T) {
 			return
 		}
 		operation, request, matched, err := control.DecodeRequest(buffer[:n])
-		if err != nil || !matched || operation != control.OperationAuth || request.Workers != 18 {
+		if err != nil || !matched || operation != control.OperationAuth || request.Workers != 18 ||
+			request.RuntimeID != "runtime-1" || request.Generation != 3 || request.WorkerSlot != 7 {
 			serverErr <- errors.New("unexpected Hydra auth request")
 			return
 		}
@@ -33,7 +34,7 @@ func TestSendHydraAuthWaitsForServerAcceptance(t *testing.T) {
 		serverErr <- err
 	}()
 
-	if err := sendHydraAuth(client, "device-1", "wdtt:user-1:device-1", "lease-token", 18); err != nil {
+	if err := sendHydraAuth(client, "device-1", "wdtt:user-1:device-1", "lease-token", 18, "runtime-1", 3, 7); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-serverErr; err != nil {

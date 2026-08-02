@@ -23,7 +23,7 @@ require (
 	github.com/gofrs/uuid/v5 v5.4.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
-	github.com/gr33nimax/hydra-wdtt v0.0.0-20260802112650-69ca964cfa2f
+	github.com/gr33nimax/hydra-wdtt v0.0.0-20260802154750-ecea643c2c14
 	github.com/huandu/go-sqlbuilder v1.39.1
 	github.com/insomniacslk/dhcp v0.0.0-20260220084031-5adc3eb26f91
 	github.com/jackc/pgx/v5 v5.8.0

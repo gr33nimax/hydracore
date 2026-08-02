@@ -54,6 +54,7 @@ type sessionAuthorization struct {
 	deviceID      string
 	token         string
 	workerCount   int
+	runtimeID     string
 	legacy        bool
 }
 
@@ -287,7 +288,7 @@ func runSession(
 			configuration.content, err = requestConfig(dtlsConnection, localPort, authorization.deviceID, authorization.token)
 		} else {
 			var lease access.IssuedLease
-			configuration.content, lease, err = requestHydraConfig(dtlsConnection, localPort, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount)
+			configuration.content, lease, err = requestHydraConfig(dtlsConnection, localPort, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount, authorization.runtimeID, generation, sessionID+1)
 			configuration.lease = &lease
 		}
 		if err != nil {
@@ -305,13 +306,13 @@ func runSession(
 		if authorization.legacy {
 			err = sendAuth(dtlsConnection, authorization.deviceID, authorization.token)
 		} else {
-			err = sendHydraAuth(dtlsConnection, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount)
+			err = sendHydraAuth(dtlsConnection, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount, authorization.runtimeID, generation, sessionID+1)
 		}
 		if err != nil {
 			return err
 		}
 	case sessionPurposeRenew:
-		lease, renewErr := renewHydraLease(dtlsConnection, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount)
+		lease, renewErr := renewHydraLease(dtlsConnection, authorization.deviceID, authorization.credentialRef, authorization.token, authorization.workerCount, authorization.runtimeID)
 		if renewErr != nil {
 			return renewErr
 		}

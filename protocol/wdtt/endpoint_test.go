@@ -1,6 +1,7 @@
 package wdtt
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -83,6 +84,31 @@ func TestNumericRemoteAddressRejectsDNSFallback(t *testing.T) {
 	}
 	if _, err = numericRemoteAddress(stringAddress("turn.example:3478")); err == nil {
 		t.Fatal("expected a hostname remote address to be rejected")
+	}
+}
+
+func TestWorkerAuthorizationKeepsRuntimeIdentityAcrossReconnects(t *testing.T) {
+	leaseReady := make(chan struct{})
+	close(leaseReady)
+	transport := &transport{
+		credentialRef: "wdtt:user-1:device-1",
+		deviceID:      "device-1",
+		runtimeID:     "runtime-stable",
+		grantToken:    "grant-token",
+		workerCount:   18,
+		leaseReady:    leaseReady,
+		lease:         &leaseSnapshot{token: "lease-token"},
+	}
+	cold, err := transport.workerAuthorization(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hot, err := transport.workerAuthorization(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cold.runtimeID != "runtime-stable" || hot.runtimeID != cold.runtimeID {
+		t.Fatalf("runtime identity changed: cold=%q hot=%q", cold.runtimeID, hot.runtimeID)
 	}
 }
 

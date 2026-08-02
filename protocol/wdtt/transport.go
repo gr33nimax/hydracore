@@ -15,6 +15,7 @@ import (
 	"github.com/gr33nimax/hydra-wdtt/pkg/access"
 	"github.com/gr33nimax/hydra-wdtt/pkg/workers"
 	hydrawrap "github.com/gr33nimax/hydra-wdtt/pkg/wrap"
+	"github.com/google/uuid"
 	"github.com/sagernet/sing-box/log"
 )
 
@@ -62,6 +63,7 @@ type transport struct {
 	localPort     uint16
 	deviceID      string
 	credentialRef string
+	runtimeID     string
 	grantToken    string
 	legacy        bool
 	hashes        []string
@@ -117,6 +119,7 @@ func newTransport(
 		localPort:             localPort,
 		deviceID:              deviceID,
 		credentialRef:         credentialRef,
+		runtimeID:             uuid.NewString(),
 		grantToken:            credentialSecret,
 		legacy:                credentialRef == "",
 		hashes:                append([]string(nil), hashes...),
@@ -281,6 +284,7 @@ func (t *transport) workerAuthorization(ctx context.Context, requestConfiguratio
 			deviceID:      t.deviceID,
 			token:         t.grantToken,
 			workerCount:   t.workerCount,
+			runtimeID:     t.runtimeID,
 			legacy:        t.legacy,
 		}, nil
 	}
@@ -300,6 +304,7 @@ func (t *transport) workerAuthorization(ctx context.Context, requestConfiguratio
 		deviceID:      t.deviceID,
 		token:         lease.token,
 		workerCount:   t.workerCount,
+		runtimeID:     t.runtimeID,
 	}, nil
 }
 
@@ -393,6 +398,7 @@ func (t *transport) renewLease(lease *leaseSnapshot) (access.IssuedLease, error)
 		deviceID:      t.deviceID,
 		token:         lease.token,
 		workerCount:   t.workerCount,
+		runtimeID:     t.runtimeID,
 	}
 	if err := runSession(
 		renewContext,

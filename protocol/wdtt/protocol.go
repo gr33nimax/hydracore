@@ -58,14 +58,17 @@ func sendAuth(conn net.Conn, deviceID string, password string) error {
 	return nil
 }
 
-func requestHydraConfig(conn net.Conn, localPort uint16, deviceID string, credentialRef string, token string, workerCount int) (string, access.IssuedLease, error) {
+func requestHydraConfig(conn net.Conn, localPort uint16, deviceID string, credentialRef string, token string, workerCount int, runtimeID string, generation int, workerSlot int) (string, access.IssuedLease, error) {
 	packet, err := control.EncodeRequest(control.OperationGetConfig, control.Request{
 		DeviceID:      deviceID,
 		CredentialRef: credentialRef,
 		Token:         token,
 		LocalPort:     int(localPort),
 		Workers:       workerCount,
-		Features:      []string{control.FeatureKeyHint, control.FeatureLease, control.FeatureHotRotate},
+		RuntimeID:     runtimeID,
+		Generation:    generation,
+		WorkerSlot:    workerSlot,
+		Features:      []string{control.FeatureKeyHint, control.FeatureLease, control.FeatureHotRotate, control.FeatureWorkerTakeover},
 	})
 	if err != nil {
 		return "", access.IssuedLease{}, fmt.Errorf("encode Hydra WDTT configuration request: %w", err)
@@ -80,13 +83,16 @@ func requestHydraConfig(conn net.Conn, localPort uint16, deviceID string, creden
 	return response.Config, *response.Lease, nil
 }
 
-func sendHydraAuth(conn net.Conn, deviceID string, credentialRef string, leaseToken string, workerCount int) error {
+func sendHydraAuth(conn net.Conn, deviceID string, credentialRef string, leaseToken string, workerCount int, runtimeID string, generation int, workerSlot int) error {
 	packet, err := control.EncodeRequest(control.OperationAuth, control.Request{
 		DeviceID:      deviceID,
 		CredentialRef: credentialRef,
 		Token:         leaseToken,
 		Workers:       workerCount,
-		Features:      []string{control.FeatureKeyHint, control.FeatureLease, control.FeatureHotRotate},
+		RuntimeID:     runtimeID,
+		Generation:    generation,
+		WorkerSlot:    workerSlot,
+		Features:      []string{control.FeatureKeyHint, control.FeatureLease, control.FeatureHotRotate, control.FeatureWorkerTakeover},
 	})
 	if err != nil {
 		return fmt.Errorf("encode Hydra WDTT authentication: %w", err)
@@ -97,13 +103,14 @@ func sendHydraAuth(conn net.Conn, deviceID string, credentialRef string, leaseTo
 	return nil
 }
 
-func renewHydraLease(conn net.Conn, deviceID string, credentialRef string, leaseToken string, workerCount int) (access.IssuedLease, error) {
+func renewHydraLease(conn net.Conn, deviceID string, credentialRef string, leaseToken string, workerCount int, runtimeID string) (access.IssuedLease, error) {
 	packet, err := control.EncodeRequest(control.OperationRenew, control.Request{
 		DeviceID:      deviceID,
 		CredentialRef: credentialRef,
 		Token:         leaseToken,
 		Workers:       workerCount,
-		Features:      []string{control.FeatureKeyHint, control.FeatureLease, control.FeatureHotRotate},
+		RuntimeID:     runtimeID,
+		Features:      []string{control.FeatureKeyHint, control.FeatureLease, control.FeatureHotRotate, control.FeatureWorkerTakeover},
 	})
 	if err != nil {
 		return access.IssuedLease{}, fmt.Errorf("encode Hydra WDTT lease renewal: %w", err)

@@ -112,6 +112,25 @@ func TestWorkerAuthorizationKeepsRuntimeIdentityAcrossReconnects(t *testing.T) {
 	}
 }
 
+func TestNetworkHandoffRequestCoalesces(t *testing.T) {
+	transportContext, cancel := context.WithCancel(context.Background())
+	wdttTransport := &transport{
+		ctx:             transportContext,
+		networkChangeCh: make(chan struct{}, 1),
+	}
+	wdttTransport.requestNetworkHandoff()
+	wdttTransport.requestNetworkHandoff()
+	if queued := len(wdttTransport.networkChangeCh); queued != 1 {
+		t.Fatalf("expected one coalesced network handoff, got %d", queued)
+	}
+	<-wdttTransport.networkChangeCh
+	cancel()
+	wdttTransport.requestNetworkHandoff()
+	if queued := len(wdttTransport.networkChangeCh); queued != 0 {
+		t.Fatalf("expected no handoff after transport cancellation, got %d", queued)
+	}
+}
+
 type stringAddress string
 
 func (a stringAddress) Network() string { return "udp" }

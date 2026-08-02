@@ -85,6 +85,9 @@ type transport struct {
 	generationMu sync.Mutex
 	generations  map[int]*workerGeneration
 	active       int
+	rotationMu   sync.Mutex
+
+	networkChangeCh chan struct{}
 
 	waitGroup sync.WaitGroup
 	closeOnce sync.Once
@@ -131,6 +134,7 @@ func newTransport(
 		leaseReady:            make(chan struct{}),
 		generations:           make(map[int]*workerGeneration),
 		active:                1,
+		networkChangeCh:       make(chan struct{}, 1),
 	}
 	t.dispatcher = newDispatcher(transportContext, localConn)
 	return t, nil
@@ -142,6 +146,8 @@ func (t *transport) start() {
 	t.generations[initial.id] = initial
 	t.generationMu.Unlock()
 	t.startGeneration(initial, true)
+	t.waitGroup.Add(1)
+	go t.networkHandoffLoop()
 	if !t.legacy {
 		t.waitGroup.Add(1)
 		go t.rotationLoop()
@@ -429,6 +435,12 @@ func (t *transport) renewLease(lease *leaseSnapshot) (access.IssuedLease, error)
 }
 
 func (t *transport) rotateGeneration() error {
+	t.rotationMu.Lock()
+	defer t.rotationMu.Unlock()
+	if err := t.ctx.Err(); err != nil {
+		return context.Cause(t.ctx)
+	}
+
 	t.generationMu.Lock()
 	oldGeneration := t.generations[t.active]
 	newID := t.active + 1
@@ -442,10 +454,10 @@ func (t *transport) rotateGeneration() error {
 	select {
 	case <-newGeneration.ready:
 	case <-warmup.C:
-		newGeneration.cancel()
+		t.cancelAndRemoveGeneration(newGeneration)
 		return errors.New("new Hydra WDTT generation did not reach nine ready workers")
 	case <-t.ctx.Done():
-		newGeneration.cancel()
+		t.cancelAndRemoveGeneration(newGeneration)
 		return context.Cause(t.ctx)
 	}
 
@@ -460,9 +472,65 @@ func (t *transport) rotateGeneration() error {
 	case <-t.ctx.Done():
 	}
 	if oldGeneration != nil {
-		oldGeneration.cancel()
+		t.cancelAndRemoveGeneration(oldGeneration)
 	}
 	return nil
+}
+
+func (t *transport) requestNetworkHandoff() {
+	select {
+	case <-t.ctx.Done():
+		return
+	default:
+	}
+	select {
+	case t.networkChangeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (t *transport) networkHandoffLoop() {
+	defer t.waitGroup.Done()
+	for {
+		select {
+		case <-t.networkChangeCh:
+			t.replaceGenerationForNetworkChange()
+		case <-t.ctx.Done():
+			return
+		}
+	}
+}
+
+func (t *transport) replaceGenerationForNetworkChange() {
+	t.rotationMu.Lock()
+	defer t.rotationMu.Unlock()
+	if t.ctx.Err() != nil {
+		return
+	}
+
+	t.generationMu.Lock()
+	oldGeneration := t.generations[t.active]
+	newID := t.active + 1
+	newGeneration := newWorkerGeneration(t.ctx, newID)
+	t.generations[newID] = newGeneration
+	t.active = newID
+	t.generationMu.Unlock()
+
+	t.dispatcher.activateGeneration(newID)
+	if oldGeneration != nil {
+		t.cancelAndRemoveGeneration(oldGeneration)
+	}
+	t.startGeneration(newGeneration, false)
+	t.logger.InfoContext(t.ctx, "Hydra WDTT reinitialized worker generation ", newID, " after network interface update")
+}
+
+func (t *transport) cancelAndRemoveGeneration(generation *workerGeneration) {
+	generation.cancel()
+	t.generationMu.Lock()
+	if t.generations[generation.id] == generation {
+		delete(t.generations, generation.id)
+	}
+	t.generationMu.Unlock()
 }
 
 func (t *transport) waitRetry(ctx context.Context, workerID int, attempt int, quota bool) bool {

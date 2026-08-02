@@ -240,6 +240,24 @@ func (e *Endpoint) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 	return inner.ListenPacket(ctx, destination)
 }
 
+func (e *Endpoint) InterfaceUpdated() {
+	select {
+	case <-e.ready:
+	default:
+		return
+	}
+	if e.closed.Load() {
+		return
+	}
+	e.mu.Lock()
+	initializationErr := e.initErr
+	wdttTransport := e.transport
+	e.mu.Unlock()
+	if initializationErr == nil && wdttTransport != nil {
+		wdttTransport.requestNetworkHandoff()
+	}
+}
+
 func (e *Endpoint) ensureInitialized(ctx context.Context) error {
 	if !e.started.Load() {
 		return E.New("WDTT endpoint is not ready yet")
@@ -444,3 +462,4 @@ func loadOrCreateDeviceID(ctx context.Context, logger log.ContextLogger) string 
 }
 
 var _ adapter.Endpoint = (*Endpoint)(nil)
+var _ adapter.InterfaceUpdateListener = (*Endpoint)(nil)

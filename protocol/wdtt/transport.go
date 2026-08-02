@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gr33nimax/hydra-wdtt/pkg/access"
 	"github.com/gr33nimax/hydra-wdtt/pkg/workers"
 	hydrawrap "github.com/gr33nimax/hydra-wdtt/pkg/wrap"
-	"github.com/google/uuid"
 	"github.com/sagernet/sing-box/log"
 )
 

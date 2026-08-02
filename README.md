@@ -51,6 +51,11 @@ security issues according to [SECURITY.md](SECURITY.md).
 
 ## Credits and license
 
+HydraCore evolved from
+[`yamixdev/etonify-core`](https://github.com/yamixdev/etonify-core), the mobile
+runtime integration associated with
+[Etonify](https://github.com/yamixdev/Etonify) by MeowTeam. We are grateful to
+the team and all upstream contributors whose work provided this foundation.
 HydraCore preserves the complete source history, copyright notices, and
 corresponding source required by its GPL-3.0-or-later lineage. Project lineage,
 pinned baselines, retained compatibility identifiers, and non-affiliation

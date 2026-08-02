@@ -29,8 +29,8 @@ func TestParseTurnURLsAcceptsUDPOnly(t *testing.T) {
 func TestParseVKAPIErrorRedactsCaptchaDetails(t *testing.T) {
 	err := parseVKAPIError(map[string]any{
 		"error": map[string]any{
-			"error_code": float64(14),
-			"error_msg":  "captcha with remote metadata",
+			"error_code":  float64(14),
+			"error_msg":   "captcha with remote metadata",
 			"captcha_sid": "secret-session",
 		},
 	})

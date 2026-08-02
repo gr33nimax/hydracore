@@ -44,23 +44,23 @@ type dispatcher struct {
 	localConn net.PacketConn
 	returnCh  chan []byte
 
-	mu         sync.Mutex
-	workers    []*workerSlot
-	active     []*workerSlot
+	mu               sync.Mutex
+	workers          []*workerSlot
+	active           []*workerSlot
 	activeGeneration int
-	clientAddr net.Addr
-	roundRobin int
-	chunkCount int
-	waitGroup  sync.WaitGroup
+	clientAddr       net.Addr
+	roundRobin       int
+	chunkCount       int
+	waitGroup        sync.WaitGroup
 }
 
 func newDispatcher(ctx context.Context, localConn net.PacketConn) *dispatcher {
 	dispatchContext, cancel := context.WithCancel(ctx)
 	d := &dispatcher{
-		ctx:       dispatchContext,
-		cancel:    cancel,
-		localConn: localConn,
-		returnCh:  make(chan []byte, returnQueueSize),
+		ctx:              dispatchContext,
+		cancel:           cancel,
+		localConn:        localConn,
+		returnCh:         make(chan []byte, returnQueueSize),
 		activeGeneration: 1,
 	}
 	d.waitGroup.Add(2)

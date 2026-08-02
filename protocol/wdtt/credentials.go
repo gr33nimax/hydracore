@@ -35,7 +35,7 @@ const (
 )
 
 var (
-	errVKCaptchaRequired           = errors.New("VK anonymous call authentication requires captcha")
+	errVKCaptchaRequired            = errors.New("VK anonymous call authentication requires captcha")
 	errVKAccountCredentialsRequired = errors.New("HydraBox VK WebView credentials are required")
 )
 

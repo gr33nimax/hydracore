@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/urltest"
 	"github.com/sagernet/sing-box/experimental/clashapi"
 	"github.com/sagernet/sing-box/experimental/clashapi/trafficontrol"
 	"github.com/sagernet/sing-box/experimental/deprecated"
@@ -64,10 +65,11 @@ type StartedService struct {
 type ServiceOptions struct {
 	Context context.Context
 	// Platform           adapter.PlatformInterface
-	Handler     PlatformHandler
-	Debug       bool
-	LogMaxLines int
-	OOMKiller   bool
+	Handler           PlatformHandler
+	Debug             bool
+	LogMaxLines       int
+	OOMKiller         bool
+	StandaloneURLTest bool
 	// WorkingDirectory   string
 	// TempDirectory      string
 	// UserID             int
@@ -76,8 +78,12 @@ type ServiceOptions struct {
 }
 
 func NewStartedService(options ServiceOptions) *StartedService {
+	ctx := options.Context
+	if options.StandaloneURLTest {
+		ctx = urltest.ContextWithDisableBackgroundChecks(ctx)
+	}
 	s := &StartedService{
-		ctx: options.Context,
+		ctx: ctx,
 		// platform:                options.Platform,
 		handler:     options.Handler,
 		debug:       options.Debug,

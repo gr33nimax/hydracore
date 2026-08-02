@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/option"
 )
 
 func TestNormalizeURLTestOptions(t *testing.T) {
@@ -41,6 +42,66 @@ func TestValidateURLTestLink(t *testing.T) {
 		if err := validateURLTestLink(link); err == nil {
 			t.Fatalf("invalid link %q was accepted", link)
 		}
+	}
+}
+
+func TestStandaloneURLTestSanitizesRuntimeOptions(t *testing.T) {
+	t.Parallel()
+	unifiedDelay := &option.UnifiedDelayOptions{Enabled: true}
+	options := option.Options{
+		Inbounds:  []option.Inbound{{}},
+		Services:  []option.Service{{}},
+		NTP:       &option.NTPOptions{},
+		Providers: []option.Provider{{}},
+		Experimental: &option.ExperimentalOptions{
+			CacheFile:    &option.CacheFileOptions{Enabled: true},
+			UnifiedDelay: unifiedDelay,
+		},
+	}
+
+	sanitizeStandaloneURLTestOptions(&options)
+
+	if options.Inbounds != nil || options.Services != nil || options.NTP != nil || options.Providers != nil {
+		t.Fatal("standalone URL test retained listeners or background services")
+	}
+	if options.Experimental == nil || options.Experimental.UnifiedDelay != unifiedDelay {
+		t.Fatal("standalone URL test discarded the safe unified-delay option")
+	}
+	if options.Experimental.CacheFile != nil {
+		t.Fatal("standalone URL test retained experimental background services")
+	}
+}
+
+func TestStandaloneURLTestProbeSuccess(t *testing.T) {
+	t.Parallel()
+	target := urlTestTarget{tag: "selected", outbound: &testURLTestOutbound{tag: "selected"}}
+	result := runStandaloneURLTestProbe(
+		context.Background(),
+		target,
+		normalizeURLTestOptions(&URLTestRequest{TimeoutMillis: 1_000}),
+		func(context.Context, string, adapter.Outbound) (uint16, error) { return 42, nil },
+	)
+	if result.Tag != "selected" || result.DelayMillis != 42 || result.Status != "available" {
+		t.Fatalf("unexpected standalone result: %+v", result)
+	}
+}
+
+func TestStandaloneURLTestProbeCancellation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	target := urlTestTarget{tag: "selected", outbound: &testURLTestOutbound{tag: "selected"}}
+	result := runStandaloneURLTestProbe(
+		ctx,
+		target,
+		normalizeURLTestOptions(&URLTestRequest{TimeoutMillis: 1_000}),
+		func(ctx context.Context, _ string, _ adapter.Outbound) (uint16, error) {
+			<-ctx.Done()
+			return 0, ctx.Err()
+		},
+	)
+	if result.Status != "unavailable" || result.ErrorCode != "cancelled" {
+		t.Fatalf("unexpected cancelled standalone result: %+v", result)
 	}
 }
 

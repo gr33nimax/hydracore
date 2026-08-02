@@ -78,6 +78,9 @@ func (s *StartedService) newInstance(profileContent string, overrideOptions *Ove
 		cancel()
 		return nil, err
 	}
+	if urltest.BackgroundChecksDisabled(ctx) {
+		sanitizeStandaloneURLTestOptions(&options)
+	}
 	if overrideOptions != nil {
 		for _, inbound := range options.Inbounds {
 			if tunInboundOptions, isTUN := inbound.Options.(*option.TunInboundOptions); isTUN {
@@ -125,6 +128,19 @@ func (s *StartedService) newInstance(profileContent string, overrideOptions *Ove
 	i.cacheFile = service.FromContext[adapter.CacheFile](ctx)
 	log.SetStdLogger(boxInstance.LogFactory().Logger())
 	return i, nil
+}
+
+func sanitizeStandaloneURLTestOptions(options *option.Options) {
+	options.Inbounds = nil
+	options.Services = nil
+	options.NTP = nil
+	options.Providers = nil
+	if options.Experimental != nil {
+		unifiedDelay := options.Experimental.UnifiedDelay
+		options.Experimental = &option.ExperimentalOptions{
+			UnifiedDelay: unifiedDelay,
+		}
+	}
 }
 
 func (i *Instance) Start() error {

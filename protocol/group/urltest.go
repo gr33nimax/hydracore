@@ -129,6 +129,9 @@ func (s *URLTest) Start() error {
 }
 
 func (s *URLTest) PostStart() error {
+	if urltest.BackgroundChecksDisabled(s.ctx) {
+		return nil
+	}
 	s.group.PostStart()
 	return nil
 }

@@ -18,6 +18,7 @@ type hydraCoreCapabilitySet struct {
 	CoreVersion                             string   `json:"core_version"`
 	UpstreamProject                         string   `json:"upstream_project"`
 	SupportsTargetedURLTest                 bool     `json:"supports_targeted_url_test"`
+	SupportsPreconnectURLTest               bool     `json:"supports_preconnect_url_test"`
 	SupportsGroupURLTestSessions            bool     `json:"supports_group_url_test_sessions"`
 	SupportsStructuredProbeErrors           bool     `json:"supports_structured_probe_errors"`
 	SupportsOutboundExternalInfo            bool     `json:"supports_outbound_external_info"`
@@ -73,6 +74,7 @@ func HydraCoreCapabilities() string {
 		CoreVersion:                          C.Version,
 		UpstreamProject:                      "etonify-core",
 		SupportsTargetedURLTest:              true,
+		SupportsPreconnectURLTest:            true,
 		SupportsGroupURLTestSessions:         true,
 		SupportsStructuredProbeErrors:        true,
 		SupportsOutboundExternalInfo:         true,

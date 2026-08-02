@@ -13,12 +13,11 @@ Compatibility identifiers required by existing bindings remain unchanged and
 are documented in `CREDITS.md`. They do not alter the public HydraCore product
 identity.
 
-## HydraCore revision 5
+## HydraCore revision 6
 
-- Uses `main` as the single stable development and release branch.
-- Removes the inherited documentation site and unsupported upstream packaging
-  workflows from the HydraCore product repository.
-- Consolidates source lineage, licenses, and retained compatibility identifiers
-  into a compact credits and third-party notice set.
-- Keeps the deferred WDTT experiment outside the stable runtime in the
-  `wdtt-archive` branch.
+- Adds cancellable one-shot URLTest sessions for a concrete outbound without
+  TUN, local inbounds, or background group probes.
+- Publishes structured latency, status, timing, and error results through the
+  mobile binding and advertises `supports_preconnect_url_test`.
+- Guarantees session cleanup across success, failure, timeout, cancellation,
+  network changes, and application lifecycle transitions.

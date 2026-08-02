@@ -20,6 +20,7 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, C.Version, capabilities.CoreVersion)
 	require.Equal(t, "etonify-core", capabilities.UpstreamProject)
 	require.True(t, capabilities.SupportsTargetedURLTest)
+	require.True(t, capabilities.SupportsPreconnectURLTest)
 	require.True(t, capabilities.SupportsGroupURLTestSessions)
 	require.True(t, capabilities.SupportsStructuredProbeErrors)
 	require.True(t, capabilities.SupportsOutboundExternalInfo)

@@ -52,13 +52,24 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, 8, capabilities.VLESSEncryptionMaxRelays)
 	require.Equal(t, 12_000, capabilities.VLESSEncryptionHandshakeTimeoutMS)
 	require.Equal(t, []string{"system", "gvisor", "mixed"}, capabilities.TUNStacks)
-	require.Equal(t, 1, capabilities.RemotePolicyVersion)
+	require.Equal(t, wdttIncluded, capabilities.SupportsWDTT)
+	require.Equal(t, wdttIncluded, capabilities.SupportsWDTTCredentialBridge)
+	require.Equal(t, wdttIncluded, capabilities.SupportsWDTTHotRotation)
+	require.Equal(t, 9, capabilities.WDTTMinWorkers)
+	require.Equal(t, 18, capabilities.WDTTRecommendedWorkers)
+	require.Equal(t, 36, capabilities.WDTTMaxWorkers)
+	require.Equal(t, 900, capabilities.WDTTLeaseTTLSeconds)
+	require.Equal(t, 600, capabilities.WDTTLeaseRefreshAfterSeconds)
+	require.Equal(t, 4, capabilities.WDTTMaxHashes)
+	require.Equal(t, []string{"auto", "anonymous", "account"}, capabilities.WDTTAuthModes)
+	require.Equal(t, []string{"audio", "video"}, capabilities.WDTTObfsModes)
+	require.Equal(t, 2, capabilities.RemotePolicyVersion)
 	require.Equal(t, []string{"$schema", "outbounds", "endpoints"}, capabilities.RemoteSafeTopLevelFields)
 	require.Equal(t, []string{
 		"socks", "http", "vmess", "trojan", "naive", "shadowtls", "vless", "mieru",
 		"anytls", "trusttunnel", "hysteria", "hysteria2", "tuic", "sudoku", "snell",
 	}, capabilities.RemoteSafeOutboundTypes)
-	require.Equal(t, []string{"wireguard"}, capabilities.RemoteSafeEndpointTypes)
+	require.Equal(t, remoteSafeEndpointTypes(), capabilities.RemoteSafeEndpointTypes)
 	require.Empty(t, capabilities.RemoteSafeDNSServerTypes)
 	require.Empty(t, capabilities.RemoteSafeProviderTypes)
 

@@ -16,6 +16,7 @@ const (
 	TypeTrustTunnel       = "trusttunnel"
 	TypeNaive             = "naive"
 	TypeWireGuard         = "wireguard"
+	TypeWDTT              = "wdtt"
 	TypeWARP              = "warp"
 	TypeMASQUE            = "masque"
 	TypeOpenVPN           = "openvpn"
@@ -95,6 +96,8 @@ func ProxyDisplayName(proxyType string) string {
 		return "Naive"
 	case TypeWireGuard:
 		return "WireGuard"
+	case TypeWDTT:
+		return "WDTT"
 	case TypeWARP:
 		return "WARP"
 	case TypeMASQUE:

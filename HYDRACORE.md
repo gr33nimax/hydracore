@@ -28,17 +28,30 @@ must reject a mismatched artifact before Android compilation or runtime startup.
 
 ## Remote subscription policy
 
-The capability document publishes remote policy v1 as an exact allowlist, not
+The capability document publishes remote policy v2 as an exact allowlist, not
 as permission to pass every native schema field from an untrusted publisher.
-Policy v1 permits only `$schema`, `outbounds`, and `endpoints` at the native
-document root. The outbound list contains leaf client protocols. The endpoint
-list permits userspace WireGuard only after HydraBox applies the field policy.
+Policy v2 permits only `$schema`, `outbounds`, and `endpoints` at the native
+document root. Its endpoint list permits userspace WireGuard and the
+subscription-only `wdtt` endpoint after HydraBox applies the field policy.
+
+WDTT profiles contain public relay topology and an opaque `credential_ref`.
+HydraBox owns subscription authentication, stable device identity, and secure
+storage for the persistent device grant. HydraCore owns the active 15-minute
+session lease, refreshes it after 10 minutes through WDTT over VK relay, and
+rotates worker generations without restarting the VPN. A missing worker count
+selects 18; counts below 9 are rejected.
 
 Classic AmneziaWG fields are covered. Additional or future obfuscation fields
-remain outside policy v1 until HydraBox and HydraCore both implement explicit
+remain outside policy v2 until HydraBox and HydraCore both implement explicit
 validation. DNS servers, providers, rule sets, composite or reverse types,
 local paths, listeners, and service-capable objects require a later policy and
 recursive validation. Older AARs without an exact manifest fail closed.
+
+The WDTT transport is built with `with_wdtt`, starts lazily on first endpoint
+use, and routes WDTT DNS, VK HTTPS, and TURN UDP through HydraCore's
+dialer/resolver/protect boundary. Direct WDTT links and raw sing-box imports are
+not HydraBox product entry points; WDTT is activated only from a Hydra
+subscription profile naming a policy-v2 WDTT endpoint.
 
 ## Versioning
 

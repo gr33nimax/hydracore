@@ -320,11 +320,25 @@ func nestedNumber(value map[string]any, path ...string) (int64, error) {
 		}
 		current = object[key]
 	}
-	number, loaded := current.(float64)
-	if !loaded || number <= 0 || number != float64(int64(number)) {
-		return 0, fmt.Errorf("expected positive integer")
+	var number int64
+	switch typed := current.(type) {
+	case float64:
+		// VK anonymous participants may have negative user IDs. Keep the value
+		// signed while rejecting zero, fractions and values outside int64.
+		if typed == 0 || typed < float64(-1<<63) || typed >= float64(1<<63) || typed != float64(int64(typed)) {
+			return 0, fmt.Errorf("expected non-zero integer")
+		}
+		number = int64(typed)
+	case string:
+		parsed, err := strconv.ParseInt(typed, 10, 64)
+		if err != nil || parsed == 0 {
+			return 0, fmt.Errorf("expected non-zero integer")
+		}
+		number = parsed
+	default:
+		return 0, fmt.Errorf("expected non-zero integer")
 	}
-	return int64(number), nil
+	return number, nil
 }
 
 func parseVKAPIError(response map[string]any) error {

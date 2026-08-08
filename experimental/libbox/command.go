@@ -6,4 +6,6 @@ const (
 	CommandGroup
 	CommandClashMode
 	CommandConnections
+	CommandRuntimeEvents
+	CommandURLTestEvents
 )

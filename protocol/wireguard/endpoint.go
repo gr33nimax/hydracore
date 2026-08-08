@@ -2,6 +2,7 @@ package wireguard
 
 import (
 	"context"
+	"encoding/base64"
 	"net"
 	"net/netip"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
+	"github.com/sagernet/sing/common/json/badoption"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -36,6 +38,9 @@ const (
 	maxAmneziaJunkPacketCount    = 128
 	maxAmneziaPacketPaddingBytes = 65_535
 	maxAmneziaHandshakeJunkBytes = 4 * 1024 * 1024
+	maxAmneziaTimerSeconds       = 24 * 60 * 60
+	maxAmneziaHandshakeAttempts  = 128
+	amneziaHeaderKeyBytes        = 32
 )
 
 func RegisterEndpoint(registry *endpoint.Registry) {
@@ -201,6 +206,31 @@ func validateEndpointResourceLimits(options option.WireGuardEndpointOptions) err
 	} {
 		if padding.value < 0 || padding.value > maxAmneziaPacketPaddingBytes {
 			return E.New("wireguard amnezia ", padding.name, " must be between 0 and ", maxAmneziaPacketPaddingBytes)
+		}
+	}
+	if amnezia.HeaderProtectionKey != "" {
+		key, err := base64.StdEncoding.DecodeString(amnezia.HeaderProtectionKey)
+		if err != nil || len(key) != amneziaHeaderKeyBytes {
+			return E.New("wireguard amnezia header_protection_key must encode exactly ", amneziaHeaderKeyBytes, " bytes")
+		}
+	}
+	for _, boundedRange := range []struct {
+		name  string
+		value *badoption.Range[uint32]
+		max   uint32
+	}{
+		{"content_padding_addition", amnezia.ContentPaddingAddition, maxAmneziaPacketPaddingBytes},
+		{"rekey_after_time", amnezia.RekeyAfterTime, maxAmneziaTimerSeconds},
+		{"rekey_timeout", amnezia.RekeyTimeout, maxAmneziaTimerSeconds},
+		{"reject_after_time", amnezia.RejectAfterTime, maxAmneziaTimerSeconds},
+		{"keepalive_timeout", amnezia.KeepaliveTimeout, maxAmneziaTimerSeconds},
+		{"max_handshake_attempts", amnezia.MaxHandshakeAttempts, maxAmneziaHandshakeAttempts},
+	} {
+		if boundedRange.value == nil {
+			continue
+		}
+		if boundedRange.value.From > boundedRange.value.To || boundedRange.value.To > boundedRange.max {
+			return E.New("wireguard amnezia ", boundedRange.name, " must be an ordered range between 0 and ", boundedRange.max)
 		}
 	}
 	return nil

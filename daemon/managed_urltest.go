@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	neturl "net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,23 +17,35 @@ import (
 	"github.com/sagernet/sing-box/common/urltest"
 	E "github.com/sagernet/sing/common/exceptions"
 
-	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
-	defaultURLTestTimeout     = 5 * time.Second
-	minimumURLTestTimeout     = 500 * time.Millisecond
-	maximumURLTestTimeout     = 30 * time.Second
-	defaultURLTestDeadline    = 30 * time.Second
-	maximumURLTestDeadline    = 2 * time.Minute
-	defaultURLTestConcurrency = 8
-	maximumURLTestConcurrency = 16
+	defaultURLTestTimeout          = 5 * time.Second
+	minimumURLTestTimeout          = 500 * time.Millisecond
+	maximumURLTestTimeout          = 30 * time.Second
+	defaultURLTestDeadline         = 30 * time.Second
+	maximumURLTestDeadline         = 2 * time.Minute
+	defaultURLTestConcurrency      = 8
+	maximumURLTestConcurrency      = 16
+	maximumRetainedURLTestSessions = 64
 )
 
-type urlTestSession struct {
-	id       uint64
-	instance *Instance
-	cancel   context.CancelFunc
+type managedURLTestSession struct {
+	id           string
+	groupTag     string
+	instance     *Instance
+	cancel       context.CancelFunc
+	state        URLTestSessionState
+	startedAt    time.Time
+	completedAt  time.Time
+	total        int32
+	completed    int32
+	succeeded    int32
+	failed       int32
+	results      []*URLTestResult
+	errorCode    string
+	errorMessage string
 }
 
 type urlTestSessionOptions struct {
@@ -50,11 +64,11 @@ type urlTestProbe func(ctx context.Context, link string, outbound adapter.Outbou
 
 type urlTestResultHandler func(target urlTestTarget, delay uint16, err error)
 
-func (s *StartedService) startURLTest(request *URLTestRequest) (*emptypb.Empty, error) {
+func (s *StartedService) startURLTest(request *URLTestRequest) (*URLTestSession, error) {
 	if request == nil {
 		return nil, E.New("missing URL test request")
 	}
-	groupTag := strings.TrimSpace(request.OutboundTag)
+	groupTag := strings.TrimSpace(request.GroupTag)
 	if groupTag == "" {
 		return nil, E.New("missing outbound group tag")
 	}
@@ -84,27 +98,43 @@ func (s *StartedService) startURLTest(request *URLTestRequest) (*emptypb.Empty, 
 	sessionContext, cancel := context.WithTimeout(boxService.ctx, options.deadline)
 
 	s.urlTestSessionAccess.Lock()
-	if existing := s.urlTestSessions[groupTag]; existing != nil {
-		if existing.instance == boxService && !request.Force {
+	if existingID := s.urlTestSessionByGroup[groupTag]; existingID != "" {
+		existing := s.urlTestSessions[existingID]
+		if existing != nil && existing.instance == boxService && existing.state == URLTestSessionState_URL_TEST_SESSION_RUNNING && !request.Force {
+			result := cloneURLTestSessionLocked(existing)
 			s.urlTestSessionAccess.Unlock()
 			s.serviceAccess.RUnlock()
 			cancel()
-			return &emptypb.Empty{}, nil
+			return result, nil
 		}
-		existing.cancel()
+		if existing != nil && existing.state == URLTestSessionState_URL_TEST_SESSION_RUNNING {
+			existing.state = URLTestSessionState_URL_TEST_SESSION_CANCELLED
+			existing.completedAt = time.Now()
+			existing.errorCode = "replaced"
+			existing.errorMessage = "replaced by a forced URL test session"
+			existing.cancel()
+		}
 	}
 	s.urlTestSessionSequence++
-	session := &urlTestSession{
-		id:       s.urlTestSessionSequence,
-		instance: boxService,
-		cancel:   cancel,
+	session := &managedURLTestSession{
+		id:        fmt.Sprintf("urltest-%d", s.urlTestSessionSequence),
+		groupTag:  groupTag,
+		instance:  boxService,
+		cancel:    cancel,
+		state:     URLTestSessionState_URL_TEST_SESSION_RUNNING,
+		startedAt: time.Now(),
+		total:     int32(len(targets)),
 	}
-	s.urlTestSessions[groupTag] = session
+	s.urlTestSessions[session.id] = session
+	s.urlTestSessionByGroup[groupTag] = session.id
+	pruneURLTestSessionsLocked(s.urlTestSessions)
+	result := cloneURLTestSessionLocked(session)
 	s.urlTestSessionAccess.Unlock()
 	s.serviceAccess.RUnlock()
 
+	s.urlTestSessionSubscriber.Emit(struct{}{})
 	go s.runURLTestSession(sessionContext, groupTag, session, targets, options)
-	return &emptypb.Empty{}, nil
+	return result, nil
 }
 
 func normalizeURLTestOptions(request *URLTestRequest) urlTestSessionOptions {
@@ -298,9 +328,9 @@ func resolveSelectedURLTestOutbound(outboundManager adapter.OutboundManager, tag
 	}
 }
 
-func (s *StartedService) runURLTestSession(ctx context.Context, groupTag string, session *urlTestSession, targets []urlTestTarget, options urlTestSessionOptions) {
+func (s *StartedService) runURLTestSession(ctx context.Context, groupTag string, session *managedURLTestSession, targets []urlTestTarget, options urlTestSessionOptions) {
 	defer session.cancel()
-	defer s.finishURLTestSession(groupTag, session)
+	defer s.finishURLTestSession(ctx, groupTag, session)
 
 	probe := func(probeContext context.Context, link string, outbound adapter.Outbound) (uint16, error) {
 		return urltest.URLTest(probeContext, link, outbound)
@@ -310,8 +340,18 @@ func (s *StartedService) runURLTestSession(ctx context.Context, groupTag string,
 			return
 		}
 		now := time.Now()
+		result := &URLTestResult{
+			OutboundTag: target.tag,
+			ObservedAt:  now.UnixMilli(),
+		}
 		if err != nil {
 			errorCode, errorMessage := classifyURLTestError(err)
+			result.Status = string(adapter.URLTestStatusUnavailable)
+			result.ErrorCode = errorCode
+			result.ErrorMessage = errorMessage
+			if !s.recordURLTestResult(session, result, false) {
+				return
+			}
 			session.instance.urlTestHistoryStorage.StoreURLTestHistory(target.tag, &adapter.URLTestHistory{
 				Time:      now,
 				Status:    adapter.URLTestStatusUnavailable,
@@ -322,6 +362,11 @@ func (s *StartedService) runURLTestSession(ctx context.Context, groupTag string,
 		}
 		if delay == 0 {
 			delay = 1
+		}
+		result.DelayMillis = int64(delay)
+		result.Status = string(adapter.URLTestStatusAvailable)
+		if !s.recordURLTestResult(session, result, true) {
+			return
 		}
 		session.instance.urlTestHistoryStorage.StoreURLTestHistory(target.tag, &adapter.URLTestHistory{
 			Time:   now,
@@ -409,18 +454,182 @@ func runURLTestTargets(ctx context.Context, targets []urlTestTarget, options url
 	workers.Wait()
 }
 
-func (s *StartedService) isCurrentURLTestSession(groupTag string, session *urlTestSession) bool {
+func (s *StartedService) isCurrentURLTestSession(groupTag string, session *managedURLTestSession) bool {
 	s.urlTestSessionAccess.Lock()
 	defer s.urlTestSessionAccess.Unlock()
-	return s.urlTestSessions[groupTag] == session
+	return s.urlTestSessionByGroup[groupTag] == session.id && session.state == URLTestSessionState_URL_TEST_SESSION_RUNNING
 }
 
-func (s *StartedService) finishURLTestSession(groupTag string, session *urlTestSession) {
+func (s *StartedService) recordURLTestResult(session *managedURLTestSession, result *URLTestResult, succeeded bool) bool {
 	s.urlTestSessionAccess.Lock()
-	if s.urlTestSessions[groupTag] == session {
-		delete(s.urlTestSessions, groupTag)
+	if session.state != URLTestSessionState_URL_TEST_SESSION_RUNNING {
+		s.urlTestSessionAccess.Unlock()
+		return false
+	}
+	session.results = append(session.results, result)
+	session.completed++
+	if succeeded {
+		session.succeeded++
+	} else {
+		session.failed++
 	}
 	s.urlTestSessionAccess.Unlock()
+	s.urlTestSessionSubscriber.Emit(struct{}{})
+	return true
+}
+
+func (s *StartedService) finishURLTestSession(ctx context.Context, groupTag string, session *managedURLTestSession) {
+	s.urlTestSessionAccess.Lock()
+	if session.state == URLTestSessionState_URL_TEST_SESSION_RUNNING {
+		session.completedAt = time.Now()
+		switch {
+		case errors.Is(ctx.Err(), context.Canceled):
+			session.state = URLTestSessionState_URL_TEST_SESSION_CANCELLED
+			session.errorCode = "cancelled"
+			session.errorMessage = "URL test session cancelled"
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			session.state = URLTestSessionState_URL_TEST_SESSION_FAILED
+			session.errorCode = "deadline"
+			session.errorMessage = "URL test session deadline exceeded"
+		case session.succeeded > 0:
+			session.state = URLTestSessionState_URL_TEST_SESSION_SUCCEEDED
+		default:
+			session.state = URLTestSessionState_URL_TEST_SESSION_FAILED
+			session.errorCode = "all_probes_failed"
+			session.errorMessage = "all URL test probes failed"
+		}
+	}
+	if s.urlTestSessionByGroup[groupTag] == session.id {
+		delete(s.urlTestSessionByGroup, groupTag)
+	}
+	pruneURLTestSessionsLocked(s.urlTestSessions)
+	s.urlTestSessionAccess.Unlock()
+	s.urlTestSessionSubscriber.Emit(struct{}{})
+}
+
+func cloneURLTestSessionLocked(session *managedURLTestSession) *URLTestSession {
+	result := &URLTestSession{
+		Id:           session.id,
+		GroupTag:     session.groupTag,
+		State:        session.state,
+		StartedAt:    session.startedAt.UnixMilli(),
+		Total:        session.total,
+		Completed:    session.completed,
+		Succeeded:    session.succeeded,
+		Failed:       session.failed,
+		ErrorCode:    session.errorCode,
+		ErrorMessage: session.errorMessage,
+	}
+	if !session.completedAt.IsZero() {
+		result.CompletedAt = session.completedAt.UnixMilli()
+	}
+	result.Results = make([]*URLTestResult, 0, len(session.results))
+	for _, item := range session.results {
+		result.Results = append(result.Results, proto.Clone(item).(*URLTestResult))
+	}
+	return result
+}
+
+func (s *StartedService) readURLTestSessions() []*URLTestSession {
+	s.urlTestSessionAccess.Lock()
+	defer s.urlTestSessionAccess.Unlock()
+	result := make([]*URLTestSession, 0, len(s.urlTestSessions))
+	for _, session := range s.urlTestSessions {
+		result = append(result, cloneURLTestSessionLocked(session))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StartedAt == result[j].StartedAt {
+			return result[i].Id < result[j].Id
+		}
+		return result[i].StartedAt < result[j].StartedAt
+	})
+	return result
+}
+
+func (s *StartedService) getURLTestSession(id string) (*URLTestSession, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, E.New("missing URL test session ID")
+	}
+	s.urlTestSessionAccess.Lock()
+	defer s.urlTestSessionAccess.Unlock()
+	session := s.urlTestSessions[id]
+	if session == nil {
+		return nil, E.New("URL test session not found")
+	}
+	return cloneURLTestSessionLocked(session), nil
+}
+
+func (s *StartedService) cancelURLTestSession(id string) (*URLTestSession, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, E.New("missing URL test session ID")
+	}
+	s.urlTestSessionAccess.Lock()
+	session := s.urlTestSessions[id]
+	if session == nil {
+		s.urlTestSessionAccess.Unlock()
+		return nil, E.New("URL test session not found")
+	}
+	if session.state == URLTestSessionState_URL_TEST_SESSION_RUNNING {
+		session.state = URLTestSessionState_URL_TEST_SESSION_CANCELLED
+		session.completedAt = time.Now()
+		session.errorCode = "cancelled"
+		session.errorMessage = "URL test session cancelled"
+		if s.urlTestSessionByGroup[session.groupTag] == session.id {
+			delete(s.urlTestSessionByGroup, session.groupTag)
+		}
+		session.cancel()
+	}
+	result := cloneURLTestSessionLocked(session)
+	s.urlTestSessionAccess.Unlock()
+	s.urlTestSessionSubscriber.Emit(struct{}{})
+	return result, nil
+}
+
+func (s *StartedService) cancelURLTestSessionsForInstance(instance *Instance, errorCode string) {
+	if instance == nil {
+		return
+	}
+	now := time.Now()
+	changed := false
+	s.urlTestSessionAccess.Lock()
+	for _, session := range s.urlTestSessions {
+		if session.instance != instance || session.state != URLTestSessionState_URL_TEST_SESSION_RUNNING {
+			continue
+		}
+		session.state = URLTestSessionState_URL_TEST_SESSION_CANCELLED
+		session.completedAt = now
+		session.errorCode = errorCode
+		session.errorMessage = "runtime instance stopped"
+		if s.urlTestSessionByGroup[session.groupTag] == session.id {
+			delete(s.urlTestSessionByGroup, session.groupTag)
+		}
+		session.cancel()
+		changed = true
+	}
+	s.urlTestSessionAccess.Unlock()
+	if changed {
+		s.urlTestSessionSubscriber.Emit(struct{}{})
+	}
+}
+
+func pruneURLTestSessionsLocked(sessions map[string]*managedURLTestSession) {
+	completed := make([]*managedURLTestSession, 0, len(sessions))
+	for _, session := range sessions {
+		if session.state != URLTestSessionState_URL_TEST_SESSION_RUNNING {
+			completed = append(completed, session)
+		}
+	}
+	if len(completed) <= maximumRetainedURLTestSessions {
+		return
+	}
+	sort.Slice(completed, func(i, j int) bool {
+		return completed[i].completedAt.Before(completed[j].completedAt)
+	})
+	for _, session := range completed[:len(completed)-maximumRetainedURLTestSessions] {
+		delete(sessions, session.id)
+	}
 }
 
 func classifyURLTestError(err error) (string, string) {

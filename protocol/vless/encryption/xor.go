@@ -52,7 +52,7 @@ func newXORConn(conn net.Conn, ctr, peerCTR cipher.Stream, outSkip, inSkip int) 
 }
 
 // XorConn and NewXorConn keep the extended server API compatible while the
-// implementation remains shared with the hardened Etonify client.
+// implementation remains shared with the hardened mobile client.
 type XorConn = xorConn
 
 func NewXorConn(conn net.Conn, ctr, peerCTR cipher.Stream, outSkip, inSkip int) *XorConn {

@@ -60,8 +60,13 @@ func init() {
 	if err != nil {
 		currentTag = "unknown"
 	}
-	sharedFlags = append(sharedFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -s -w -buildid=  -checklinkname=0")
-	debugFlags = append(debugFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0")
+	sourceCommit := "unknown"
+	if output, commandErr := exec.Command("git", "rev-parse", "HEAD").Output(); commandErr == nil {
+		sourceCommit = strings.TrimSpace(string(output))
+	}
+	metadataFlags := " -X github.com/sagernet/sing-box/experimental/libbox.hydraCoreSourceCommit=" + sourceCommit
+	sharedFlags = append(sharedFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+metadataFlags+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -s -w -buildid=  -checklinkname=0")
+	debugFlags = append(debugFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+metadataFlags+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0")
 
 	sharedTags = append(sharedTags, "with_gvisor", "with_quic", "with_dhcp", "with_wireguard", "with_utls", "with_acme", "with_clash_api", "with_manager", "with_admin_panel", "with_profiler", "with_v2ray_api", "with_masque", "with_mtproxy", "with_ccm", "with_ocm", "with_openvpn", "with_trusttunnel", "with_call", "with_sudoku", "with_snell", "with_naive_outbound", "badlinkname", "tfogo_checklinkname0")
 	darwinTags = append(darwinTags, "grpcnotrace")

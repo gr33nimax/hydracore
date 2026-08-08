@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hydra.invalid/schema/hydra-subscription-jwe-v2.schema.json",
+  "title": "Hydra Subscription v2 flattened JWE",
+  "type": "object",
+  "required": ["protected", "encrypted_key", "iv", "ciphertext", "tag"],
+  "properties": {
+    "protected": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$"},
+    "encrypted_key": {"const": ""},
+    "iv": {"type": "string", "minLength": 16, "maxLength": 16, "pattern": "^[A-Za-z0-9_-]+$"},
+    "ciphertext": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$"},
+    "tag": {"type": "string", "minLength": 22, "maxLength": 22, "pattern": "^[A-Za-z0-9_-]+$"}
+  },
+  "additionalProperties": false
+}

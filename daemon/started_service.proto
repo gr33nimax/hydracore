@@ -20,7 +20,13 @@ service StartedService {
   rpc SubscribeClashMode(google.protobuf.Empty) returns(stream ClashMode) {}
   rpc SetClashMode(ClashMode) returns(google.protobuf.Empty) {}
 
-  rpc URLTest(URLTestRequest) returns(google.protobuf.Empty) {}
+  rpc GetRuntimeSnapshot(google.protobuf.Empty) returns(RuntimeSnapshot) {}
+  rpc SubscribeRuntimeEvents(RuntimeEventRequest) returns(stream RuntimeEvents) {}
+
+  rpc StartURLTest(URLTestRequest) returns(URLTestSession) {}
+  rpc GetURLTestSession(URLTestSessionRequest) returns(URLTestSession) {}
+  rpc CancelURLTest(URLTestSessionRequest) returns(URLTestSession) {}
+  rpc SubscribeURLTestEvents(URLTestEventRequest) returns(stream URLTestEvents) {}
   rpc LookupOutboundExternalInfo(OutboundExternalInfoRequest) returns(OutboundExternalInfoResponse) {}
   rpc SelectOutbound(SelectOutboundRequest) returns (google.protobuf.Empty) {}
   rpc SetGroupExpand(SetGroupExpandRequest) returns (google.protobuf.Empty) {}
@@ -115,7 +121,7 @@ message GroupItem {
 }
 
 message URLTestRequest {
-  string outboundTag = 1;
+  string groupTag = 1;
   string urlTestUrl = 2;
   string targetOutboundTag = 3;
   string priorityOutboundTag = 4;
@@ -124,6 +130,93 @@ message URLTestRequest {
   int32 concurrency = 7;
   int32 deadlineMillis = 8;
   bool force = 9;
+}
+
+enum URLTestSessionState {
+  URL_TEST_SESSION_QUEUED = 0;
+  URL_TEST_SESSION_RUNNING = 1;
+  URL_TEST_SESSION_SUCCEEDED = 2;
+  URL_TEST_SESSION_FAILED = 3;
+  URL_TEST_SESSION_CANCELLED = 4;
+}
+
+message URLTestResult {
+  string outboundTag = 1;
+  int64 delayMillis = 2;
+  int64 observedAt = 3;
+  string status = 4;
+  string errorCode = 5;
+  string errorMessage = 6;
+}
+
+message URLTestSession {
+  string id = 1;
+  string groupTag = 2;
+  URLTestSessionState state = 3;
+  int64 startedAt = 4;
+  int64 completedAt = 5;
+  int32 total = 6;
+  int32 completed = 7;
+  int32 succeeded = 8;
+  int32 failed = 9;
+  repeated URLTestResult results = 10;
+  string errorCode = 11;
+  string errorMessage = 12;
+}
+
+message URLTestSessionRequest {
+  string id = 1;
+}
+
+message URLTestEventRequest {
+  int64 intervalMillis = 1;
+}
+
+message URLTestEvents {
+  uint64 sequence = 1;
+  bool reset = 2;
+  repeated URLTestSession sessions = 3;
+}
+
+message RuntimeSnapshot {
+  int32 schemaVersion = 1;
+  uint64 sequence = 2;
+  int64 observedAt = 3;
+  ServiceStatus service = 4;
+  int64 startedAt = 5;
+  Status status = 6;
+  Groups groups = 7;
+  ClashModeStatus clashMode = 8;
+  repeated URLTestSession urlTestSessions = 9;
+}
+
+message RuntimeEventRequest {
+  int64 intervalMillis = 1;
+}
+
+enum RuntimeEventType {
+  RUNTIME_EVENT_SERVICE = 0;
+  RUNTIME_EVENT_STATUS = 1;
+  RUNTIME_EVENT_GROUPS = 2;
+  RUNTIME_EVENT_CLASH_MODE = 3;
+  RUNTIME_EVENT_URL_TEST_SESSIONS = 4;
+}
+
+message RuntimeEvent {
+  RuntimeEventType type = 1;
+  ServiceStatus service = 2;
+  Status status = 3;
+  Groups groups = 4;
+  ClashModeStatus clashMode = 5;
+  repeated URLTestSession urlTestSessions = 6;
+  int64 startedAt = 7;
+}
+
+message RuntimeEvents {
+  uint64 sequence = 1;
+  bool reset = 2;
+  RuntimeSnapshot snapshot = 3;
+  repeated RuntimeEvent events = 4;
 }
 
 message OutboundExternalInfoRequest {

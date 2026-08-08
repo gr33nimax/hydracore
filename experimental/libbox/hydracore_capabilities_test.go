@@ -1,0 +1,49 @@
+package libbox
+
+import (
+	"encoding/json"
+	"testing"
+
+	C "github.com/sagernet/sing-box/constant"
+	"github.com/stretchr/testify/require"
+)
+
+func TestHydraCoreCapabilities(t *testing.T) {
+	t.Parallel()
+
+	content := HydraCoreCapabilities()
+	var capabilities hydraCoreCapabilitySet
+	require.NoError(t, json.Unmarshal([]byte(content), &capabilities))
+	require.Equal(t, 2, capabilities.APIVersion)
+	require.Equal(t, "io.hydrabox.hydracore", capabilities.Identity.CoreID)
+	require.Equal(t, "HydraCore", capabilities.Identity.CoreName)
+	require.Equal(t, C.Version, capabilities.Identity.CoreVersion)
+	require.True(t, capabilities.Features.TargetedURLTest)
+	require.True(t, capabilities.Features.ConfigValidation)
+	require.True(t, capabilities.Features.RuntimeSnapshot)
+	require.True(t, capabilities.Features.RuntimeEvents)
+	require.True(t, capabilities.Features.ManagedURLTestSessions)
+	require.True(t, capabilities.Features.SubscriptionJWE)
+	require.True(t, capabilities.Features.Rmux)
+	require.Equal(t, 3, capabilities.Features.AmneziaVersion)
+	require.Equal(t, []string{"local", "remote_v2"}, capabilities.ValidationProfiles)
+	require.Equal(t, []int{2}, capabilities.SubscriptionContracts)
+	require.Equal(t, 2, capabilities.RemotePolicy.Version)
+	require.Equal(t, []string{"$schema", "inbounds", "outbounds", "endpoints"}, capabilities.RemotePolicy.SafeTopLevelFields)
+	require.Equal(t, []string{"wireguard"}, capabilities.RemotePolicy.SafeEndpointTypes)
+	require.Empty(t, capabilities.RemotePolicy.SafeDNSServerTypes)
+	require.Empty(t, capabilities.RemotePolicy.SafeProviderTypes)
+	require.Contains(t, capabilities.RemotePolicy.ReservedTagPrefixes, "__hydra.")
+	require.Equal(t, 1, capabilities.Runtime.Version)
+	require.Equal(t, 64, capabilities.Runtime.RetainedURLTestSessions)
+	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.Call)
+	if hydraCoreCallEnabled {
+		require.Contains(t, capabilities.Protocols.Inbounds, "call")
+		require.Contains(t, capabilities.Protocols.Outbounds, "call")
+		require.Equal(t, []string{"dion", "telemost", "vk", "wbstream"}, capabilities.Protocols.CallPlatforms)
+	} else {
+		require.NotContains(t, capabilities.Protocols.Inbounds, "call")
+		require.NotContains(t, capabilities.Protocols.Outbounds, "call")
+		require.Empty(t, capabilities.Protocols.CallPlatforms)
+	}
+}

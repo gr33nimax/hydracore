@@ -1,5 +1,7 @@
 param(
-    [string]$PackageName = "com.etonify.meow_client",
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PackageName,
     [ValidateRange(1, 1440)][int]$DurationMinutes = 30,
     [ValidateRange(5, 3600)][int]$IntervalSeconds = 30,
     [ValidateRange(0, 100000)][int]$SampleCount = 0,
@@ -13,7 +15,7 @@ if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
 }
 
 $limits = @{}
-Get-Content (Join-Path $PSScriptRoot "ETONIFY_PERFORMANCE_BASELINE") | ForEach-Object {
+Get-Content (Join-Path $PSScriptRoot "HYDRACORE_PERFORMANCE_BASELINE") | ForEach-Object {
     if ($_ -match '^([A-Z0-9_]+)=(\d+)$') {
         $limits[$Matches[1]] = [int64]$Matches[2]
     }

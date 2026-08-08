@@ -20,10 +20,13 @@ server/control                                  client        runtime
 - Android `libbox.aar` and generated Java bindings.
 - SHA-256 checksums, generated sources, attributed source archive, and
   machine-readable build provenance for every release.
-- `HydraCoreCapabilities()` with an exact versioned remote-safety contract for
-  HydraBox Subscription v1.
+- HydraCore API v2: capability/build manifests, strict local and remote
+  validation, runtime snapshots/events, and managed URLTest sessions.
+- Hydra Subscription v2 plaintext and flattened JWE schemas, validation,
+  redacted inspection, authenticated opening, and checksummed contract files.
 - WireGuard/AmneziaWG, VLESS, VMess, Trojan, Hysteria 2, TUIC, AnyTLS,
-  ShadowTLS, XHTTP, OpenVPN, TrustTunnel, MASQUE, MTProxy, Snell, Naive, and
+  ShadowTLS, XHTTP, OpenVPN, TrustTunnel, MASQUE, MTProxy, Snell, Naive, Call
+  inbound/outbound (`dion`, `telemost`, `vk`, `wbstream`), and
   the inherited routing/DNS runtime enabled by the published build tags.
 
 Other build targets present in the source tree are not HydraCore release
@@ -37,8 +40,9 @@ rejects a mismatched runtime before build or activation.
 
 The public distribution identity is `io.hydrabox.hydracore`. Compatibility
 identifiers required by existing native bindings remain stable; they are not
-public product names. The exact contract is documented in
-[HYDRACORE.md](HYDRACORE.md).
+public product names. The runtime and subscription contracts are documented in
+[HYDRACORE.md](HYDRACORE.md) and
+[contract/subscription/HYDRA_SUBSCRIPTION_V2.md](contract/subscription/HYDRA_SUBSCRIPTION_V2.md).
 
 ## Development
 

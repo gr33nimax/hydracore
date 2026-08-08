@@ -17,6 +17,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
+	C "github.com/sagernet/sing-box/constant"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/ntp"
 	"golang.org/x/sync/singleflight"
@@ -218,7 +219,7 @@ func fetchOutboundExternalInfoSource(ctx context.Context, client *http.Client, s
 		return outboundExternalInfo{}, err
 	}
 	request.Header.Set("Accept", "text/plain")
-	request.Header.Set("User-Agent", "HydraCore (based on etonify-core)")
+	request.Header.Set("User-Agent", "HydraCore/"+C.Version)
 	response, err := client.Do(request)
 	if err != nil {
 		return outboundExternalInfo{}, err

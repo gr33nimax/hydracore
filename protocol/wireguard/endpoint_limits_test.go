@@ -2,9 +2,11 @@ package wireguard
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common/json/badoption"
 )
 
 func validResourceLimitedOptions() option.WireGuardEndpointOptions {
@@ -12,13 +14,17 @@ func validResourceLimitedOptions() option.WireGuardEndpointOptions {
 		Workers:                    64,
 		PreallocatedBuffersPerPool: maxWireGuardBuffersPerPool,
 		Amnezia: &option.WireGuardAmnezia{
-			JC:   120,
-			JMin: 23,
-			JMax: 911,
-			S1:   1,
-			S2:   2,
-			S3:   3,
-			S4:   4,
+			JC:                     120,
+			JMin:                   23,
+			JMax:                   911,
+			S1:                     1,
+			S2:                     2,
+			S3:                     3,
+			S4:                     4,
+			HeaderProtectionKey:    base64.StdEncoding.EncodeToString(make([]byte, amneziaHeaderKeyBytes)),
+			ContentPaddingAddition: &badoption.Range[uint32]{From: 50, To: 100},
+			RekeyAfterTime:         &badoption.Range[uint32]{From: 120, To: 180},
+			MaxHandshakeAttempts:   &badoption.Range[uint32]{From: 10, To: 20},
 		},
 	}
 }
@@ -63,6 +69,19 @@ func TestValidateEndpointResourceLimitsRejectsUnsafeValues(t *testing.T) {
 		}},
 		{"negative s1", func(options *option.WireGuardEndpointOptions) { options.Amnezia.S1 = -1 }},
 		{"excessive s4", func(options *option.WireGuardEndpointOptions) { options.Amnezia.S4 = maxAmneziaPacketPaddingBytes + 1 }},
+		{"invalid header protection key", func(options *option.WireGuardEndpointOptions) { options.Amnezia.HeaderProtectionKey = "not-base64" }},
+		{"short header protection key", func(options *option.WireGuardEndpointOptions) {
+			options.Amnezia.HeaderProtectionKey = base64.StdEncoding.EncodeToString(make([]byte, amneziaHeaderKeyBytes-1))
+		}},
+		{"excessive content padding", func(options *option.WireGuardEndpointOptions) {
+			options.Amnezia.ContentPaddingAddition = &badoption.Range[uint32]{To: maxAmneziaPacketPaddingBytes + 1}
+		}},
+		{"excessive rekey time", func(options *option.WireGuardEndpointOptions) {
+			options.Amnezia.RekeyAfterTime = &badoption.Range[uint32]{To: maxAmneziaTimerSeconds + 1}
+		}},
+		{"excessive handshake attempts", func(options *option.WireGuardEndpointOptions) {
+			options.Amnezia.MaxHandshakeAttempts = &badoption.Range[uint32]{To: maxAmneziaHandshakeAttempts + 1}
+		}},
 	}
 
 	for _, test := range tests {

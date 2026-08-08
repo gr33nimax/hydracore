@@ -6,7 +6,7 @@ repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repository_root}"
 
 # shellcheck disable=SC1091
-source release/ETONIFY_PERFORMANCE_BASELINE
+source release/HYDRACORE_PERFORMANCE_BASELINE
 
 go test -count=1 -run '^TestXHTTPResourceSoak$' ./transport/v2rayxhttp
 
@@ -16,8 +16,8 @@ go test \
   -run '^$' \
   -bench '^BenchmarkEncryptedRoundTrip$' \
   -benchmem \
-  -benchtime "${ETONIFY_BENCHTIME:-30x}" \
-  -count "${ETONIFY_BENCHMARK_RUNS:-3}" \
+  -benchtime "${HYDRACORE_BENCHTIME:-30x}" \
+  -count "${HYDRACORE_BENCHMARK_RUNS:-3}" \
   ./protocol/vless/encryption | tee "${benchmark_output}"
 
 awk \

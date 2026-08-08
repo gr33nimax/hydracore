@@ -293,7 +293,7 @@ func TestEncryptedRoundTrip(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				payload := bytes.Repeat([]byte("etonify"), 3000)
+				payload := bytes.Repeat([]byte("hydracore"), 3000)
 				roundTrip(t, ctx, client, server, payload)
 			})
 		}

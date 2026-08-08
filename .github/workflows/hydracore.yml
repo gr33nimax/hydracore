@@ -1,4 +1,4 @@
-name: HydraCore · Verified Android runtime
+name: HydraCore - Verified Android runtime
 
 on:
   push:
@@ -11,6 +11,7 @@ on:
       - 'adapter/**'
       - 'cmd/**'
       - 'common/**'
+      - 'contract/**'
       - 'constant/**'
       - 'daemon/**'
       - 'dns/**'
@@ -57,15 +58,19 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Verify baseline
-        run: bash release/verify_etonify_baseline.sh
+        run: bash release/verify_upstream_baseline.sh
+      - name: Verify attribution boundaries
+        run: bash release/verify_attribution_boundaries.sh
       - name: Test
         run: go test ./...
       - name: Test WireGuard libbox config gate
         run: go test -tags with_wireguard ./experimental/libbox
+      - name: Test Call protocol build
+        run: go test -tags with_call ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Race test HydraCore inherited runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
       - name: Resource and performance gate
-        run: bash release/verify_etonify_performance.sh
+        run: bash release/verify_hydracore_performance.sh
 
   android:
     name: Build verified Android AAR
@@ -93,7 +98,7 @@ jobs:
         with:
           ndk-version: r28
       - name: Verify baseline
-        run: bash release/verify_etonify_baseline.sh
+        run: bash release/verify_upstream_baseline.sh
       - name: Set HydraCore build version
         shell: bash
         run: |
@@ -123,15 +128,22 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
-          source release/ETONIFY_BASELINE
-          etonify_version="$(tr -d '\r\n' < release/ETONIFY_VERSION)"
+          source release/UPSTREAM_BASELINE
           hydracore_version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           test -f libbox.aar
           test -f libbox-sources.jar
           mkdir -p dist
           cp libbox.aar libbox-sources.jar dist/
+          cp contract/subscription/HYDRA_SUBSCRIPTION_V2.md dist/
+          cp contract/subscription/schema/hydra-subscription-v2.schema.json dist/
+          cp contract/subscription/schema/hydra-subscription-jwe-v2.schema.json dist/
           sha256sum libbox.aar > dist/libbox.aar.sha256
+          sha256sum libbox-sources.jar > dist/libbox-sources.jar.sha256
+          (cd dist && sha256sum HYDRA_SUBSCRIPTION_V2.md > HYDRA_SUBSCRIPTION_V2.md.sha256)
+          (cd dist && sha256sum hydra-subscription-v2.schema.json > hydra-subscription-v2.schema.json.sha256)
+          (cd dist && sha256sum hydra-subscription-jwe-v2.schema.json > hydra-subscription-jwe-v2.schema.json.sha256)
           git archive --format=tar HEAD | gzip -n > dist/hydracore-source.tar.gz
+          (cd dist && sha256sum hydracore-source.tar.gz > hydracore-source.tar.gz.sha256)
           commit="$(git rev-parse HEAD)"
           version="$(git describe --tags --always --dirty)"
           go_actual="$(go version)"
@@ -143,27 +155,60 @@ jobs:
             }' "$ANDROID_NDK_HOME/source.properties"
           )"
           test -n "$ndk_revision"
+          aar_sha256="$(sha256sum libbox.aar | awk '{print $1}')"
+          sources_sha256="$(sha256sum libbox-sources.jar | awk '{print $1}')"
+          source_sha256="$(sha256sum dist/hydracore-source.tar.gz | awk '{print $1}')"
+          subscription_spec_sha256="$(sha256sum dist/HYDRA_SUBSCRIPTION_V2.md | awk '{print $1}')"
+          subscription_schema_sha256="$(sha256sum dist/hydra-subscription-v2.schema.json | awk '{print $1}')"
+          subscription_jwe_schema_sha256="$(sha256sum dist/hydra-subscription-jwe-v2.schema.json | awk '{print $1}')"
+          build_tags_json="$(jq -Rn --arg tags "$LIBBOX_BUILD_TAGS" '$tags | split(",")')"
           cat > dist/provenance.json <<EOF
           {
-            "artifact": "libbox.aar",
-            "distribution_id": "io.hydrabox.hydracore",
-            "distribution_name": "HydraCore",
-            "upstream_project": "etonify-core",
-            "sha256": "$(sha256sum libbox.aar | awk '{print $1}')",
-            "source_commit": "${commit}",
-            "source_version": "${version}",
-            "hydracore_version": "${hydracore_version}",
-            "etonify_version": "${etonify_version}",
-            "upstream_commit": "${UPSTREAM_COMMIT}",
-            "go": "${go_actual}",
-            "gomobile": "${GOMOBILE_VERSION}",
-            "java": "${java_actual}",
-            "android_ndk": "${ndk_revision}",
-            "android_ndk_requested": "${ANDROID_NDK_VERSION}",
-            "android_api": ${LIBBOX_ANDROID_API},
-            "build_tags": "${LIBBOX_BUILD_TAGS}"
+            "schema_version": 3,
+            "distribution": {
+              "id": "io.hydrabox.hydracore",
+              "name": "HydraCore",
+              "version": "${hydracore_version}"
+            },
+            "source": {
+              "repository": "https://github.com/gr33nimax/hydracore",
+              "commit": "${commit}",
+              "version": "${version}"
+            },
+            "upstream": {
+              "project": "sing-box-extended",
+              "repository": "${UPSTREAM_REPOSITORY}",
+              "branch": "${UPSTREAM_BRANCH}",
+              "tag": "${UPSTREAM_TAG}",
+              "commit": "${UPSTREAM_COMMIT}"
+            },
+            "toolchain": {
+              "go": "${go_actual}",
+              "gomobile": "${GOMOBILE_VERSION}",
+              "java": "${java_actual}",
+              "build_tags": ${build_tags_json}
+            },
+            "android": {
+              "ndk": "${ndk_revision}",
+              "ndk_requested": "${ANDROID_NDK_VERSION}",
+              "api": ${LIBBOX_ANDROID_API}
+            },
+            "artifacts": {
+              "libbox.aar": {"sha256": "${aar_sha256}"},
+              "libbox-sources.jar": {"sha256": "${sources_sha256}"},
+              "hydracore-source.tar.gz": {"sha256": "${source_sha256}"},
+              "HYDRA_SUBSCRIPTION_V2.md": {"sha256": "${subscription_spec_sha256}"},
+              "hydra-subscription-v2.schema.json": {"sha256": "${subscription_schema_sha256}"},
+              "hydra-subscription-jwe-v2.schema.json": {"sha256": "${subscription_jwe_schema_sha256}"}
+            },
+            "lineage": [
+              {"project": "sing-box", "role": "origin"},
+              {"project": "sing-box-extended", "role": "active-upstream"},
+              {"project": "etonify-core", "role": "historical-mobile-integration"}
+            ]
           }
           EOF
+          jq --exit-status . dist/provenance.json >/dev/null
       - name: Upload libbox artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -194,20 +239,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          (cd dist && sha256sum --check libbox.aar.sha256)
+          (cd dist && sha256sum --check ./*.sha256)
           hydracore_version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
-          etonify_version="$(tr -d '\r\n' < release/ETONIFY_VERSION)"
-          source release/ETONIFY_BASELINE
+          source release/UPSTREAM_BASELINE
           jq --exit-status \
             --arg commit "$GITHUB_SHA" \
             --arg hydracore_version "$hydracore_version" \
-            --arg etonify_version "$etonify_version" \
+            --arg upstream_commit "$UPSTREAM_COMMIT" \
             --arg android_ndk_requested "$ANDROID_NDK_VERSION" \
-            '.source_commit == $commit and
-             .hydracore_version == $hydracore_version and
-             .etonify_version == $etonify_version and
-             .android_ndk_requested == $android_ndk_requested' \
+            '.schema_version == 3 and
+             .source.commit == $commit and
+             .distribution.version == $hydracore_version and
+             .upstream.project == "sing-box-extended" and
+             .upstream.commit == $upstream_commit and
+             .android.ndk_requested == $android_ndk_requested' \
             dist/provenance.json >/dev/null
+          for artifact in \
+            libbox.aar \
+            libbox-sources.jar \
+            hydracore-source.tar.gz \
+            HYDRA_SUBSCRIPTION_V2.md \
+            hydra-subscription-v2.schema.json \
+            hydra-subscription-jwe-v2.schema.json; do
+            actual="$(sha256sum "dist/${artifact}" | awk '{print $1}')"
+            recorded="$(jq -r --arg artifact "$artifact" '.artifacts[$artifact].sha256' dist/provenance.json)"
+            test "$actual" = "$recorded"
+          done
       - name: Create, populate, and publish prerelease
         shell: bash
         env:
@@ -216,7 +273,7 @@ jobs:
           set -euo pipefail
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           test -n "$version"
-          title="HydraCore ${version} — verified Android runtime"
+          title="HydraCore ${version} - verified Android runtime"
 
           if gh release view "$version" --json isDraft > release-state.json 2>/dev/null; then
             if [[ "$(jq -r '.isDraft' release-state.json)" != "true" ]]; then

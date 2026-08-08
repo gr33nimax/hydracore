@@ -16,6 +16,19 @@
 - Moved WDTT work out of the stable line and preserved it in the
   `wdtt-archive` branch for possible future research.
 
+## v1.13.16-extended-hydracore.1
+
+- Updated the exact `sing-box-extended` baseline to commit
+  `da4c532efb1f86a38a324909fc9b8867f811551c` from the 2.6.1 line.
+- Introduced HydraCore API v2, remote policy v2, build metadata, runtime
+  snapshot/events, and managed URLTest sessions.
+- Added the core-owned Hydra Subscription v2 plaintext/JWE contract, strict
+  validation, redacted inspection, and authenticated JWE opening.
+- Enabled release-tagged Call inbound/outbound for `dion`, `telemost`, `vk`,
+  and `wbstream`, plus Rmux and bounded AmneziaWG v3 validation.
+- Removed active legacy capability and provenance surfaces while retaining
+  explicit historical attribution and source lineage.
+
 ## v1.13.14-extended-hydracore.5
 
 - Published the standalone HydraCore repository structure on `main`.

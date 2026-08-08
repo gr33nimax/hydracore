@@ -26,7 +26,12 @@ const (
 	StartedService_GetClashModeStatus_FullMethodName         = "/daemon.StartedService/GetClashModeStatus"
 	StartedService_SubscribeClashMode_FullMethodName         = "/daemon.StartedService/SubscribeClashMode"
 	StartedService_SetClashMode_FullMethodName               = "/daemon.StartedService/SetClashMode"
-	StartedService_URLTest_FullMethodName                    = "/daemon.StartedService/URLTest"
+	StartedService_GetRuntimeSnapshot_FullMethodName         = "/daemon.StartedService/GetRuntimeSnapshot"
+	StartedService_SubscribeRuntimeEvents_FullMethodName     = "/daemon.StartedService/SubscribeRuntimeEvents"
+	StartedService_StartURLTest_FullMethodName               = "/daemon.StartedService/StartURLTest"
+	StartedService_GetURLTestSession_FullMethodName          = "/daemon.StartedService/GetURLTestSession"
+	StartedService_CancelURLTest_FullMethodName              = "/daemon.StartedService/CancelURLTest"
+	StartedService_SubscribeURLTestEvents_FullMethodName     = "/daemon.StartedService/SubscribeURLTestEvents"
 	StartedService_LookupOutboundExternalInfo_FullMethodName = "/daemon.StartedService/LookupOutboundExternalInfo"
 	StartedService_SelectOutbound_FullMethodName             = "/daemon.StartedService/SelectOutbound"
 	StartedService_SetGroupExpand_FullMethodName             = "/daemon.StartedService/SetGroupExpand"
@@ -54,7 +59,12 @@ type StartedServiceClient interface {
 	GetClashModeStatus(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ClashModeStatus, error)
 	SubscribeClashMode(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ClashMode], error)
 	SetClashMode(ctx context.Context, in *ClashMode, opts ...grpc.CallOption) (*emptypb.Empty, error)
-	URLTest(ctx context.Context, in *URLTestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	GetRuntimeSnapshot(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RuntimeSnapshot, error)
+	SubscribeRuntimeEvents(ctx context.Context, in *RuntimeEventRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RuntimeEvents], error)
+	StartURLTest(ctx context.Context, in *URLTestRequest, opts ...grpc.CallOption) (*URLTestSession, error)
+	GetURLTestSession(ctx context.Context, in *URLTestSessionRequest, opts ...grpc.CallOption) (*URLTestSession, error)
+	CancelURLTest(ctx context.Context, in *URLTestSessionRequest, opts ...grpc.CallOption) (*URLTestSession, error)
+	SubscribeURLTestEvents(ctx context.Context, in *URLTestEventRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[URLTestEvents], error)
 	LookupOutboundExternalInfo(ctx context.Context, in *OutboundExternalInfoRequest, opts ...grpc.CallOption) (*OutboundExternalInfoResponse, error)
 	SelectOutbound(ctx context.Context, in *SelectOutboundRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	SetGroupExpand(ctx context.Context, in *SetGroupExpandRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
@@ -230,15 +240,83 @@ func (c *startedServiceClient) SetClashMode(ctx context.Context, in *ClashMode, 
 	return out, nil
 }
 
-func (c *startedServiceClient) URLTest(ctx context.Context, in *URLTestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *startedServiceClient) GetRuntimeSnapshot(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*RuntimeSnapshot, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
-	err := c.cc.Invoke(ctx, StartedService_URLTest_FullMethodName, in, out, cOpts...)
+	out := new(RuntimeSnapshot)
+	err := c.cc.Invoke(ctx, StartedService_GetRuntimeSnapshot_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
+
+func (c *startedServiceClient) SubscribeRuntimeEvents(ctx context.Context, in *RuntimeEventRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RuntimeEvents], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &StartedService_ServiceDesc.Streams[5], StartedService_SubscribeRuntimeEvents_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[RuntimeEventRequest, RuntimeEvents]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type StartedService_SubscribeRuntimeEventsClient = grpc.ServerStreamingClient[RuntimeEvents]
+
+func (c *startedServiceClient) StartURLTest(ctx context.Context, in *URLTestRequest, opts ...grpc.CallOption) (*URLTestSession, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(URLTestSession)
+	err := c.cc.Invoke(ctx, StartedService_StartURLTest_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *startedServiceClient) GetURLTestSession(ctx context.Context, in *URLTestSessionRequest, opts ...grpc.CallOption) (*URLTestSession, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(URLTestSession)
+	err := c.cc.Invoke(ctx, StartedService_GetURLTestSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *startedServiceClient) CancelURLTest(ctx context.Context, in *URLTestSessionRequest, opts ...grpc.CallOption) (*URLTestSession, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(URLTestSession)
+	err := c.cc.Invoke(ctx, StartedService_CancelURLTest_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *startedServiceClient) SubscribeURLTestEvents(ctx context.Context, in *URLTestEventRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[URLTestEvents], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &StartedService_ServiceDesc.Streams[6], StartedService_SubscribeURLTestEvents_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[URLTestEventRequest, URLTestEvents]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type StartedService_SubscribeURLTestEventsClient = grpc.ServerStreamingClient[URLTestEvents]
 
 func (c *startedServiceClient) LookupOutboundExternalInfo(ctx context.Context, in *OutboundExternalInfoRequest, opts ...grpc.CallOption) (*OutboundExternalInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -292,7 +370,7 @@ func (c *startedServiceClient) SetSystemProxyEnabled(ctx context.Context, in *Se
 
 func (c *startedServiceClient) SubscribeConnections(ctx context.Context, in *SubscribeConnectionsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ConnectionEvents], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &StartedService_ServiceDesc.Streams[5], StartedService_SubscribeConnections_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &StartedService_ServiceDesc.Streams[7], StartedService_SubscribeConnections_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -364,7 +442,12 @@ type StartedServiceServer interface {
 	GetClashModeStatus(context.Context, *emptypb.Empty) (*ClashModeStatus, error)
 	SubscribeClashMode(*emptypb.Empty, grpc.ServerStreamingServer[ClashMode]) error
 	SetClashMode(context.Context, *ClashMode) (*emptypb.Empty, error)
-	URLTest(context.Context, *URLTestRequest) (*emptypb.Empty, error)
+	GetRuntimeSnapshot(context.Context, *emptypb.Empty) (*RuntimeSnapshot, error)
+	SubscribeRuntimeEvents(*RuntimeEventRequest, grpc.ServerStreamingServer[RuntimeEvents]) error
+	StartURLTest(context.Context, *URLTestRequest) (*URLTestSession, error)
+	GetURLTestSession(context.Context, *URLTestSessionRequest) (*URLTestSession, error)
+	CancelURLTest(context.Context, *URLTestSessionRequest) (*URLTestSession, error)
+	SubscribeURLTestEvents(*URLTestEventRequest, grpc.ServerStreamingServer[URLTestEvents]) error
 	LookupOutboundExternalInfo(context.Context, *OutboundExternalInfoRequest) (*OutboundExternalInfoResponse, error)
 	SelectOutbound(context.Context, *SelectOutboundRequest) (*emptypb.Empty, error)
 	SetGroupExpand(context.Context, *SetGroupExpandRequest) (*emptypb.Empty, error)
@@ -388,87 +471,81 @@ type UnimplementedStartedServiceServer struct{}
 func (UnimplementedStartedServiceServer) StopService(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopService not implemented")
 }
-
 func (UnimplementedStartedServiceServer) ReloadService(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReloadService not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SubscribeServiceStatus(*emptypb.Empty, grpc.ServerStreamingServer[ServiceStatus]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeServiceStatus not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SubscribeLog(*emptypb.Empty, grpc.ServerStreamingServer[Log]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeLog not implemented")
 }
-
 func (UnimplementedStartedServiceServer) GetDefaultLogLevel(context.Context, *emptypb.Empty) (*DefaultLogLevel, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDefaultLogLevel not implemented")
 }
-
 func (UnimplementedStartedServiceServer) ClearLogs(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method ClearLogs not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SubscribeStatus(*SubscribeStatusRequest, grpc.ServerStreamingServer[Status]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeStatus not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SubscribeGroups(*emptypb.Empty, grpc.ServerStreamingServer[Groups]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeGroups not implemented")
 }
-
 func (UnimplementedStartedServiceServer) GetClashModeStatus(context.Context, *emptypb.Empty) (*ClashModeStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetClashModeStatus not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SubscribeClashMode(*emptypb.Empty, grpc.ServerStreamingServer[ClashMode]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeClashMode not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SetClashMode(context.Context, *ClashMode) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetClashMode not implemented")
 }
-
-func (UnimplementedStartedServiceServer) URLTest(context.Context, *URLTestRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "method URLTest not implemented")
+func (UnimplementedStartedServiceServer) GetRuntimeSnapshot(context.Context, *emptypb.Empty) (*RuntimeSnapshot, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRuntimeSnapshot not implemented")
 }
-
+func (UnimplementedStartedServiceServer) SubscribeRuntimeEvents(*RuntimeEventRequest, grpc.ServerStreamingServer[RuntimeEvents]) error {
+	return status.Error(codes.Unimplemented, "method SubscribeRuntimeEvents not implemented")
+}
+func (UnimplementedStartedServiceServer) StartURLTest(context.Context, *URLTestRequest) (*URLTestSession, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartURLTest not implemented")
+}
+func (UnimplementedStartedServiceServer) GetURLTestSession(context.Context, *URLTestSessionRequest) (*URLTestSession, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetURLTestSession not implemented")
+}
+func (UnimplementedStartedServiceServer) CancelURLTest(context.Context, *URLTestSessionRequest) (*URLTestSession, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelURLTest not implemented")
+}
+func (UnimplementedStartedServiceServer) SubscribeURLTestEvents(*URLTestEventRequest, grpc.ServerStreamingServer[URLTestEvents]) error {
+	return status.Error(codes.Unimplemented, "method SubscribeURLTestEvents not implemented")
+}
 func (UnimplementedStartedServiceServer) LookupOutboundExternalInfo(context.Context, *OutboundExternalInfoRequest) (*OutboundExternalInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method LookupOutboundExternalInfo not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SelectOutbound(context.Context, *SelectOutboundRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SelectOutbound not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SetGroupExpand(context.Context, *SetGroupExpandRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetGroupExpand not implemented")
 }
-
 func (UnimplementedStartedServiceServer) GetSystemProxyStatus(context.Context, *emptypb.Empty) (*SystemProxyStatus, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetSystemProxyStatus not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SetSystemProxyEnabled(context.Context, *SetSystemProxyEnabledRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetSystemProxyEnabled not implemented")
 }
-
 func (UnimplementedStartedServiceServer) SubscribeConnections(*SubscribeConnectionsRequest, grpc.ServerStreamingServer[ConnectionEvents]) error {
 	return status.Error(codes.Unimplemented, "method SubscribeConnections not implemented")
 }
-
 func (UnimplementedStartedServiceServer) CloseConnection(context.Context, *CloseConnectionRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method CloseConnection not implemented")
 }
-
 func (UnimplementedStartedServiceServer) CloseAllConnections(context.Context, *emptypb.Empty) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method CloseAllConnections not implemented")
 }
-
 func (UnimplementedStartedServiceServer) GetDeprecatedWarnings(context.Context, *emptypb.Empty) (*DeprecatedWarnings, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDeprecatedWarnings not implemented")
 }
-
 func (UnimplementedStartedServiceServer) GetStartedAt(context.Context, *emptypb.Empty) (*StartedAt, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetStartedAt not implemented")
 }
@@ -656,23 +733,99 @@ func _StartedService_SetClashMode_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _StartedService_URLTest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _StartedService_GetRuntimeSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StartedServiceServer).GetRuntimeSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StartedService_GetRuntimeSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StartedServiceServer).GetRuntimeSnapshot(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _StartedService_SubscribeRuntimeEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(RuntimeEventRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(StartedServiceServer).SubscribeRuntimeEvents(m, &grpc.GenericServerStream[RuntimeEventRequest, RuntimeEvents]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type StartedService_SubscribeRuntimeEventsServer = grpc.ServerStreamingServer[RuntimeEvents]
+
+func _StartedService_StartURLTest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(URLTestRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(StartedServiceServer).URLTest(ctx, in)
+		return srv.(StartedServiceServer).StartURLTest(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: StartedService_URLTest_FullMethodName,
+		FullMethod: StartedService_StartURLTest_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(StartedServiceServer).URLTest(ctx, req.(*URLTestRequest))
+		return srv.(StartedServiceServer).StartURLTest(ctx, req.(*URLTestRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _StartedService_GetURLTestSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(URLTestSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StartedServiceServer).GetURLTestSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StartedService_GetURLTestSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StartedServiceServer).GetURLTestSession(ctx, req.(*URLTestSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _StartedService_CancelURLTest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(URLTestSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StartedServiceServer).CancelURLTest(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: StartedService_CancelURLTest_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StartedServiceServer).CancelURLTest(ctx, req.(*URLTestSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _StartedService_SubscribeURLTestEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(URLTestEventRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(StartedServiceServer).SubscribeURLTestEvents(m, &grpc.GenericServerStream[URLTestEventRequest, URLTestEvents]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type StartedService_SubscribeURLTestEventsServer = grpc.ServerStreamingServer[URLTestEvents]
 
 func _StartedService_LookupOutboundExternalInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(OutboundExternalInfoRequest)
@@ -879,8 +1032,20 @@ var StartedService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _StartedService_SetClashMode_Handler,
 		},
 		{
-			MethodName: "URLTest",
-			Handler:    _StartedService_URLTest_Handler,
+			MethodName: "GetRuntimeSnapshot",
+			Handler:    _StartedService_GetRuntimeSnapshot_Handler,
+		},
+		{
+			MethodName: "StartURLTest",
+			Handler:    _StartedService_StartURLTest_Handler,
+		},
+		{
+			MethodName: "GetURLTestSession",
+			Handler:    _StartedService_GetURLTestSession_Handler,
+		},
+		{
+			MethodName: "CancelURLTest",
+			Handler:    _StartedService_CancelURLTest_Handler,
 		},
 		{
 			MethodName: "LookupOutboundExternalInfo",
@@ -943,6 +1108,16 @@ var StartedService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "SubscribeClashMode",
 			Handler:       _StartedService_SubscribeClashMode_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "SubscribeRuntimeEvents",
+			Handler:       _StartedService_SubscribeRuntimeEvents_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "SubscribeURLTestEvents",
+			Handler:       _StartedService_SubscribeURLTestEvents_Handler,
 			ServerStreams: true,
 		},
 		{

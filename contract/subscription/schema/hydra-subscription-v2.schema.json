@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hydra.invalid/schema/hydra-subscription-v2.schema.json",
+  "title": "Hydra Subscription v2",
+  "type": "object",
+  "required": ["api_version", "kind", "identity", "validity", "requirements", "resources", "profiles"],
+  "properties": {
+    "api_version": {"const": "hydra.io/subscription/v2"},
+    "kind": {"const": "Subscription"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "validity": {"$ref": "#/$defs/validity"},
+    "display": {"$ref": "#/$defs/display"},
+    "requirements": {"$ref": "#/$defs/requirements"},
+    "update": {"$ref": "#/$defs/update"},
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/resource"}
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {"$ref": "#/$defs/profile"}
+    },
+    "default_profile": {"$ref": "#/$defs/id"},
+    "required_extensions": {"$ref": "#/$defs/extensionNames"},
+    "extensions": {"$ref": "#/$defs/extensions"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "httpsOrigin": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://(?![^/?#]*@)[^/?#]+/?$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://(?![^/?#]*@)[^/?#]+(?:[/?][^#]*)?$"
+    },
+    "localizedText": {
+      "oneOf": [
+        {"type": "string", "minLength": 1, "maxLength": 1024},
+        {
+          "type": "object",
+          "required": ["default"],
+          "properties": {"default": {"type": "string", "minLength": 1, "maxLength": 1024}},
+          "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 1024}
+        }
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "required": ["issuer", "id", "sequence"],
+      "properties": {
+        "issuer": {"$ref": "#/$defs/httpsOrigin"},
+        "id": {"$ref": "#/$defs/id"},
+        "channel": {"$ref": "#/$defs/id", "default": "stable"},
+        "sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      },
+      "additionalProperties": false
+    },
+    "validity": {
+      "type": "object",
+      "required": ["issued_at"],
+      "properties": {
+        "issued_at": {"type": "string", "format": "date-time"},
+        "not_before": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "display": {
+      "type": "object",
+      "properties": {
+        "name": {"$ref": "#/$defs/localizedText"},
+        "homepage": {"$ref": "#/$defs/httpsUrl"},
+        "support_url": {"$ref": "#/$defs/httpsUrl"}
+      },
+      "additionalProperties": false
+    },
+    "requirements": {
+      "type": "object",
+      "required": ["core", "client"],
+      "properties": {
+        "core": {
+          "type": "object",
+          "required": ["id", "api_version", "remote_policy"],
+          "properties": {
+            "id": {"const": "io.hydrabox.hydracore"},
+            "api_version": {"type": "integer", "minimum": 1},
+            "version_range": {"type": "string", "minLength": 1, "maxLength": 128},
+            "remote_policy": {"type": "integer", "minimum": 1},
+            "features": {"type": "array", "uniqueItems": true, "maxItems": 256, "items": {"$ref": "#/$defs/id"}}
+          },
+          "additionalProperties": false
+        },
+        "client": {
+          "type": "object",
+          "required": ["subscription_contract"],
+          "properties": {
+            "subscription_contract": {"const": 2},
+            "min_version": {"type": "string", "minLength": 1, "maxLength": 128},
+            "features": {"type": "array", "uniqueItems": true, "maxItems": 256, "items": {"$ref": "#/$defs/id"}}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "update": {
+      "type": "object",
+      "properties": {
+        "url": {"$ref": "#/$defs/httpsUrl"},
+        "minimum_interval_seconds": {"type": "integer", "minimum": 300, "maximum": 2592000}
+      },
+      "additionalProperties": false
+    },
+    "resource": {
+      "type": "object",
+      "required": ["id", "format", "document"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "format": {"const": "sing-box-json"},
+        "requested_permissions": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 16,
+          "items": {"enum": ["network.outbound", "network.endpoint.wireguard", "network.inbound.call"]}
+        },
+        "document": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "required": ["id", "resource", "name", "entrypoint"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "resource": {"$ref": "#/$defs/id"},
+        "name": {"$ref": "#/$defs/localizedText"},
+        "entrypoint": {
+          "type": "object",
+          "required": ["section", "tag"],
+          "properties": {
+            "section": {"enum": ["outbounds", "endpoints"]},
+            "tag": {"type": "string", "minLength": 1, "maxLength": 512}
+          },
+          "additionalProperties": false
+        },
+        "enabled": {"type": "boolean", "default": true},
+        "required_features": {"type": "array", "uniqueItems": true, "maxItems": 256, "items": {"$ref": "#/$defs/id"}}
+      },
+      "additionalProperties": false
+    },
+    "extensionNames": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 256,
+      "items": {"type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+/v[1-9][0-9]*$", "maxLength": 255}
+    },
+    "extensions": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+/v[1-9][0-9]*$", "maxLength": 255},
+      "additionalProperties": true
+    }
+  }
+}

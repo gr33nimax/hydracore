@@ -21,6 +21,138 @@ type StatusMessage struct {
 	DownlinkTotal    int64
 }
 
+const (
+	URLTestSessionQueued int32 = iota
+	URLTestSessionRunning
+	URLTestSessionSucceeded
+	URLTestSessionFailed
+	URLTestSessionCancelled
+)
+
+const (
+	RuntimeEventService int32 = iota
+	RuntimeEventStatus
+	RuntimeEventGroups
+	RuntimeEventClashMode
+	RuntimeEventURLTestSessions
+)
+
+type URLTestResult struct {
+	OutboundTag  string
+	DelayMillis  int64
+	ObservedAt   int64
+	Status       string
+	ErrorCode    string
+	ErrorMessage string
+}
+
+type URLTestResultIterator interface {
+	Next() *URLTestResult
+	HasNext() bool
+}
+
+type URLTestSession struct {
+	ID           string
+	GroupTag     string
+	State        int32
+	StartedAt    int64
+	CompletedAt  int64
+	Total        int32
+	Completed    int32
+	Succeeded    int32
+	Failed       int32
+	ErrorCode    string
+	ErrorMessage string
+	results      []*URLTestResult
+}
+
+func (s *URLTestSession) Results() URLTestResultIterator {
+	return newIterator(s.results)
+}
+
+type URLTestSessionIterator interface {
+	Next() *URLTestSession
+	HasNext() bool
+}
+
+type RuntimeServiceStatus struct {
+	Status       int32
+	ErrorMessage string
+}
+
+type RuntimeClashMode struct {
+	CurrentMode string
+	modeList    []string
+}
+
+func (m *RuntimeClashMode) ModeList() StringIterator {
+	return newIterator(m.modeList)
+}
+
+type RuntimeSnapshot struct {
+	SchemaVersion int32
+	Sequence      int64
+	ObservedAt    int64
+	Service       *RuntimeServiceStatus
+	StartedAt     int64
+	Status        *StatusMessage
+	ClashMode     *RuntimeClashMode
+	groups        []*OutboundGroup
+	urlTests      []*URLTestSession
+}
+
+func (s *RuntimeSnapshot) Groups() OutboundGroupIterator {
+	return newIterator(s.groups)
+}
+
+func (s *RuntimeSnapshot) URLTestSessions() URLTestSessionIterator {
+	return newIterator(s.urlTests)
+}
+
+type RuntimeEvent struct {
+	Type      int32
+	Service   *RuntimeServiceStatus
+	Status    *StatusMessage
+	ClashMode *RuntimeClashMode
+	StartedAt int64
+	groups    []*OutboundGroup
+	urlTests  []*URLTestSession
+}
+
+func (e *RuntimeEvent) Groups() OutboundGroupIterator {
+	return newIterator(e.groups)
+}
+
+func (e *RuntimeEvent) URLTestSessions() URLTestSessionIterator {
+	return newIterator(e.urlTests)
+}
+
+type RuntimeEventIterator interface {
+	Next() *RuntimeEvent
+	HasNext() bool
+}
+
+type RuntimeEvents struct {
+	Sequence int64
+	Reset    bool
+	Snapshot *RuntimeSnapshot
+	events   []*RuntimeEvent
+}
+
+func (e *RuntimeEvents) Events() RuntimeEventIterator {
+	return newIterator(e.events)
+}
+
+type URLTestEvents struct {
+	Sequence int64
+	Reset    bool
+	sessions []*URLTestSession
+}
+
+func (e *URLTestEvents) Sessions() URLTestSessionIterator {
+	return newIterator(e.sessions)
+}
+
 type SystemProxyStatus struct {
 	Available bool
 	Enabled   bool
@@ -322,8 +454,12 @@ func statusMessageFromGRPC(status *daemon.Status) *StatusMessage {
 }
 
 func outboundGroupIteratorFromGRPC(groups *daemon.Groups) OutboundGroupIterator {
+	return newIterator(outboundGroupListFromGRPC(groups))
+}
+
+func outboundGroupListFromGRPC(groups *daemon.Groups) []*OutboundGroup {
 	if groups == nil || len(groups.Group) == 0 {
-		return newIterator([]*OutboundGroup{})
+		return []*OutboundGroup{}
 	}
 	var libboxGroups []*OutboundGroup
 	for _, g := range groups.Group {
@@ -347,7 +483,7 @@ func outboundGroupIteratorFromGRPC(groups *daemon.Groups) OutboundGroupIterator 
 		}
 		libboxGroups = append(libboxGroups, libboxGroup)
 	}
-	return newIterator(libboxGroups)
+	return libboxGroups
 }
 
 func connectionFromGRPC(conn *daemon.Connection) Connection {
@@ -427,5 +563,131 @@ func systemProxyStatusFromGRPC(status *daemon.SystemProxyStatus) *SystemProxySta
 	return &SystemProxyStatus{
 		Available: status.Available,
 		Enabled:   status.Enabled,
+	}
+}
+
+func urlTestResultFromGRPC(result *daemon.URLTestResult) *URLTestResult {
+	if result == nil {
+		return nil
+	}
+	return &URLTestResult{
+		OutboundTag:  result.OutboundTag,
+		DelayMillis:  result.DelayMillis,
+		ObservedAt:   result.ObservedAt,
+		Status:       result.Status,
+		ErrorCode:    result.ErrorCode,
+		ErrorMessage: result.ErrorMessage,
+	}
+}
+
+func urlTestSessionFromGRPC(session *daemon.URLTestSession) *URLTestSession {
+	if session == nil {
+		return nil
+	}
+	result := &URLTestSession{
+		ID:           session.Id,
+		GroupTag:     session.GroupTag,
+		State:        int32(session.State),
+		StartedAt:    session.StartedAt,
+		CompletedAt:  session.CompletedAt,
+		Total:        session.Total,
+		Completed:    session.Completed,
+		Succeeded:    session.Succeeded,
+		Failed:       session.Failed,
+		ErrorCode:    session.ErrorCode,
+		ErrorMessage: session.ErrorMessage,
+	}
+	for _, item := range session.Results {
+		if converted := urlTestResultFromGRPC(item); converted != nil {
+			result.results = append(result.results, converted)
+		}
+	}
+	return result
+}
+
+func urlTestSessionListFromGRPC(sessions []*daemon.URLTestSession) []*URLTestSession {
+	result := make([]*URLTestSession, 0, len(sessions))
+	for _, session := range sessions {
+		if converted := urlTestSessionFromGRPC(session); converted != nil {
+			result = append(result, converted)
+		}
+	}
+	return result
+}
+
+func runtimeServiceStatusFromGRPC(status *daemon.ServiceStatus) *RuntimeServiceStatus {
+	if status == nil {
+		return nil
+	}
+	return &RuntimeServiceStatus{Status: int32(status.Status), ErrorMessage: status.ErrorMessage}
+}
+
+func runtimeClashModeFromGRPC(mode *daemon.ClashModeStatus) *RuntimeClashMode {
+	if mode == nil {
+		return nil
+	}
+	return &RuntimeClashMode{
+		CurrentMode: mode.CurrentMode,
+		modeList:    append([]string(nil), mode.ModeList...),
+	}
+}
+
+func runtimeSnapshotFromGRPC(snapshot *daemon.RuntimeSnapshot) *RuntimeSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return &RuntimeSnapshot{
+		SchemaVersion: snapshot.SchemaVersion,
+		Sequence:      int64(snapshot.Sequence),
+		ObservedAt:    snapshot.ObservedAt,
+		Service:       runtimeServiceStatusFromGRPC(snapshot.Service),
+		StartedAt:     snapshot.StartedAt,
+		Status:        statusMessageFromGRPC(snapshot.Status),
+		ClashMode:     runtimeClashModeFromGRPC(snapshot.ClashMode),
+		groups:        outboundGroupListFromGRPC(snapshot.Groups),
+		urlTests:      urlTestSessionListFromGRPC(snapshot.UrlTestSessions),
+	}
+}
+
+func runtimeEventFromGRPC(event *daemon.RuntimeEvent) *RuntimeEvent {
+	if event == nil {
+		return nil
+	}
+	return &RuntimeEvent{
+		Type:      int32(event.Type),
+		Service:   runtimeServiceStatusFromGRPC(event.Service),
+		Status:    statusMessageFromGRPC(event.Status),
+		ClashMode: runtimeClashModeFromGRPC(event.ClashMode),
+		StartedAt: event.StartedAt,
+		groups:    outboundGroupListFromGRPC(event.Groups),
+		urlTests:  urlTestSessionListFromGRPC(event.UrlTestSessions),
+	}
+}
+
+func runtimeEventsFromGRPC(events *daemon.RuntimeEvents) *RuntimeEvents {
+	if events == nil {
+		return nil
+	}
+	result := &RuntimeEvents{
+		Sequence: int64(events.Sequence),
+		Reset:    events.Reset_,
+		Snapshot: runtimeSnapshotFromGRPC(events.Snapshot),
+	}
+	for _, event := range events.Events {
+		if converted := runtimeEventFromGRPC(event); converted != nil {
+			result.events = append(result.events, converted)
+		}
+	}
+	return result
+}
+
+func urlTestEventsFromGRPC(events *daemon.URLTestEvents) *URLTestEvents {
+	if events == nil {
+		return nil
+	}
+	return &URLTestEvents{
+		Sequence: int64(events.Sequence),
+		Reset:    events.Reset_,
+		sessions: urlTestSessionListFromGRPC(events.Sessions),
 	}
 }

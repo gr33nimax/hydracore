@@ -1,61 +1,96 @@
 # HydraCore distribution contract
 
-HydraCore is the maintained networking runtime used by HydraBox. Its public
-contract is defined here; source lineage, licenses, and retained compatibility
+HydraCore is the maintained networking runtime used by HydraBox. The public
+native contract is API v2 and identifies the runtime as
+`io.hydrabox.hydracore`. Source lineage, licenses, and retained compatibility
 identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
-## Public identity and compatibility
+## Release baseline
 
-New bindings expose `libbox.HydraCoreCapabilities()` and identify the runtime
-as `io.hydrabox.hydracore`. The inherited
-`libbox.EtonifyCapabilities()` entry point remains a deprecated alias so
-existing generated bindings continue to work.
+Release `v1.13.16-extended-hydracore.1` is based on the exact
+`sing-box-extended` commit
+`da4c532efb1f86a38a324909fc9b8867f811551c` (descriptive upstream tag
+`v1.13.16-extended-2.6.1`). The full commit, rather than a movable tag, is the
+authority. `release/UPSTREAM_BASELINE` pins the toolchain and Android build
+tags, including `with_call`.
 
-The capability document keeps `upstream_project: "etonify-core"`. The Go module
-path, native package names, and `libbox.aar` artifact name also remain unchanged.
-These values are ABI, schema, and source-compatibility surfaces rather than
-public product branding.
+`HydraCoreBuildInfo()` exposes the distribution, source commit, exact upstream
+baseline, toolchain, build tags, and historical lineage. The release workflow
+binds the same values and every artifact digest into `provenance.json`.
 
-## Supported artifact
+## Capability and validation APIs
 
-The Android AAR is the supported HydraCore distribution. A publishable build
-must include the binary, generated Java source archive, SHA-256, attributed
-source archive, and machine-readable provenance bound to one source commit and
-one pinned toolchain.
+- `HydraCoreCapabilities()` returns the versioned feature, protocol, runtime,
+  subscription, and remote-policy manifest.
+- `HydraCoreBuildInfo()` returns build provenance available at runtime.
+- `HydraCoreValidateConfig(content, profile)` validates either trusted local
+  configuration (`local`) or untrusted remote configuration (`remote_v2`).
 
-HydraBox must pin the release tag, source commit, download URL, and digest. It
-must reject a mismatched artifact before Android compilation or runtime startup.
+Remote policy v2 permits only `$schema`, `inbounds`, `outbounds`, and
+`endpoints` at the resource root. It applies strict object typing, unique and
+closed references, cycle detection, reserved-tag checks, nesting and size
+limits, and native HydraCore validation. Local listeners, DNS, providers,
+rule-sets, files, and other host authority are not remotely grantable.
 
-## Remote subscription policy
+Release builds implement Call inbound and outbound with the `dion`,
+`telemost`, `vk`, and `wbstream` platforms. Call objects are accepted only by
+a core built with `with_call`; their complete native schema is validated rather
+than a second field allowlist. Diagnostics and subscription inspection never
+echo credentials, cookies, join links, or resource documents. Rmux and
+AmneziaWG v3 are also release capabilities; Amnezia resource limits are
+enforced before startup.
 
-The capability document publishes remote policy v1 as an exact allowlist, not
-as permission to pass every native schema field from an untrusted publisher.
-Policy v1 permits only `$schema`, `outbounds`, and `endpoints` at the native
-document root. The outbound list contains leaf client protocols. The endpoint
-list permits userspace WireGuard only after HydraBox applies the field policy.
+## Hydra Subscription v2
 
-Classic AmneziaWG fields are covered. Additional or future obfuscation fields
-remain outside policy v1 until HydraBox and HydraCore both implement explicit
-validation. DNS servers, providers, rule sets, composite or reverse types,
-local paths, listeners, and service-capable objects require a later policy and
-recursive validation. Older AARs without an exact manifest fail closed.
+The authoritative, client-independent subscription contract lives in
+`contract/subscription/`:
 
-## Versioning
+- `HYDRA_SUBSCRIPTION_V2.md` defines ownership and processing rules;
+- `schema/hydra-subscription-v2.schema.json` defines plaintext v2;
+- `schema/hydra-subscription-jwe-v2.schema.json` defines the encrypted
+  flattened JWE envelope.
 
-HydraCore versions use the form `v<sing-box-base>-hydracore.<revision>`. A
-revision is immutable after publication. A client may move to a newer revision
-only after the complete HydraCore workflow and the HydraBox compatibility suite
-pass for the exact artifact digest.
+The same files are embedded into the core and published as checksummed release
+artifacts. `HydraCoreSubscriptionSchema()`,
+`HydraCoreSubscriptionJWESchema()`, and `HydraCoreSubscriptionJWEPolicy()`
+expose them to bindings. `HydraCoreValidateSubscription()` and
+`HydraCoreInspectSubscription()` perform strict validation and redacted
+inspection. The corresponding `...SubscriptionJWE` APIs authenticate and open
+`dir`/`A256GCM` envelopes using a 32-byte base64url `hydra-key` value.
 
-Experimental transports do not enter the stable capability manifest merely
-because their native schema exists. They require an explicit security model,
-resource limits, compatibility tests, and an independent release decision.
+Each subscription resource is an independent sing-box graph. Cross-resource
+references, undeclared authority, unknown required extensions, incompatible
+core requirements, and missing profile entrypoints fail closed. HydraCore does
+not fetch subscriptions, store keys, persist profiles, request user consent,
+or activate a profile. Those remain client responsibilities. Existing
+HydraBox releases are not claimed to support v2 and are intentionally not
+changed by this repository refactor.
 
-## Stability boundary
+## Runtime API v1
 
-HydraCore owns native parsing, runtime validation, protocol execution, and
-capability reporting. HydraBox owns subscription trust, user consent, local
-inbounds, persistent client data, and activation policy. HYDRA Ultimate owns
-server deployment and subscription generation. Keeping these boundaries
-separate lets the three projects evolve without turning a transport experiment
-into a mandatory ecosystem dependency.
+`CommandClient.GetRuntimeSnapshot()` returns one coherent view of service
+lifecycle, process/traffic counters, outbound groups, Clash mode, and managed
+URLTest sessions. `CommandRuntimeEvents` provides a typed delta stream whose
+first envelope is always a complete `reset` snapshot. Event intervals are
+clamped to 250 ms through 30 seconds and updates are coalesced.
+
+Group URL tests use `StartURLTest`, `GetURLTestSession`, `CancelURLTest`, and
+`CommandURLTestEvents`. A session has a stable ID, explicit state, progress,
+structured per-outbound results, cancellation, and a maximum of 64 retained
+completed sessions. Reloading or stopping an instance cancels its active
+sessions. The old fire-and-forget command is not part of API v2. Isolated
+pre-connect `StandaloneURLTestSession` remains available.
+
+## Artifact and stability boundary
+
+The supported distribution is the Android AAR. A release contains
+`libbox.aar`, generated Java sources, the attributed source archive,
+subscription contract files, SHA-256 files, and machine-readable provenance.
+A client should pin the release tag, source commit, download URL, and digest
+and reject disagreement before compilation or startup.
+
+HydraCore owns native parsing, cryptographic envelope verification, runtime
+validation, protocol execution, capability reporting, and runtime telemetry.
+Clients own network fetching, trust and rollback policy, user consent, local
+overlays and inbounds, key storage, persistence, and activation. Server-side
+products own subscription generation and deployment.

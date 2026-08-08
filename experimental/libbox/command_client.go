@@ -20,19 +20,23 @@ import (
 )
 
 type CommandClient struct {
-	handler     CommandClientHandler
-	grpcConn    *grpc.ClientConn
-	grpcClient  daemon.StartedServiceClient
-	options     CommandClientOptions
-	ctx         context.Context
-	cancel      context.CancelFunc
-	clientMutex sync.RWMutex
-	standalone  bool
+	handler             CommandClientHandler
+	grpcConn            *grpc.ClientConn
+	grpcClient          daemon.StartedServiceClient
+	options             CommandClientOptions
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	clientMutex         sync.RWMutex
+	standalone          bool
+	runtimeEventHandler RuntimeEventHandler
+	urlTestEventHandler URLTestEventHandler
 }
 
 type CommandClientOptions struct {
-	commands       []int32
-	StatusInterval int64
+	commands                   []int32
+	StatusInterval             int64
+	RuntimeEventIntervalMillis int64
+	URLTestEventIntervalMillis int64
 }
 
 func (o *CommandClientOptions) AddCommand(command int32) {
@@ -50,6 +54,14 @@ type CommandClientHandler interface {
 	InitializeClashMode(modeList StringIterator, currentMode string)
 	UpdateClashMode(newMode string)
 	WriteConnectionEvents(events *ConnectionEvents)
+}
+
+type RuntimeEventHandler interface {
+	WriteRuntimeEvents(events *RuntimeEvents)
+}
+
+type URLTestEventHandler interface {
+	WriteURLTestEvents(events *URLTestEvents)
 }
 
 type LogEntry struct {
@@ -82,6 +94,22 @@ func NewCommandClient(handler CommandClientHandler, options *CommandClientOption
 		handler: handler,
 		options: common.PtrValueOrDefault(options),
 	}
+}
+
+// SetRuntimeEventHandler installs the optional v2 runtime event sink. Set it
+// before Connect when CommandRuntimeEvents is enabled.
+func (c *CommandClient) SetRuntimeEventHandler(handler RuntimeEventHandler) {
+	c.clientMutex.Lock()
+	c.runtimeEventHandler = handler
+	c.clientMutex.Unlock()
+}
+
+// SetURLTestEventHandler installs the optional managed URL-test event sink.
+// Set it before Connect when CommandURLTestEvents is enabled.
+func (c *CommandClient) SetURLTestEventHandler(handler URLTestEventHandler) {
+	c.clientMutex.Lock()
+	c.urlTestEventHandler = handler
+	c.clientMutex.Unlock()
 }
 
 func unaryClientAuthInterceptor(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
@@ -243,6 +271,16 @@ func (c *CommandClient) dispatchCommands() error {
 			go c.handleClashModeStream()
 		case CommandConnections:
 			go c.handleConnectionsStream()
+		case CommandRuntimeEvents:
+			if c.runtimeEventHandler == nil {
+				return E.New("missing runtime event handler")
+			}
+			go c.handleRuntimeEventsStream()
+		case CommandURLTestEvents:
+			if c.urlTestEventHandler == nil {
+				return E.New("missing URL test event handler")
+			}
+			go c.handleURLTestEventsStream()
 		default:
 			return E.New("unknown command: ", command)
 		}
@@ -456,6 +494,44 @@ func (c *CommandClient) handleConnectionsStream() {
 	}
 }
 
+func (c *CommandClient) handleRuntimeEventsStream() {
+	client, ctx := c.getStreamContext()
+	stream, err := client.SubscribeRuntimeEvents(ctx, &daemon.RuntimeEventRequest{
+		IntervalMillis: c.options.RuntimeEventIntervalMillis,
+	})
+	if err != nil {
+		c.handler.Disconnected(err.Error())
+		return
+	}
+	for {
+		events, receiveErr := stream.Recv()
+		if receiveErr != nil {
+			c.handler.Disconnected(receiveErr.Error())
+			return
+		}
+		c.runtimeEventHandler.WriteRuntimeEvents(runtimeEventsFromGRPC(events))
+	}
+}
+
+func (c *CommandClient) handleURLTestEventsStream() {
+	client, ctx := c.getStreamContext()
+	stream, err := client.SubscribeURLTestEvents(ctx, &daemon.URLTestEventRequest{
+		IntervalMillis: c.options.URLTestEventIntervalMillis,
+	})
+	if err != nil {
+		c.handler.Disconnected(err.Error())
+		return
+	}
+	for {
+		events, receiveErr := stream.Recv()
+		if receiveErr != nil {
+			c.handler.Disconnected(receiveErr.Error())
+			return
+		}
+		c.urlTestEventHandler.WriteURLTestEvents(urlTestEventsFromGRPC(events))
+	}
+}
+
 func (c *CommandClient) SelectOutbound(groupTag string, outboundTag string) error {
 	_, err := callWithResult(c, func(client daemon.StartedServiceClient) (*emptypb.Empty, error) {
 		return client.SelectOutbound(context.Background(), &daemon.SelectOutboundRequest{
@@ -466,23 +542,24 @@ func (c *CommandClient) SelectOutbound(groupTag string, outboundTag string) erro
 	return err
 }
 
-func (c *CommandClient) URLTest(groupTag string) error {
-	_, err := callWithResult(c, func(client daemon.StartedServiceClient) (*emptypb.Empty, error) {
-		return client.URLTest(context.Background(), &daemon.URLTestRequest{
-			OutboundTag: groupTag,
-		})
+func (c *CommandClient) GetRuntimeSnapshot() (*RuntimeSnapshot, error) {
+	result, err := callWithResult(c, func(client daemon.StartedServiceClient) (*daemon.RuntimeSnapshot, error) {
+		return client.GetRuntimeSnapshot(context.Background(), &emptypb.Empty{})
 	})
-	return err
+	if err != nil {
+		return nil, E.Cause(err, "get runtime snapshot")
+	}
+	return runtimeSnapshotFromGRPC(result), nil
 }
 
-func (c *CommandClient) URLTestWithURL(groupTag string, urlTestURL string) error {
-	return c.URLTestWithOptions(groupTag, "", "", "", urlTestURL, 0, 0, 0, false)
+func (c *CommandClient) StartURLTest(groupTag string) (*URLTestSession, error) {
+	return c.StartURLTestWithOptions(groupTag, "", "", "", "", 0, 0, 0, false)
 }
 
-func (c *CommandClient) URLTestWithOptions(groupTag string, targetOutboundTag string, priorityOutboundTag string, excludeOutboundTag string, urlTestURL string, timeoutMillis int32, concurrency int32, deadlineMillis int32, force bool) error {
-	_, err := callWithResult(c, func(client daemon.StartedServiceClient) (*emptypb.Empty, error) {
-		return client.URLTest(context.Background(), &daemon.URLTestRequest{
-			OutboundTag:         groupTag,
+func (c *CommandClient) StartURLTestWithOptions(groupTag string, targetOutboundTag string, priorityOutboundTag string, excludeOutboundTag string, urlTestURL string, timeoutMillis int32, concurrency int32, deadlineMillis int32, force bool) (*URLTestSession, error) {
+	result, err := callWithResult(c, func(client daemon.StartedServiceClient) (*daemon.URLTestSession, error) {
+		return client.StartURLTest(context.Background(), &daemon.URLTestRequest{
+			GroupTag:            groupTag,
 			UrlTestUrl:          urlTestURL,
 			TargetOutboundTag:   targetOutboundTag,
 			PriorityOutboundTag: priorityOutboundTag,
@@ -494,9 +571,29 @@ func (c *CommandClient) URLTestWithOptions(groupTag string, targetOutboundTag st
 		})
 	})
 	if err != nil {
-		return E.Cause(err, "url test")
+		return nil, E.Cause(err, "start URL test")
 	}
-	return nil
+	return urlTestSessionFromGRPC(result), nil
+}
+
+func (c *CommandClient) GetURLTestSession(id string) (*URLTestSession, error) {
+	result, err := callWithResult(c, func(client daemon.StartedServiceClient) (*daemon.URLTestSession, error) {
+		return client.GetURLTestSession(context.Background(), &daemon.URLTestSessionRequest{Id: id})
+	})
+	if err != nil {
+		return nil, E.Cause(err, "get URL test session")
+	}
+	return urlTestSessionFromGRPC(result), nil
+}
+
+func (c *CommandClient) CancelURLTest(id string) (*URLTestSession, error) {
+	result, err := callWithResult(c, func(client daemon.StartedServiceClient) (*daemon.URLTestSession, error) {
+		return client.CancelURLTest(context.Background(), &daemon.URLTestSessionRequest{Id: id})
+	})
+	if err != nil {
+		return nil, E.Cause(err, "cancel URL test session")
+	}
+	return urlTestSessionFromGRPC(result), nil
 }
 
 func (c *CommandClient) LookupOutboundExternalInfo(outboundTag string) (*OutboundExternalInfo, error) {

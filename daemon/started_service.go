@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -40,23 +41,27 @@ type StartedService struct {
 	// userID           int
 	// groupID          int
 	// systemProxyEnabled      bool
-	serviceAccess           sync.RWMutex
-	serviceStatus           *ServiceStatus
-	serviceStatusSubscriber *observable.Subscriber[*ServiceStatus]
-	serviceStatusObserver   *observable.Observer[*ServiceStatus]
-	logAccess               sync.RWMutex
-	logLines                list.List[*log.Entry]
-	logSubscriber           *observable.Subscriber[*log.Entry]
-	logObserver             *observable.Observer[*log.Entry]
-	instance                *Instance
-	startedAt               time.Time
-	urlTestSubscriber       *observable.Subscriber[struct{}]
-	urlTestObserver         *observable.Observer[struct{}]
-	urlTestSessionAccess    sync.Mutex
-	urlTestSessions         map[string]*urlTestSession
-	urlTestSessionSequence  uint64
-	clashModeSubscriber     *observable.Subscriber[struct{}]
-	clashModeObserver       *observable.Observer[struct{}]
+	serviceAccess            sync.RWMutex
+	serviceStatus            *ServiceStatus
+	serviceStatusSubscriber  *observable.Subscriber[*ServiceStatus]
+	serviceStatusObserver    *observable.Observer[*ServiceStatus]
+	logAccess                sync.RWMutex
+	logLines                 list.List[*log.Entry]
+	logSubscriber            *observable.Subscriber[*log.Entry]
+	logObserver              *observable.Observer[*log.Entry]
+	instance                 *Instance
+	startedAt                time.Time
+	urlTestSubscriber        *observable.Subscriber[struct{}]
+	urlTestObserver          *observable.Observer[struct{}]
+	urlTestSessionAccess     sync.Mutex
+	urlTestSessions          map[string]*managedURLTestSession
+	urlTestSessionByGroup    map[string]string
+	urlTestSessionSequence   uint64
+	urlTestSessionSubscriber *observable.Subscriber[struct{}]
+	urlTestSessionObserver   *observable.Observer[struct{}]
+	runtimeSequence          atomic.Uint64
+	clashModeSubscriber      *observable.Subscriber[struct{}]
+	clashModeObserver        *observable.Observer[struct{}]
 
 	connectionEventSubscriber *observable.Subscriber[trafficontrol.ConnectionEvent]
 	connectionEventObserver   *observable.Observer[trafficontrol.ConnectionEvent]
@@ -98,13 +103,16 @@ func NewStartedService(options ServiceOptions) *StartedService {
 		serviceStatusSubscriber:   observable.NewSubscriber[*ServiceStatus](4),
 		logSubscriber:             observable.NewSubscriber[*log.Entry](128),
 		urlTestSubscriber:         observable.NewSubscriber[struct{}](1),
-		urlTestSessions:           make(map[string]*urlTestSession),
+		urlTestSessions:           make(map[string]*managedURLTestSession),
+		urlTestSessionByGroup:     make(map[string]string),
+		urlTestSessionSubscriber:  observable.NewSubscriber[struct{}](1),
 		clashModeSubscriber:       observable.NewSubscriber[struct{}](1),
 		connectionEventSubscriber: observable.NewSubscriber[trafficontrol.ConnectionEvent](256),
 	}
 	s.serviceStatusObserver = observable.NewObserver(s.serviceStatusSubscriber, 2)
 	s.logObserver = observable.NewObserver(s.logSubscriber, 64)
 	s.urlTestObserver = observable.NewObserver(s.urlTestSubscriber, 1)
+	s.urlTestSessionObserver = observable.NewObserver(s.urlTestSessionSubscriber, 1)
 	s.clashModeObserver = observable.NewObserver(s.clashModeSubscriber, 1)
 	s.connectionEventObserver = observable.NewObserver(s.connectionEventSubscriber, 64)
 	return s
@@ -183,6 +191,7 @@ func (s *StartedService) StartOrReloadService(profileContent string, options *Ov
 	if oldInstance != nil {
 		s.updateStatus(ServiceStatus_STOPPING)
 		s.serviceAccess.Unlock()
+		s.cancelURLTestSessionsForInstance(oldInstance, "runtime_reloaded")
 		_ = oldInstance.Close()
 		s.serviceAccess.Lock()
 	}
@@ -216,9 +225,14 @@ func (s *StartedService) StartOrReloadService(profileContent string, options *Ov
 }
 
 func (s *StartedService) Close() {
+	s.serviceAccess.RLock()
+	instance := s.instance
+	s.serviceAccess.RUnlock()
+	s.cancelURLTestSessionsForInstance(instance, "runtime_closed")
 	s.serviceStatusSubscriber.Close()
 	s.logSubscriber.Close()
 	s.urlTestSubscriber.Close()
+	s.urlTestSessionSubscriber.Close()
 	s.clashModeSubscriber.Close()
 	s.connectionEventSubscriber.Close()
 }
@@ -235,6 +249,7 @@ func (s *StartedService) CloseService() error {
 	instance := s.instance
 	s.instance = nil
 	if instance != nil {
+		s.cancelURLTestSessionsForInstance(instance, "runtime_stopped")
 		err := instance.Close()
 		if err != nil {
 			return s.updateStatusError(err)
@@ -579,10 +594,6 @@ func (s *StartedService) SetClashMode(ctx context.Context, request *ClashMode) (
 	s.serviceAccess.RUnlock()
 	clashServer.(*clashapi.Server).SetMode(request.Mode)
 	return &emptypb.Empty{}, nil
-}
-
-func (s *StartedService) URLTest(ctx context.Context, request *URLTestRequest) (*emptypb.Empty, error) {
-	return s.startURLTest(request)
 }
 
 func (s *StartedService) SelectOutbound(ctx context.Context, request *SelectOutboundRequest) (*emptypb.Empty, error) {

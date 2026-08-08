@@ -17,15 +17,16 @@ The retained Git history and source derive from:
 Original copyright, license, and dependency notice files remain in the source
 tree. HydraCore releases include corresponding source and machine-readable
 provenance. The exact baseline repository, tag, commit, and toolchain are
-recorded in [`release/ETONIFY_BASELINE`](release/ETONIFY_BASELINE); the filename
-is retained as historical build provenance.
+recorded in [`release/UPSTREAM_BASELINE`](release/UPSTREAM_BASELINE). Current
+build metadata names `sing-box-extended` as the active upstream and retains
+Etonify only in the historical lineage.
 
 ## Compatibility identifiers
 
-The Go module path, native package names, `libbox.aar` artifact name,
-`upstream_project: "etonify-core"`, and deprecated `EtonifyCapabilities()`
-binding remain unchanged where renaming would break source, schema, or binary
-compatibility. HydraCore's public identity is `io.hydrabox.hydracore`, exposed
+The Go module path, native package names, and `libbox.aar` artifact name remain
+unchanged where renaming would break inherited source or binary compatibility.
+The active Etonify capability alias and provenance fields were removed in the
+v2 contract. HydraCore's public identity is `io.hydrabox.hydracore`, exposed
 through `HydraCoreCapabilities()`.
 
 These retained technical identifiers are attribution and compatibility data,

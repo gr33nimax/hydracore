@@ -107,6 +107,10 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	return outbound, nil
 }
 
+func (h *Outbound) MultiplexEnabled() bool {
+	return h.multiplexDialer != nil
+}
+
 func (h *Outbound) InterfaceUpdated() {
 	if h.transport != nil {
 		h.transport.Close()
@@ -138,10 +142,6 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 		}
 		return h.multiplexDialer.DialContext(ctx, network, destination)
 	}
-}
-
-func (h *Outbound) MultiplexEnabled() bool {
-	return h.multiplexDialer != nil
 }
 
 func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {

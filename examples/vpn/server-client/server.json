@@ -15,6 +15,7 @@
       "type": "vpn-server",
       "tag": "vpn",
       "address": "10.0.0.1",
+      "default_gateway": "10.0.0.2",
       "users": [
         {
           "address": "10.0.0.2",
@@ -51,13 +52,7 @@
     }
   ],
   "route": {
-    "rules": [
-      {
-        "outbound": "vpn",
-        "override_gateway": "10.0.0.2"
-      }
-    ],
-    "final": "direct-out",
+    "final": "vpn",
     "default_domain_resolver": "default",
     "auto_detect_interface": true
   }

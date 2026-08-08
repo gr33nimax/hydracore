@@ -16,6 +16,7 @@
       "tag": "vpn",
       "address": "10.0.0.2",
       "key": "1c9b2ccf-b0c0-4c26-868d-a55a4edad3fe",
+      "default_gateway": "10.0.0.3",
       "outbound": {
         "type": "vless",
         "tag": "vless-out",
@@ -40,13 +41,7 @@
     }
   ],
   "route": {
-    "rules": [
-      {
-        "outbound": "vpn",
-        "override_gateway": "10.0.0.3"
-      }
-    ],
-    "final": "direct-out",
+    "final": "vpn",
     "auto_detect_interface": true
   }
 }

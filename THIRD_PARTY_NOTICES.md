@@ -25,6 +25,15 @@ The underlying project is [`SagerNet/sing-box`](https://github.com/SagerNet/sing
 licensed under GPL-3.0-or-later. Original copyright and license files are
 retained. HydraCore is not affiliated with or endorsed by SagerNet.
 
+## qWDTT VK Calls flow
+
+The anonymous VK Calls authentication request sequence in
+`transport/call/vk/vk_calls_auth.go` is adapted from
+[`SpaceNeuroX/proxy-turn-vk-android`](https://github.com/SpaceNeuroX/proxy-turn-vk-android),
+licensed under GPL-3.0. HydraCore's implementation keeps its existing dialer
+and joiner architecture and retains the former VK authentication path as a
+fallback.
+
 ## Redistribution
 
 Redistributors must provide the corresponding source and preserve all license

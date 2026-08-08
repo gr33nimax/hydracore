@@ -30,7 +30,7 @@ type vkCaptchaError struct {
 	captchaAttempt string
 }
 
-func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
+func runVKLegacyAuth(dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
 	client := common.HttpClient(dialer)
 	httpPost := func(targetURL string, form url.Values, extraHeaders map[string]string) (map[string]interface{}, error) {
 		req, _ := http.NewRequest("POST", targetURL, strings.NewReader(form.Encode()))

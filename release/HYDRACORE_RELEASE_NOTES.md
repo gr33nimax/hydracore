@@ -1,4 +1,4 @@
-# HydraCore v1.13.16-extended-hydracore.1
+# HydraCore v1.13.16-extended-hydracore.2
 
 This prerelease updates the Android runtime to the exact
 `sing-box-extended` commit
@@ -19,6 +19,9 @@ This prerelease updates the Android runtime to the exact
 
 ## Protocol and safety changes
 
+- VK Call joiners now prefer the anonymous VK Calls API flow used by current
+  clients, with the former `calls.getAnonymousToken` path retained as a
+  Smart Captcha-capable fallback.
 - Release builds include Call inbound and outbound for `dion`, `telemost`,
   `vk`, and `wbstream`, together with Rmux and AmneziaWG v3.
 - Adds Amnezia key, padding, timing, handshake-attempt, and range guards.

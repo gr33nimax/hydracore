@@ -167,7 +167,7 @@ func TestServerLatestSessionTakeoverWaitsForPendingAttach(t *testing.T) {
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword: "outer-secret",
 		Users:        []ServerUser{{Name: "alice", Password: "user-secret"}},
-		MaxSessions:  1,
+		MaxSessions:  2,
 		SessionHandler: func(SessionInfo, *PooledTunnel) error {
 			return nil
 		},

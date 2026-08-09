@@ -17,7 +17,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
-	"github.com/sagernet/sing/common/bufio"
+	sBufio "github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -97,7 +97,7 @@ func Dial(endpoint, serverName, resolvedIP string, dialer Dialer) (*Conn, error)
 	}
 	qconn, err := quic.DialEarly(
 		dialCtx,
-		bufio.NewUnbindPacketConn(udpConn),
+		sBufio.NewUnbindPacketConn(udpConn),
 		udpConn.RemoteAddr(),
 		tlsConf,
 		quicConf,

@@ -1,3 +1,20 @@
+# HydraCore v1.13.16-extended-hydracore.3
+
+This prerelease fixes VK Call connectivity on Android VPN mode. The VK SFU
+WebTransport socket is now created through the configured sing-box outbound
+dialer, so Android can protect it from HydraBox's own TUN. The protected UDP
+socket is also closed with its QUIC connection.
+
+The release retains the HydraCore API v2 and Subscription v2 contracts from
+`.2` and the same `sing-box-extended` baseline.
+
+## Artifacts
+
+The release contains the AAR, generated Java sources, attributed source,
+subscription contract files, SHA-256 files, and schema-v3 provenance.
+
+<!-- Previous release notes retained below for contract history. -->
+
 # HydraCore v1.13.16-extended-hydracore.2
 
 This prerelease updates the Android runtime to the exact

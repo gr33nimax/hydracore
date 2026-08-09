@@ -28,6 +28,7 @@ const (
 	defaultMaxPendingHandshakes = 256
 	defaultHandshakeTimeout     = 15 * time.Second
 	defaultSessionIdleTimeout   = 5 * time.Minute
+	sessionTakeoverGrace        = workerStaleReplacement
 )
 
 type ServerUser struct {
@@ -60,23 +61,25 @@ type serverUser struct {
 }
 
 type serverSession struct {
-	id            [16]byte
-	user          string
-	conv          uint32
-	expected      uint16
-	tunnel        *PooledTunnel
-	ready         chan struct{}
-	setupErr      error
-	generation    uint64
+	id              [16]byte
+	user            string
+	conv            uint32
+	expected        uint16
+	tunnel          *PooledTunnel
+	ready           chan struct{}
+	setupErr        error
+	generation      uint64
+	createdAt       time.Time
+	pendingAttaches int
 }
 
 type Server struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	logger logger.ContextLogger
-	options ServerOptions
-	users map[string]serverUser
-	key   [wrapKeyLength]byte
+	ctx        context.Context
+	cancel     context.CancelFunc
+	logger     logger.ContextLogger
+	options    ServerOptions
+	users      map[string]serverUser
+	key        [wrapKeyLength]byte
 	dtlsConfig *dtls.Config
 
 	packetConn net.PacketConn
@@ -84,8 +87,8 @@ type Server struct {
 	peersMu    sync.Mutex
 	peers      map[string]*peerPacketConn
 
-	sessionsMu  sync.Mutex
-	sessions    map[[16]byte]*serverSession
+	sessionsMu   sync.Mutex
+	sessions     map[[16]byte]*serverSession
 	userSessions map[string]int
 	pending      chan struct{}
 	closeOnce    sync.Once
@@ -110,12 +113,12 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 	}
 	ctx, cancel := context.WithCancel(parent)
 	return &Server{
-		ctx:          ctx,
-		cancel:       cancel,
-		logger:       log,
-		options:      normalized,
-		users:        users,
-		key:          key,
+		ctx:     ctx,
+		cancel:  cancel,
+		logger:  log,
+		options: normalized,
+		users:   users,
+		key:     key,
 		dtlsConfig: &dtls.Config{
 			Certificates:         []tls.Certificate{certificate},
 			CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -306,9 +309,10 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		}
 		return writeErr
 	})
+	s.releaseSessionAttach(session)
 	if err != nil {
 		if created {
-			s.deleteSession(request.SessionID, session)
+			s.deleteSessionIfUnattached(request.SessionID, session)
 		}
 		_, _ = conn.Write(encodeAuthAck(false, 0))
 		return
@@ -339,46 +343,65 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		s.sessionsMu.Unlock()
 		select {
 		case <-ready:
-			if session.setupErr != nil {
-				return nil, false, session.setupErr
+			s.sessionsMu.Lock()
+			if s.sessions[request.SessionID] != session {
+				s.sessionsMu.Unlock()
+				return nil, false, errors.New("call multi_user: session was replaced")
 			}
+			if session.setupErr != nil {
+				sessionsErr := session.setupErr
+				s.sessionsMu.Unlock()
+				return nil, false, sessionsErr
+			}
+			session.pendingAttaches++
+			s.sessionsMu.Unlock()
 			return session, false, nil
 		case <-s.ctx.Done():
 			return nil, false, s.ctx.Err()
 		}
 	}
+	record := s.users[request.User]
+	var evicted []*serverSession
+	if len(s.sessions) >= s.options.MaxSessions || s.userSessions[request.User] >= record.maxSessions {
+		evicted = s.evictDisconnectedUserSessionsLocked(request.User, time.Now())
+	}
 	if len(s.sessions) >= s.options.MaxSessions {
 		s.sessionsMu.Unlock()
+		closeServerSessions(evicted)
 		return nil, false, errors.New("call multi_user: global session limit reached")
 	}
-	record := s.users[request.User]
 	if s.userSessions[request.User] >= record.maxSessions {
 		s.sessionsMu.Unlock()
+		closeServerSessions(evicted)
 		return nil, false, errors.New("call multi_user: user session limit reached")
 	}
 	tunnel, err := NewPooledTunnel(request.Conv, s.options.MaxWorkersPerSession, s.logger)
 	if err != nil {
 		s.sessionsMu.Unlock()
+		closeServerSessions(evicted)
 		return nil, false, err
 	}
 	generation, err := randomSessionGeneration()
 	if err != nil {
 		s.sessionsMu.Unlock()
 		_ = tunnel.Close()
+		closeServerSessions(evicted)
 		return nil, false, err
 	}
 	session := &serverSession{
-		id:       request.SessionID,
-		user:     request.User,
-		conv:     request.Conv,
-		expected: request.WorkerTotal,
-		tunnel:   tunnel,
-		ready:    make(chan struct{}),
+		id:         request.SessionID,
+		user:       request.User,
+		conv:       request.Conv,
+		expected:   request.WorkerTotal,
+		tunnel:     tunnel,
+		ready:      make(chan struct{}),
 		generation: generation,
+		createdAt:  time.Now(),
 	}
 	s.sessions[request.SessionID] = session
 	s.userSessions[request.User]++
 	s.sessionsMu.Unlock()
+	closeServerSessions(evicted)
 
 	err = s.options.SessionHandler(SessionInfo{ID: request.SessionID, User: request.User}, session.tunnel)
 	s.sessionsMu.Lock()
@@ -391,6 +414,8 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		} else {
 			s.userSessions[request.User]--
 		}
+	} else if s.sessions[request.SessionID] == session {
+		session.pendingAttaches++
 	}
 	s.sessionsMu.Unlock()
 	if err != nil {
@@ -398,6 +423,48 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		return nil, false, err
 	}
 	return session, true, nil
+}
+
+func (s *Server) evictDisconnectedUserSessionsLocked(user string, now time.Time) []*serverSession {
+	evicted := make([]*serverSession, 0, 1)
+	for id, session := range s.sessions {
+		if session.user != user || session.pendingAttaches != 0 || now.Sub(session.createdAt) < sessionTakeoverGrace {
+			continue
+		}
+		select {
+		case <-session.ready:
+		default:
+			continue
+		}
+		if session.tunnel.ActiveWorkers() != 0 {
+			continue
+		}
+		delete(s.sessions, id)
+		evicted = append(evicted, session)
+	}
+	if len(evicted) > 0 {
+		remaining := s.userSessions[user] - len(evicted)
+		if remaining <= 0 {
+			delete(s.userSessions, user)
+		} else {
+			s.userSessions[user] = remaining
+		}
+	}
+	return evicted
+}
+
+func (s *Server) releaseSessionAttach(session *serverSession) {
+	s.sessionsMu.Lock()
+	if session.pendingAttaches > 0 {
+		session.pendingAttaches--
+	}
+	s.sessionsMu.Unlock()
+}
+
+func closeServerSessions(sessions []*serverSession) {
+	for _, session := range sessions {
+		_ = session.tunnel.Close()
+	}
 }
 
 func randomSessionGeneration() (uint64, error) {
@@ -416,7 +483,24 @@ func randomSessionGeneration() (uint64, error) {
 func (s *Server) deleteSession(id [16]byte, expected *serverSession) {
 	s.sessionsMu.Lock()
 	session := s.sessions[id]
-	if session == nil || session != expected {
+	if session == nil || session != expected || session.pendingAttaches != 0 {
+		s.sessionsMu.Unlock()
+		return
+	}
+	delete(s.sessions, id)
+	if s.userSessions[session.user] <= 1 {
+		delete(s.userSessions, session.user)
+	} else {
+		s.userSessions[session.user]--
+	}
+	s.sessionsMu.Unlock()
+	_ = session.tunnel.Close()
+}
+
+func (s *Server) deleteSessionIfUnattached(id [16]byte, expected *serverSession) {
+	s.sessionsMu.Lock()
+	session := s.sessions[id]
+	if session == nil || session != expected || session.pendingAttaches != 0 || session.tunnel.ActiveWorkers() != 0 {
 		s.sessionsMu.Unlock()
 		return
 	}
@@ -443,7 +527,7 @@ func (s *Server) reapLoop() {
 			s.sessionsMu.Lock()
 			stale := make([]*serverSession, 0)
 			for _, session := range s.sessions {
-				if session.tunnel.ActiveWorkers() == 0 && now.Sub(session.tunnel.LastActivity()) >= s.options.SessionIdleTimeout {
+				if session.pendingAttaches == 0 && session.tunnel.ActiveWorkers() == 0 && now.Sub(session.tunnel.LastActivity()) >= s.options.SessionIdleTimeout {
 					stale = append(stale, session)
 				}
 			}

@@ -101,6 +101,10 @@ func (rb *RelayBridge) DialContext(ctx context.Context, destination string) (net
 			rb.conns.Delete(id)
 			return nil, err
 		}
+		if tc.closed.Load() {
+			rb.conns.Delete(id)
+			return nil, io.ErrClosedPipe
+		}
 		return tc, nil
 	case <-ctx.Done():
 		rb.conns.Delete(id)
@@ -512,6 +516,10 @@ func (tc *tunnelConn) Write(b []byte) (int, error) {
 
 func (tc *tunnelConn) Close() error {
 	if tc.closed.CompareAndSwap(false, true) {
+		select {
+		case tc.rdy <- io.ErrClosedPipe:
+		default:
+		}
 		close(tc.closeCh)
 		tc.rb.send(tc.id, MsgClose, nil)
 		tc.rb.conns.Delete(tc.id)
@@ -537,6 +545,10 @@ func (tc *tunnelConn) deliver(payload []byte) {
 
 func (tc *tunnelConn) remoteClosed() {
 	if tc.closed.CompareAndSwap(false, true) {
+		select {
+		case tc.rdy <- io.ErrClosedPipe:
+		default:
+		}
 		close(tc.closeCh)
 	}
 }

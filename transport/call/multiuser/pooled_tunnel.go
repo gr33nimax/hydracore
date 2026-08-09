@@ -1,6 +1,7 @@
 package multiuser
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"sync"
@@ -18,16 +19,21 @@ const (
 	pooledKCPReceiveBuffer  = 32 * 1024
 	pooledKCPMaxPending     = pooledKCPWindow * 4
 	workerSendQueueDepth    = 256
+	workerHeartbeatInterval = 15 * time.Second
+	workerLivenessTimeout   = 60 * time.Second
+	workerStaleReplacement  = 2 * workerHeartbeatInterval
 )
 
+var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 1, 0}
+
 type pooledWorker struct {
-	id        uint16
-	conn      net.Conn
-	parent    *PooledTunnel
-	sendQueue chan []byte
-	done      chan struct{}
-	closeOnce sync.Once
-	lastActivity atomic.Int64
+	id          uint16
+	conn        net.Conn
+	parent      *PooledTunnel
+	sendQueue   chan []byte
+	done        chan struct{}
+	closeOnce   sync.Once
+	lastInbound atomic.Int64
 }
 
 func (w *pooledWorker) close() {
@@ -38,16 +44,19 @@ func (w *pooledWorker) close() {
 }
 
 type PooledTunnel struct {
-	logger logger.ContextLogger
-	kcp    *kcp.KCP
-	kcpMu  sync.Mutex
+	logger  logger.ContextLogger
+	kcp     *kcp.KCP
+	kcpMu   sync.Mutex
 	recvBuf []byte
 
-	workersMu sync.RWMutex
-	workers   map[uint16]*pooledWorker
-	workerIDs []uint16
-	nextWorker atomic.Uint32
-	maxWorkers int
+	workersMu         sync.RWMutex
+	workers           map[uint16]*pooledWorker
+	workerIDs         []uint16
+	nextWorker        atomic.Uint32
+	maxWorkers        int
+	heartbeatInterval time.Duration
+	livenessTimeout   time.Duration
+	staleReplacement  time.Duration
 
 	callbackMu sync.RWMutex
 	onData     func([]byte)
@@ -66,11 +75,14 @@ func NewPooledTunnel(conv uint32, maxWorkers int, log logger.ContextLogger) (*Po
 		return nil, errors.New("call multi_user: invalid worker limit")
 	}
 	tunnel := &PooledTunnel{
-		logger:     log,
-		workers:    make(map[uint16]*pooledWorker),
-		maxWorkers: maxWorkers,
-		recvBuf:    make([]byte, pooledKCPReceiveBuffer),
-		closed:     make(chan struct{}),
+		logger:            log,
+		workers:           make(map[uint16]*pooledWorker),
+		maxWorkers:        maxWorkers,
+		heartbeatInterval: workerHeartbeatInterval,
+		livenessTimeout:   workerLivenessTimeout,
+		staleReplacement:  workerStaleReplacement,
+		recvBuf:           make([]byte, pooledKCPReceiveBuffer),
+		closed:            make(chan struct{}),
 	}
 	tunnel.lastActivity.Store(time.Now().UnixNano())
 	tunnel.kcp = kcp.NewKCP(conv, func(buffer []byte, size int) {
@@ -161,10 +173,10 @@ func (t *PooledTunnel) reserveWorker(id uint16, conn net.Conn) (*pooledWorker, e
 		sendQueue: make(chan []byte, workerSendQueueDepth),
 		done:      make(chan struct{}),
 	}
-	worker.lastActivity.Store(time.Now().UnixNano())
+	worker.lastInbound.Store(time.Now().UnixNano())
 	t.workersMu.Lock()
 	replaced := t.workers[id]
-	if replaced != nil && time.Since(time.Unix(0, replaced.lastActivity.Load())) < 10*time.Second {
+	if replaced != nil && time.Since(time.Unix(0, replaced.lastInbound.Load())) < t.staleReplacement {
 		t.workersMu.Unlock()
 		return nil, errors.New("call multi_user: duplicate active worker attach")
 	}
@@ -187,6 +199,7 @@ func (t *PooledTunnel) reserveWorker(id uint16, conn net.Conn) (*pooledWorker, e
 func (t *PooledTunnel) startWorker(worker *pooledWorker) {
 	go worker.readLoop()
 	go worker.writeLoop()
+	go worker.watchdogLoop()
 }
 
 func (w *pooledWorker) readLoop() {
@@ -200,12 +213,17 @@ func (w *pooledWorker) readLoop() {
 		if n == 0 {
 			continue
 		}
-		w.lastActivity.Store(time.Now().UnixNano())
+		w.lastInbound.Store(time.Now().UnixNano())
+		if bytes.Equal(buffer[:n], workerHeartbeat[:]) {
+			continue
+		}
 		w.parent.inputSegment(buffer[:n])
 	}
 }
 
 func (w *pooledWorker) writeLoop() {
+	ticker := time.NewTicker(w.parent.heartbeatInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case segment := <-w.sendQueue:
@@ -213,12 +231,35 @@ func (w *pooledWorker) writeLoop() {
 				w.parent.removeWorker(w)
 				return
 			}
-			w.lastActivity.Store(time.Now().UnixNano())
 			w.parent.touch()
+		case <-ticker.C:
+			if _, err := w.conn.Write(workerHeartbeat[:]); err != nil {
+				w.parent.removeWorker(w)
+				return
+			}
 		case <-w.done:
 			return
 		case <-w.parent.closed:
 			w.parent.removeWorker(w)
+			return
+		}
+	}
+}
+
+func (w *pooledWorker) watchdogLoop() {
+	ticker := time.NewTicker(w.parent.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			lastInbound := time.Unix(0, w.lastInbound.Load())
+			if now.Sub(lastInbound) >= w.parent.livenessTimeout {
+				w.parent.removeWorker(w)
+				return
+			}
+		case <-w.done:
+			return
+		case <-w.parent.closed:
 			return
 		}
 	}

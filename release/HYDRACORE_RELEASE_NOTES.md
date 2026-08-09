@@ -14,9 +14,10 @@ baseline (`545424b86bc4513f90580ebeab2e2d1514089718`).
 - Clients can use one through four distinct VK join links and a total bounded
   worker pool distributed round-robin across them. VK TURN credentials are
   cached/singleflighted and all usable UDP relay URLs are rotated.
-- One KCP conversation is striped across live workers. Worker loss/reconnect
-  preserves the session, while generation checks fail closed if server KCP
-  state has been reset.
+- One KCP conversation is striped across live workers. Authenticated heartbeat
+  records evict dead TURN/DTLS paths without consuming user quota forever;
+  worker loss/reconnect preserves the session. If server KCP state was reset,
+  generation checks rebuild the native session behind the persistent relay.
 - Users, sessions, per-user sessions, workers, pending handshakes, frame
   lengths, duplicate active workers, handshakes, reconnects, and idle state
   all have explicit hard bounds.

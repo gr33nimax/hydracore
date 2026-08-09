@@ -97,9 +97,11 @@ The shared outer secret permits O(1) RTP-shaped packet unwrap. Each worker then
 performs one bounded user attach inside DTLS; the server uses a username map and
 constant-time password-hash comparison. Passwords are not carried in data
 packets. One KCP conversation is striped across all live workers, so losing one
-allocation does not reset application streams. Hard limits cover users,
-sessions, workers, pending handshakes, frame lengths, duplicate active workers,
-and timeouts.
+allocation does not reset application streams. Authenticated heartbeat records
+remove silent TURN/DTLS workers, and a terminal session reset reconnects behind
+the persistent relay while closing affected streams cleanly. Hard limits cover
+users, sessions, workers, pending handshakes, frame lengths, duplicate active
+workers, and timeouts.
 
 The current 512-segment KCP window represents about 512 KiB of data in flight:
 the theoretical ceiling is roughly 41 Mbit/s at 100 ms RTT or 20 Mbit/s at

@@ -30,12 +30,12 @@ func RegisterInbound(registry *inbound.Registry) {
 
 type Inbound struct {
 	inbound.Adapter
-	ctx     context.Context
-	router  adapter.ConnectionRouterEx
-	logger  logger.ContextLogger
-	options option.CallInboundOptions
-	dialer  N.Dialer
-	bridge  *call.Bridge
+	ctx      context.Context
+	router   adapter.ConnectionRouterEx
+	logger   logger.ContextLogger
+	options  option.CallInboundOptions
+	dialer   N.Dialer
+	bridge   *call.Bridge
 	listener *listener.Listener
 	server   *multiuser.Server
 }
@@ -160,7 +160,7 @@ func (h *Inbound) run() {
 }
 
 func (h *Inbound) handleMultiUserSession(info multiuser.SessionInfo, dataTunnel *multiuser.PooledTunnel) error {
-	bridge := calltunnel.NewRelayBridge(dataTunnel, "creator", h.options.ReadBuffer, h.dialer, h.logger)
+	bridge := calltunnel.NewRelayBridge(dataTunnel, "creator", normalizedReadBuffer(h.options.ReadBuffer), h.dialer, h.logger)
 	bridge.SetAcceptHandler(func(conn net.Conn, destination string) {
 		h.handleConnection(conn, M.ParseSocksaddr(destination), info.User)
 	})
@@ -170,6 +170,13 @@ func (h *Inbound) handleMultiUserSession(info multiuser.SessionInfo, dataTunnel 
 	})
 	bridge.MarkReady()
 	return nil
+}
+
+func normalizedReadBuffer(value int) int {
+	if value <= 0 {
+		return 32768
+	}
+	return value
 }
 
 func (h *Inbound) handleConnection(conn net.Conn, destination M.Socksaddr, user string) {

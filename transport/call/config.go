@@ -8,7 +8,6 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/dion"
-	"github.com/sagernet/sing-box/transport/call/multiuser"
 	"github.com/sagernet/sing-box/transport/call/telemost"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing-box/transport/call/vk"
@@ -27,25 +26,25 @@ const (
 )
 
 type Config struct {
-	Platform     string
-	Mode         string
-	JoinLink     string
-	JoinLinks    []string
-	Server       M.Socksaddr
-	User         string
-	UserPassword string
-	ObfsPassword string
-	Workers      int
+	Platform             string
+	Mode                 string
+	JoinLink             string
+	JoinLinks            []string
+	Server               M.Socksaddr
+	User                 string
+	UserPassword         string
+	ObfsPassword         string
+	Workers              int
 	WorkerConnectTimeout time.Duration
-	Cookies      string
-	CookieString string
-	Email        string
-	Password     string
-	ReadBuffer   int
-	Role         Role
-	Dialer       N.Dialer
-	DNSRouter    adapter.DNSRouter
-	Logger       logger.ContextLogger
+	Cookies              string
+	CookieString         string
+	Email                string
+	Password             string
+	ReadBuffer           int
+	Role                 Role
+	Dialer               N.Dialer
+	DNSRouter            adapter.DNSRouter
+	Logger               logger.ContextLogger
 }
 
 func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
@@ -68,36 +67,7 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 		if cfg.Role != RoleJoiner {
 			return nil, E.New("call: multi_user creator role is hosted by the native inbound")
 		}
-		provider := vk.NewTURNCredentialProvider(cfg.Dialer, log)
-		client, err := multiuser.ConnectClient(ctx, multiuser.ClientOptions{
-			Server:               cfg.Server,
-			JoinLinks:            append([]string(nil), cfg.JoinLinks...),
-			User:                 cfg.User,
-			Password:             cfg.UserPassword,
-			ObfsPassword:         cfg.ObfsPassword,
-			Workers:              cfg.Workers,
-			WorkerConnectTimeout: cfg.WorkerConnectTimeout,
-			Dialer:               cfg.Dialer,
-			DNSRouter:            cfg.DNSRouter,
-			Credentials: func(fetchCtx context.Context, joinLink string) (multiuser.TURNCredentials, error) {
-				server, fetchErr := provider.Fetch(fetchCtx, joinLink)
-				return multiuser.TURNCredentials{
-					URLs:       server.URLs,
-					Username:   server.Username,
-					Credential: server.Credential,
-				}, fetchErr
-			},
-		}, log)
-		if err != nil {
-			return nil, err
-		}
-		relay := tunnel.NewRelayBridge(client.Tunnel(), "joiner", readBuf, cfg.Dialer, log)
-		relay.MarkReady()
-		go func() {
-			<-client.Done()
-			relay.Close()
-		}()
-		return &Bridge{relay: relay, closer: client}, nil
+		return connectMultiUserBridge(ctx, cfg, readBuf, log)
 	}
 	switch cfg.Platform {
 	case "telemost":
@@ -186,11 +156,12 @@ func NewBridge(relay *tunnel.RelayBridge) *Bridge {
 }
 
 func (b *Bridge) Close() error {
-	b.relay.Close()
+	var closeErr error
 	if b.closer != nil {
-		return b.closer.Close()
+		closeErr = b.closer.Close()
 	}
-	return nil
+	b.relay.Close()
+	return closeErr
 }
 
 func (b *Bridge) DialContext(ctx context.Context, destination string) (net.Conn, error) {

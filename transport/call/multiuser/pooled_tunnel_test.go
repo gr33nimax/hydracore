@@ -213,6 +213,89 @@ func TestServerLatestSessionTakeoverWaitsForPendingAttach(t *testing.T) {
 	server.sessionsMu.Unlock()
 }
 
+func TestServerReaperRechecksSessionAfterSuccessfulAttach(t *testing.T) {
+	t.Parallel()
+	server, err := NewServer(context.Background(), ServerOptions{
+		ObfsPassword: "outer-secret",
+		Users:        []ServerUser{{Name: "alice", Password: "user-secret"}},
+		MaxSessions:  1,
+		SessionHandler: func(SessionInfo, *PooledTunnel) error {
+			return nil
+		},
+	}, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = server.Close() })
+
+	request := authRequest{
+		SessionID:   [16]byte{3},
+		Conv:        0x8899aabb,
+		WorkerID:    0,
+		WorkerTotal: 1,
+		User:        "alice",
+		Password:    "user-secret",
+	}
+	session, created, err := server.getOrCreateSession(request)
+	require.NoError(t, err)
+	require.True(t, created)
+	server.releaseSessionAttach(session)
+
+	idleCutoff := time.Now().Add(-time.Minute)
+	session.tunnel.lastActivity.Store(idleCutoff.Add(-time.Second).UnixNano())
+	sameSession, created, err := server.getOrCreateSession(request)
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Same(t, session, sameSession)
+	left, right := newTestDatagramPair()
+	t.Cleanup(func() { _ = right.Close() })
+	_, err = session.tunnel.AddWorker(0, left)
+	require.NoError(t, err)
+	server.releaseSessionAttach(session)
+	// Exercise the active-worker guard independently of the activity cutoff.
+	session.tunnel.lastActivity.Store(idleCutoff.Add(-time.Second).UnixNano())
+
+	server.deleteIdleSession(request.SessionID, session, idleCutoff)
+	server.sessionsMu.Lock()
+	require.Same(t, session, server.sessions[request.SessionID])
+	server.sessionsMu.Unlock()
+	require.Equal(t, 1, session.tunnel.ActiveWorkers())
+}
+
+func TestServerReaperRechecksIdleActivityBeforeDelete(t *testing.T) {
+	t.Parallel()
+	server, err := NewServer(context.Background(), ServerOptions{
+		ObfsPassword: "outer-secret",
+		Users:        []ServerUser{{Name: "alice", Password: "user-secret"}},
+		MaxSessions:  1,
+		SessionHandler: func(SessionInfo, *PooledTunnel) error {
+			return nil
+		},
+	}, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = server.Close() })
+
+	request := authRequest{
+		SessionID:   [16]byte{4},
+		Conv:        0x99aabbcc,
+		WorkerID:    0,
+		WorkerTotal: 1,
+		User:        "alice",
+		Password:    "user-secret",
+	}
+	session, _, err := server.getOrCreateSession(request)
+	require.NoError(t, err)
+	server.releaseSessionAttach(session)
+	idleCutoff := time.Now().Add(-time.Minute)
+	session.tunnel.lastActivity.Store(idleCutoff.Add(-time.Second).UnixNano())
+
+	// A handshake or transport event after the reaper snapshot refreshes the
+	// session even when it does not leave an active worker behind.
+	session.tunnel.touch()
+	server.deleteIdleSession(request.SessionID, session, idleCutoff)
+	server.sessionsMu.Lock()
+	require.Same(t, session, server.sessions[request.SessionID])
+	server.sessionsMu.Unlock()
+}
+
 func TestServerOptionsRejectDuplicateUsersAndHardCaps(t *testing.T) {
 	t.Parallel()
 	base := ServerOptions{

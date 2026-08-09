@@ -480,10 +480,10 @@ func randomSessionGeneration() (uint64, error) {
 	}
 }
 
-func (s *Server) deleteSession(id [16]byte, expected *serverSession) {
+func (s *Server) deleteIdleSession(id [16]byte, expected *serverSession, idleCutoff time.Time) {
 	s.sessionsMu.Lock()
 	session := s.sessions[id]
-	if session == nil || session != expected || session.pendingAttaches != 0 {
+	if session == nil || session != expected || session.pendingAttaches != 0 || session.tunnel.ActiveWorkers() != 0 || session.tunnel.LastActivity().After(idleCutoff) {
 		s.sessionsMu.Unlock()
 		return
 	}
@@ -524,16 +524,17 @@ func (s *Server) reapLoop() {
 	for {
 		select {
 		case now := <-ticker.C:
+			idleCutoff := now.Add(-s.options.SessionIdleTimeout)
 			s.sessionsMu.Lock()
 			stale := make([]*serverSession, 0)
 			for _, session := range s.sessions {
-				if session.pendingAttaches == 0 && session.tunnel.ActiveWorkers() == 0 && now.Sub(session.tunnel.LastActivity()) >= s.options.SessionIdleTimeout {
+				if session.pendingAttaches == 0 && session.tunnel.ActiveWorkers() == 0 && !session.tunnel.LastActivity().After(idleCutoff) {
 					stale = append(stale, session)
 				}
 			}
 			s.sessionsMu.Unlock()
 			for _, session := range stale {
-				s.deleteSession(session.id, session)
+				s.deleteIdleSession(session.id, session, idleCutoff)
 			}
 		case <-s.ctx.Done():
 			return

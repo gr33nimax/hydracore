@@ -1,4 +1,4 @@
-name: HydraCore - Verified Android runtime
+name: HydraCore - Verified Android and Linux runtime
 
 on:
   push:
@@ -217,14 +217,109 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  linux:
+    name: Build verified Linux ${{ matrix.arch }} runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify baseline
+        run: bash release/verify_upstream_baseline.sh
+      - name: Build reproducible VPS runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
+          tags="$(tr -d '\r\n' < release/DEFAULT_BUILD_TAGS_OTHERS)"
+          shared_ldflags="$(tr -d '\r\n' < release/LDFLAGS)"
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          asset="hydracore-linux-${{ matrix.arch }}.tar.gz"
+          mkdir -p package dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
+            go build \
+              -trimpath \
+              -tags "$tags" \
+              -ldflags "-X github.com/sagernet/sing-box/constant.Version=${version} ${shared_ldflags} -s -w -buildid=" \
+              -o package/sing-box \
+              ./cmd/sing-box
+          chmod 0755 package/sing-box
+          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
+            package/sing-box version | grep -F "$version"
+            package/sing-box hydra capabilities --json > capabilities.json
+            jq --exit-status \
+              '.identity.core_id == "io.hydrabox.hydracore" and
+               .features.call_vk_multi_user == true and
+               .protocols.call_modes == ["p2p", "multi_user"]' \
+              capabilities.json >/dev/null
+          fi
+          tar \
+            --sort=name \
+            --mtime="@${source_date_epoch}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -cf - \
+            -C package sing-box | gzip -n > "dist/${asset}"
+          (cd dist && sha256sum "$asset" > "${asset}.sha256")
+          artifact_sha256="$(sha256sum "dist/${asset}" | awk '{print $1}')"
+          build_tags_json="$(jq -Rn --arg tags "$tags" '$tags | split(",")')"
+          cat > "dist/linux-provenance-${{ matrix.arch }}.json" <<EOF
+          {
+            "schema_version": 1,
+            "distribution": {
+              "id": "io.hydrabox.hydracore",
+              "version": "${version}"
+            },
+            "source": {
+              "repository": "https://github.com/gr33nimax/hydracore",
+              "commit": "${GITHUB_SHA}"
+            },
+            "runtime": {
+              "os": "linux",
+              "arch": "${{ matrix.arch }}",
+              "cgo_enabled": false,
+              "build_tags": ${build_tags_json}
+            },
+            "artifact": {
+              "name": "${asset}",
+              "binary": "sing-box",
+              "sha256": "${artifact_sha256}"
+            }
+          }
+          EOF
+          jq --exit-status . "dist/linux-provenance-${{ matrix.arch }}.json" >/dev/null
+          (cd dist && sha256sum "linux-provenance-${{ matrix.arch }}.json" > "linux-provenance-${{ matrix.arch }}.json.sha256")
+          test "$(tar -tzf "dist/${asset}")" = "sing-box"
+          file package/sing-box
+      - name: Upload Linux runtime artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hydracore-linux-${{ matrix.arch }}-${{ github.sha }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 14
+
   draft-release:
-    name: Publish verified test prerelease
+    name: Publish verified stable runtime
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: android
+    needs: [android, linux]
     permissions:
       contents: write
     steps:
@@ -235,6 +330,12 @@ jobs:
         with:
           name: hydracore-libbox-${{ github.sha }}
           path: dist
+      - name: Download verified Linux artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: hydracore-linux-*-${{ github.sha }}
+          path: dist
+          merge-multiple: true
       - name: Verify downloaded artifact
         shell: bash
         run: |
@@ -265,7 +366,31 @@ jobs:
             recorded="$(jq -r --arg artifact "$artifact" '.artifacts[$artifact].sha256' dist/provenance.json)"
             test "$actual" = "$recorded"
           done
-      - name: Create, populate, and publish prerelease
+          for arch in amd64 arm64; do
+            asset="hydracore-linux-${arch}.tar.gz"
+            test "$(tar -tzf "dist/${asset}")" = "sing-box"
+            actual="$(sha256sum "dist/${asset}" | awk '{print $1}')"
+            recorded="$(jq -r '.artifact.sha256' "dist/linux-provenance-${arch}.json")"
+            test "$actual" = "$recorded"
+            jq --exit-status \
+              --arg commit "$GITHUB_SHA" \
+              --arg version "$hydracore_version" \
+              --arg arch "$arch" \
+              '.source.commit == $commit and
+               .distribution.version == $version and
+               .runtime.os == "linux" and
+               .runtime.arch == $arch and
+               .artifact.name == ("hydracore-linux-" + $arch + ".tar.gz") and
+               .artifact.binary == "sing-box"' \
+              "dist/linux-provenance-${arch}.json" >/dev/null
+          done
+          mkdir -p verify-linux
+          tar -xzf dist/hydracore-linux-amd64.tar.gz -C verify-linux
+          verify-linux/sing-box version | grep -F "$hydracore_version"
+          verify-linux/sing-box hydra capabilities --json | jq --exit-status \
+            '.features.call_vk_multi_user == true and
+             .protocols.call_modes == ["p2p", "multi_user"]' >/dev/null
+      - name: Create, populate, and publish stable release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -273,7 +398,7 @@ jobs:
           set -euo pipefail
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           test -n "$version"
-          title="HydraCore ${version} - verified Android runtime"
+          title="HydraCore ${version} - verified Android and Linux runtime"
 
           if gh release view "$version" --json isDraft > release-state.json 2>/dev/null; then
             if [[ "$(jq -r '.isDraft' release-state.json)" != "true" ]]; then
@@ -282,14 +407,13 @@ jobs:
             fi
             gh release edit "$version" \
               --draft \
-              --prerelease \
+              --prerelease=false \
               --target "$GITHUB_SHA" \
               --title "$title" \
               --notes-file release/HYDRACORE_RELEASE_NOTES.md
           else
             gh release create "$version" \
               --draft \
-              --prerelease \
               --target "$GITHUB_SHA" \
               --title "$title" \
               --notes-file release/HYDRACORE_RELEASE_NOTES.md
@@ -298,5 +422,5 @@ jobs:
           gh release upload "$version" dist/* --clobber
           gh release edit "$version" \
             --draft=false \
-            --prerelease \
-            --latest=false
+            --prerelease=false \
+            --latest

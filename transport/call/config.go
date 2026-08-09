@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/dion"
@@ -13,6 +14,7 @@ import (
 	"github.com/sagernet/sing-box/transport/call/wbstream"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
 
@@ -24,18 +26,25 @@ const (
 )
 
 type Config struct {
-	Platform     string
-	Mode         string
-	JoinLink     string
-	Cookies      string
-	CookieString string
-	Email        string
-	Password     string
-	ReadBuffer   int
-	Role         Role
-	Dialer       N.Dialer
-	DNSRouter    adapter.DNSRouter
-	Logger       logger.ContextLogger
+	Platform             string
+	Mode                 string
+	JoinLink             string
+	JoinLinks            []string
+	Server               M.Socksaddr
+	User                 string
+	UserPassword         string
+	ObfsPassword         string
+	Workers              int
+	WorkerConnectTimeout time.Duration
+	Cookies              string
+	CookieString         string
+	Email                string
+	Password             string
+	ReadBuffer           int
+	Role                 Role
+	Dialer               N.Dialer
+	DNSRouter            adapter.DNSRouter
+	Logger               logger.ContextLogger
 }
 
 func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
@@ -50,6 +59,15 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 	cookieStr := cfg.CookieString
 	if cookieStr == "" {
 		cookieStr = cfg.Cookies
+	}
+	if cfg.Mode == "multi_user" {
+		if cfg.Platform != "vk" {
+			return nil, E.New("call: multi_user mode is only supported for vk")
+		}
+		if cfg.Role != RoleJoiner {
+			return nil, E.New("call: multi_user creator role is hosted by the native inbound")
+		}
+		return connectMultiUserBridge(ctx, cfg, readBuf, log)
 	}
 	switch cfg.Platform {
 	case "telemost":
@@ -129,7 +147,8 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 }
 
 type Bridge struct {
-	relay *tunnel.RelayBridge
+	relay  *tunnel.RelayBridge
+	closer interface{ Close() error }
 }
 
 func NewBridge(relay *tunnel.RelayBridge) *Bridge {
@@ -137,8 +156,12 @@ func NewBridge(relay *tunnel.RelayBridge) *Bridge {
 }
 
 func (b *Bridge) Close() error {
+	var closeErr error
+	if b.closer != nil {
+		closeErr = b.closer.Close()
+	}
 	b.relay.Close()
-	return nil
+	return closeErr
 }
 
 func (b *Bridge) DialContext(ctx context.Context, destination string) (net.Conn, error) {

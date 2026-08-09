@@ -1,53 +1,51 @@
-# HydraCore v1.13.16-extended-hydracore.3
+# HydraCore v1.13.16-extended-hydracore.4
 
-This prerelease fixes VK Call connectivity on Android VPN mode. The VK SFU
-WebTransport socket is now created through the configured sing-box outbound
-dialer, so Android can protect it from HydraBox's own TUN. The protected UDP
-socket is also closed with its QUIC connection.
+This stable release adds the Linux/VPS HydraCore distribution and completes
+native VK Calls multi-user support on the exact `sing-box-extended` 2.6.2
+baseline (`545424b86bc4513f90580ebeab2e2d1514089718`).
 
-The release retains the HydraCore API v2 and Subscription v2 contracts from
-`.2` and the same `sing-box-extended` baseline.
+## Native VK Calls
 
-## Artifacts
+- `mode: "multi_user"` hosts many independent authenticated users on one
+  native UDP Calls inbound. Legacy missing/`p2p` mode remains unchanged.
+- A shared RTP-shaped ChaCha20-Poly1305 layer makes packet unwrap O(1). User
+  lookup is O(1), the password hash comparison is constant-time, and attach
+  credentials are sent once inside DTLS instead of in every data packet.
+- Clients can use one through four distinct VK join links and a total bounded
+  worker pool distributed round-robin across them. VK TURN credentials are
+  cached/singleflighted and all usable UDP relay URLs are rotated.
+- One KCP conversation is striped across live workers. Authenticated heartbeat
+  records evict dead TURN/DTLS paths without consuming user quota forever;
+  worker loss/reconnect preserves the session. If server KCP state was reset,
+  generation checks rebuild the native session behind the persistent relay.
+- Users, sessions, per-user sessions, workers, pending handshakes, frame
+  lengths, duplicate active workers, handshakes, reconnects, and idle state
+  all have explicit hard bounds.
 
-The release contains the AAR, generated Java sources, attributed source,
-subscription contract files, SHA-256 files, and schema-v3 provenance.
+The exact runtime probe is:
 
-<!-- Previous release notes retained below for contract history. -->
+```console
+sing-box hydra capabilities --json
+```
 
-# HydraCore v1.13.16-extended-hydracore.2
+It reports `features.call_vk_multi_user=true` and
+`protocols.call_modes=["p2p","multi_user"]` in release builds.
 
-This prerelease updates the Android runtime to the exact
-`sing-box-extended` commit
-`da4c532efb1f86a38a324909fc9b8867f811551c` from the 2.6.1 line.
+## VPS artifacts
 
-## Contract changes
+- `hydracore-linux-amd64.tar.gz`
+- `hydracore-linux-arm64.tar.gz`
 
-- Introduces HydraCore API v2 and removes the former active capability alias
-  and product-specific provenance fields while preserving historical credits.
-- Ships Hydra Subscription v2 plaintext and flattened JWE schemas as embedded,
-  checksummed release artifacts.
-- Adds strict remote-policy v2 validation, independent resource graphs,
-  permissions, profiles, versioned requirements, redacted inspection, and
-  authenticated `dir`/`A256GCM` JWE opening.
-- Replaces fire-and-forget group URL tests with start/get/cancel sessions and a
-  bounded event stream. Adds coherent runtime snapshots and coalesced typed
-  runtime events.
+Each archive contains a root executable named `sing-box` and ships with a
+SHA-256 sidecar plus per-architecture provenance. The release also retains the
+Android `libbox.aar`, generated bindings, attributed source archive,
+subscription contracts, checksums, and schema-v3 Android provenance.
 
-## Protocol and safety changes
+## Security and capacity boundary
 
-- VK Call joiners now prefer the anonymous VK Calls API flow used by current
-  clients, with the former `calls.getAnonymousToken` path retained as a
-  Smart Captcha-capable fallback.
-- Release builds include Call inbound and outbound for `dion`, `telemost`,
-  `vk`, and `wbstream`, together with Rmux and AmneziaWG v3.
-- Adds Amnezia key, padding, timing, handshake-attempt, and range guards.
-- Carries forward upstream AnyTLS, XHTTP, QUIC, VLESS, and other 2.6.1 changes
-  while preserving HydraCore-specific synchronization and safety fixes.
-
-## Artifacts
-
-The release contains the AAR, generated Java sources, attributed source,
-subscription contract files, SHA-256 files, and schema-v3 provenance. HydraBox
-is intentionally not modified by this core release; existing client releases
-must not be assumed to understand Subscription v2 or the API-v2 binding break.
+The VPS never joins VK and receives no VK cookies or room-creator credentials.
+`obfs_password` is a trusted group secret protecting the self-signed DTLS
+identity and should be rotated when group membership changes. With four rooms
+and four workers per user, a 27-allocation-per-room VK limit corresponds to an
+estimated 27 concurrent sessions; actual limits and throughput depend on VK,
+RTT, loss, and the VPS.

@@ -37,13 +37,16 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, 1, capabilities.Runtime.Version)
 	require.Equal(t, 64, capabilities.Runtime.RetainedURLTestSessions)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.Call)
+	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKMultiUser)
 	if hydraCoreCallEnabled {
 		require.Contains(t, capabilities.Protocols.Inbounds, "call")
 		require.Contains(t, capabilities.Protocols.Outbounds, "call")
 		require.Equal(t, []string{"dion", "telemost", "vk", "wbstream"}, capabilities.Protocols.CallPlatforms)
+		require.Equal(t, []string{"p2p", "multi_user"}, capabilities.Protocols.CallModes)
 	} else {
 		require.NotContains(t, capabilities.Protocols.Inbounds, "call")
 		require.NotContains(t, capabilities.Protocols.Outbounds, "call")
 		require.Empty(t, capabilities.Protocols.CallPlatforms)
+		require.Empty(t, capabilities.Protocols.CallModes)
 	}
 }

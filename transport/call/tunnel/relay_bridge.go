@@ -17,9 +17,35 @@ import (
 )
 
 type udpClient struct {
-	pending chan []byte
-	closed  atomic.Bool
-	addr    string
+	pendingMu sync.RWMutex
+	pending   chan []byte
+	closed    atomic.Bool
+	addr      string
+}
+
+func (c *udpClient) deliver(payload []byte) bool {
+	c.pendingMu.RLock()
+	defer c.pendingMu.RUnlock()
+	if c.closed.Load() {
+		return false
+	}
+	select {
+	case c.pending <- payload:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *udpClient) closePending() bool {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	if c.closed.Load() {
+		return false
+	}
+	c.closed.Store(true)
+	close(c.pending)
+	return true
 }
 
 type RelayBridge struct {
@@ -101,6 +127,10 @@ func (rb *RelayBridge) DialContext(ctx context.Context, destination string) (net
 			rb.conns.Delete(id)
 			return nil, err
 		}
+		if tc.closed.Load() {
+			rb.conns.Delete(id)
+			return nil, io.ErrClosedPipe
+		}
 		return tc, nil
 	case <-ctx.Done():
 		rb.conns.Delete(id)
@@ -181,8 +211,7 @@ func (rb *RelayBridge) closeAll() {
 	rb.udpClients.Range(func(key, value any) bool {
 		udpCount++
 		if uc, ok := value.(*udpClient); ok {
-			uc.closed.Store(true)
-			close(uc.pending)
+			uc.closePending()
 		}
 		rb.udpClients.Delete(key)
 		return true
@@ -234,15 +263,9 @@ func (rb *RelayBridge) handleJoinerMessage(connID uint32, msgType byte, payload 
 			return
 		}
 		uc := uval.(*udpClient)
-		if uc.closed.Load() {
-			return
-		}
 		cp := make([]byte, len(payload))
 		copy(cp, payload)
-		select {
-		case uc.pending <- cp:
-		default:
-		}
+		uc.deliver(cp)
 		return
 	}
 	val, ok := rb.conns.Load(connID)
@@ -512,6 +535,10 @@ func (tc *tunnelConn) Write(b []byte) (int, error) {
 
 func (tc *tunnelConn) Close() error {
 	if tc.closed.CompareAndSwap(false, true) {
+		select {
+		case tc.rdy <- io.ErrClosedPipe:
+		default:
+		}
 		close(tc.closeCh)
 		tc.rb.send(tc.id, MsgClose, nil)
 		tc.rb.conns.Delete(tc.id)
@@ -537,6 +564,10 @@ func (tc *tunnelConn) deliver(payload []byte) {
 
 func (tc *tunnelConn) remoteClosed() {
 	if tc.closed.CompareAndSwap(false, true) {
+		select {
+		case tc.rdy <- io.ErrClosedPipe:
+		default:
+		}
 		close(tc.closeCh)
 	}
 }
@@ -570,8 +601,7 @@ func (pc *tunnelPacketConn) Write(b []byte) (int, error) {
 }
 
 func (pc *tunnelPacketConn) Close() error {
-	if pc.uc.closed.CompareAndSwap(false, true) {
-		close(pc.uc.pending)
+	if pc.uc.closePending() {
 		pc.rb.udpClients.Delete(pc.id)
 		pc.rb.send(pc.id, MsgClose, nil)
 	}

@@ -4,15 +4,18 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/dion"
+	"github.com/sagernet/sing-box/transport/call/multiuser"
 	"github.com/sagernet/sing-box/transport/call/telemost"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing-box/transport/call/vk"
 	"github.com/sagernet/sing-box/transport/call/wbstream"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
 
@@ -27,6 +30,13 @@ type Config struct {
 	Platform     string
 	Mode         string
 	JoinLink     string
+	JoinLinks    []string
+	Server       M.Socksaddr
+	User         string
+	UserPassword string
+	ObfsPassword string
+	Workers      int
+	WorkerConnectTimeout time.Duration
 	Cookies      string
 	CookieString string
 	Email        string
@@ -50,6 +60,44 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 	cookieStr := cfg.CookieString
 	if cookieStr == "" {
 		cookieStr = cfg.Cookies
+	}
+	if cfg.Mode == "multi_user" {
+		if cfg.Platform != "vk" {
+			return nil, E.New("call: multi_user mode is only supported for vk")
+		}
+		if cfg.Role != RoleJoiner {
+			return nil, E.New("call: multi_user creator role is hosted by the native inbound")
+		}
+		provider := vk.NewTURNCredentialProvider(cfg.Dialer, log)
+		client, err := multiuser.ConnectClient(ctx, multiuser.ClientOptions{
+			Server:               cfg.Server,
+			JoinLinks:            append([]string(nil), cfg.JoinLinks...),
+			User:                 cfg.User,
+			Password:             cfg.UserPassword,
+			ObfsPassword:         cfg.ObfsPassword,
+			Workers:              cfg.Workers,
+			WorkerConnectTimeout: cfg.WorkerConnectTimeout,
+			Dialer:               cfg.Dialer,
+			DNSRouter:            cfg.DNSRouter,
+			Credentials: func(fetchCtx context.Context, joinLink string) (multiuser.TURNCredentials, error) {
+				server, fetchErr := provider.Fetch(fetchCtx, joinLink)
+				return multiuser.TURNCredentials{
+					URLs:       server.URLs,
+					Username:   server.Username,
+					Credential: server.Credential,
+				}, fetchErr
+			},
+		}, log)
+		if err != nil {
+			return nil, err
+		}
+		relay := tunnel.NewRelayBridge(client.Tunnel(), "joiner", readBuf, cfg.Dialer, log)
+		relay.MarkReady()
+		go func() {
+			<-client.Done()
+			relay.Close()
+		}()
+		return &Bridge{relay: relay, closer: client}, nil
 	}
 	switch cfg.Platform {
 	case "telemost":
@@ -129,7 +177,8 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 }
 
 type Bridge struct {
-	relay *tunnel.RelayBridge
+	relay  *tunnel.RelayBridge
+	closer interface{ Close() error }
 }
 
 func NewBridge(relay *tunnel.RelayBridge) *Bridge {
@@ -138,6 +187,9 @@ func NewBridge(relay *tunnel.RelayBridge) *Bridge {
 
 func (b *Bridge) Close() error {
 	b.relay.Close()
+	if b.closer != nil {
+		return b.closer.Close()
+	}
 	return nil
 }
 

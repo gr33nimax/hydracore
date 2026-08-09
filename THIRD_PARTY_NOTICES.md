@@ -34,9 +34,17 @@ licensed under GPL-3.0. HydraCore's implementation keeps its existing dialer
 and joiner architecture and retains the former VK authentication path as a
 fallback.
 
+The RTP-shaped ChaCha20-Poly1305 wrapper and HKDF construction in
+`transport/call/multiuser/obfs.go` are adapted from the separately MIT-licensed
+`go_client/obfs.go` and `go_client/wrap.go` files at exact qWDTT commit
+`40117047d71f0303504e276b18372c0626b94a35`. Their SPDX copyright and MIT
+license notice are retained in the adapted source. The surrounding multi-user
+session/authentication/KCP implementation is HydraCore code and does not copy
+qWDTT's O(N) password-scanning server design.
+
 ## Redistribution
 
 Redistributors must provide the corresponding source and preserve all license
 and copyright notices required by the GPL and applicable third-party licenses.
 HydraCore release provenance identifies the exact source commit and toolchain
-used for the Android artifact.
+used for the Android and Linux artifacts.

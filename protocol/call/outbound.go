@@ -3,6 +3,9 @@ package call
 import (
 	"context"
 	"net"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -33,19 +36,34 @@ type Outbound struct {
 	bridge       *call.Bridge
 	startHandler func()
 	await        chan struct{}
+	awaitOnce    sync.Once
+	started      atomic.Bool
+	closed       atomic.Bool
+	cancel       context.CancelFunc
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallOutboundOptions) (adapter.Outbound, error) {
-	if options.JoinLink == "" {
-		return nil, E.New("missing join_link")
-	}
 	if options.Platform == "" {
 		return nil, E.New("missing platform")
+	}
+	if options.Mode == "multi_user" {
+		if options.Platform != "vk" {
+			return nil, E.New("call multi_user is only supported for vk")
+		}
+		if !options.ServerOptions.Build().IsValid() || options.ServerPort == 0 {
+			return nil, E.New("missing server or server_port")
+		}
+		if len(options.JoinLinks) == 0 {
+			return nil, E.New("missing join_links")
+		}
+	} else if options.JoinLink == "" {
+		return nil, E.New("missing join_link")
 	}
 	outboundDialer, err := dialer.New(ctx, options.DialerOptions, true)
 	if err != nil {
 		return nil, err
 	}
+	runCtx, cancel := context.WithCancel(ctx)
 	ob := &Outbound{
 		Adapter: outbound.NewAdapterWithDialerOptions(C.TypeCall, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.DialerOptions),
 		ctx:     ctx,
@@ -53,14 +71,22 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		options: options,
 		dialer:  outboundDialer,
 		await:   make(chan struct{}),
+		cancel:  cancel,
 	}
 	dnsRouter := service.FromContext[adapter.DNSRouter](ctx)
 	ob.startHandler = func() {
-		defer close(ob.await)
-		bridge, err := call.Connect(ctx, call.Config{
+		defer ob.finishStart()
+		bridge, err := call.Connect(runCtx, call.Config{
 			Platform:     options.Platform,
 			Mode:         options.Mode,
 			JoinLink:     options.JoinLink,
+			JoinLinks:    options.JoinLinks,
+			Server:       options.ServerOptions.Build(),
+			User:         options.User,
+			UserPassword: options.Password,
+			ObfsPassword: options.ObfsPassword,
+			Workers:      options.Workers,
+			WorkerConnectTimeout: time.Duration(options.WorkerConnectTimeout),
 			CookieString: options.Cookies.Header(),
 			ReadBuffer:   options.ReadBuffer,
 			Role:         call.RoleJoiner,
@@ -69,7 +95,13 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			Logger:       logger,
 		})
 		if err != nil {
-			logger.ErrorContext(ctx, err)
+			if !ob.closed.Load() {
+				logger.ErrorContext(runCtx, err)
+			}
+			return
+		}
+		if ob.closed.Load() {
+			_ = bridge.Close()
 			return
 		}
 		ob.bridge = bridge
@@ -81,15 +113,35 @@ func (o *Outbound) Start(stage adapter.StartStage) error {
 	if stage != adapter.StartStatePostStart {
 		return nil
 	}
+	if o.closed.Load() {
+		o.finishStart()
+		return nil
+	}
+	if !o.started.CompareAndSwap(false, true) {
+		return nil
+	}
 	go o.startHandler()
 	return nil
 }
 
 func (o *Outbound) Close() error {
+	if !o.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	o.cancel()
+	if o.started.Load() {
+		<-o.await
+	} else {
+		o.finishStart()
+	}
 	if o.bridge == nil {
 		return nil
 	}
 	return o.bridge.Close()
+}
+
+func (o *Outbound) finishStart() {
+	o.awaitOnce.Do(func() { close(o.await) })
 }
 
 func (o *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {

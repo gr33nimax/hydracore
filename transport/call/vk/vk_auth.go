@@ -1,6 +1,7 @@
 package vk
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,9 +32,16 @@ type vkCaptchaError struct {
 }
 
 func runVKLegacyAuth(dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
+	return runVKLegacyAuthContext(context.Background(), dialer, joinLink, displayName, logger)
+}
+
+func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
 	client := common.HttpClient(dialer)
 	httpPost := func(targetURL string, form url.Values, extraHeaders map[string]string) (map[string]interface{}, error) {
-		req, _ := http.NewRequest("POST", targetURL, strings.NewReader(form.Encode()))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			return nil, err
+		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("User-Agent", common.UserAgent)
 		req.Header.Set("Origin", "https://vk.ru")

@@ -2,6 +2,7 @@ package vk
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,16 +36,20 @@ var (
 // The request sequence is adapted from qWDTT's GPL-3.0 implementation:
 // https://github.com/SpaceNeuroX/proxy-turn-vk-android
 func RunVKAuth(dialer N.Dialer, joinLink, displayName string, log logger.ContextLogger) (string, error) {
-	authJSON, err := runVKCallsAuth(dialer, joinLink, displayName, log)
+	return RunVKAuthContext(context.Background(), dialer, joinLink, displayName, log)
+}
+
+func RunVKAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayName string, log logger.ContextLogger) (string, error) {
+	authJSON, err := runVKCallsAuth(ctx, dialer, joinLink, displayName, log)
 	if err == nil {
 		log.Info("vk-auth: authenticated via VK Calls path")
 		return authJSON, nil
 	}
 	log.Warn(fmt.Sprintf("vk-auth: VK Calls path failed, falling back to legacy: %v", err))
-	return runVKLegacyAuth(dialer, joinLink, displayName, log)
+	return runVKLegacyAuthContext(ctx, dialer, joinLink, displayName, log)
 }
 
-func runVKCallsAuth(dialer N.Dialer, joinLink, displayName string, log logger.ContextLogger) (string, error) {
+func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName string, log logger.ContextLogger) (string, error) {
 	joinToken := extractJoinToken(joinLink)
 	if joinToken == "" {
 		return "", fmt.Errorf("empty VK call join token")
@@ -59,7 +64,7 @@ func runVKCallsAuth(dialer N.Dialer, joinLink, displayName string, log logger.Co
 	canonicalJoinLink := "https://vk.com/call/join/" + joinToken
 
 	log.Info("vk-auth: trying VK Calls anonymous path")
-	step1, err := vkCallsPost(client, vkCallsAPIBaseURL+"/auth.getAnonymToken", url.Values{
+	step1, err := vkCallsPost(ctx, client, vkCallsAPIBaseURL+"/auth.getAnonymToken", url.Values{
 		"v":         {vkCallsAPIVersion},
 		"client_id": {vkCallsClientID},
 		"link":      {canonicalJoinLink},
@@ -78,7 +83,7 @@ func runVKCallsAuth(dialer N.Dialer, joinLink, displayName string, log logger.Co
 		return "", fmt.Errorf("auth.getAnonymToken: missing response.token")
 	}
 
-	step2, err := vkCallsPost(client, vkCallsAPIBaseURL+"/messages.getCallPreview", url.Values{
+	step2, err := vkCallsPost(ctx, client, vkCallsAPIBaseURL+"/messages.getCallPreview", url.Values{
 		"v":               {vkCallsAPIVersion},
 		"anonymous_token": {anonymousToken},
 		"device_id":       {deviceID},
@@ -102,7 +107,7 @@ func runVKCallsAuth(dialer N.Dialer, joinLink, displayName string, log logger.Co
 		return "", fmt.Errorf("messages.getCallPreview: missing response.secret")
 	}
 
-	step3, err := vkCallsPost(client, vkCallsAPIBaseURL+"/messages.getAnonymCallToken", url.Values{
+	step3, err := vkCallsPost(ctx, client, vkCallsAPIBaseURL+"/messages.getAnonymCallToken", url.Values{
 		"v":               {vkCallsAPIVersion},
 		"anonymous_token": {anonymousToken},
 		"device_id":       {deviceID},
@@ -131,7 +136,7 @@ func runVKCallsAuth(dialer N.Dialer, joinLink, displayName string, log logger.Co
 	if err != nil {
 		return "", fmt.Errorf("auth.anonymLogin session data: %w", err)
 	}
-	step4, err := vkCallsPost(client, vkCallsOKBaseURL, url.Values{
+	step4, err := vkCallsPost(ctx, client, vkCallsOKBaseURL, url.Values{
 		"session_data":    {string(sessionData)},
 		"method":          {"auth.anonymLogin"},
 		"format":          {"JSON"},
@@ -164,13 +169,13 @@ func runVKCallsAuth(dialer N.Dialer, joinLink, displayName string, log logger.Co
 	return string(encoded), nil
 }
 
-func vkCallsPost(client *http.Client, endpoint string, query url.Values) (map[string]interface{}, error) {
+func vkCallsPost(ctx context.Context, client *http.Client, endpoint string, query url.Values) (map[string]interface{}, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
 	}
 	parsed.RawQuery = query.Encode()
-	req, err := http.NewRequest(http.MethodPost, parsed.String(), bytes.NewReader(nil))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(nil))
 	if err != nil {
 		return nil, err
 	}

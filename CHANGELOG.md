@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v1.13.16-extended-hydracore.4
+
+- Updated the exact `sing-box-extended` baseline to 2.6.2 commit
+  `545424b86bc4513f90580ebeab2e2d1514089718`.
+- Added native VK Calls `multi_user` with O(1) per-user authentication,
+  bounded sessions/handshakes, cached VK TURN credentials, one KCP session
+  striped across reconnecting DTLS workers, and up to four distinct room
+  links.
+- Added `sing-box hydra capabilities --json` and the canonical
+  `features.call_vk_multi_user` / `protocols.call_modes` contract.
+- Added reproducible, checksummed Linux `amd64` and `arm64` release archives
+  for VPS deployment alongside the Android AAR.
+
 - Moved the stable product line to `main` and reduced the public branch surface.
 - Removed the inherited upstream documentation site and unsupported packaging
   workflows from the HydraCore repository.

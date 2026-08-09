@@ -17,6 +17,9 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/sagernet/sing/common/bufio"
+	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
 const (
@@ -46,10 +49,17 @@ type Conn struct {
 	writeMu  sync.Mutex
 }
 
-func Dial(endpoint, serverName, resolvedIP string) (*Conn, error) {
+type Dialer interface {
+	DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error)
+}
+
+func Dial(endpoint, serverName, resolvedIP string, dialer Dialer) (*Conn, error) {
 	target, err := url.Parse(endpoint)
 	if err != nil {
 		return nil, err
+	}
+	if dialer == nil {
+		return nil, fmt.Errorf("wt dial: missing outbound dialer")
 	}
 	port := target.Port()
 	if port == "" {
@@ -72,10 +82,33 @@ func Dial(endpoint, serverName, resolvedIP string) (*Conn, error) {
 	dialCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 
-	qconn, err := quic.DialAddrEarly(dialCtx, net.JoinHostPort(resolvedIP, port), tlsConf, quicConf)
+	// Always create the UDP socket through sing-box's outbound dialer. On
+	// Android this invokes PlatformInterface.autoDetectInterfaceControl before
+	// the socket is connected, protecting it from the app's own VPN TUN. A
+	// plain quic.DialAddrEarly socket is captured by that TUN and WebTransport
+	// stalls until its idle timeout.
+	udpConn, err := dialer.DialContext(
+		dialCtx,
+		N.NetworkUDP,
+		M.ParseSocksaddr(net.JoinHostPort(resolvedIP, port)),
+	)
 	if err != nil {
+		return nil, fmt.Errorf("wt udp dial: %w", err)
+	}
+	qconn, err := quic.DialEarly(
+		dialCtx,
+		bufio.NewUnbindPacketConn(udpConn),
+		udpConn.RemoteAddr(),
+		tlsConf,
+		quicConf,
+	)
+	if err != nil {
+		udpConn.Close()
 		return nil, fmt.Errorf("wt dial: %w", err)
 	}
+	// quic-go stops its read loop but does not own the PacketConn supplied to
+	// DialEarly. Close the protected UDP socket with the QUIC connection.
+	context.AfterFunc(qconn.Context(), func() { udpConn.Close() })
 
 	// The VK/OK SFU advertises the HTTP/3 datagram setting but does not
 	// negotiate QUIC transport-level datagrams, which makes quic-go's http3

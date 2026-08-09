@@ -1,8 +1,16 @@
-# HydraCore v1.13.16-extended-hydracore.4
+# HydraCore v1.13.16-extended-hydracore.5
 
-This stable release adds the Linux/VPS HydraCore distribution and completes
-native VK Calls multi-user support on the exact `sing-box-extended` 2.6.2
-baseline (`545424b86bc4513f90580ebeab2e2d1514089718`).
+This stable patch release fixes managed URLTest result identity and retains the
+Linux/VPS distribution plus native VK Calls multi-user support from `.4` on the
+exact `sing-box-extended` 2.6.2 baseline
+(`545424b86bc4513f90580ebeab2e2d1514089718`).
+
+## Managed URLTest
+
+- A targeted group probes the concrete leaf selected by `Now()` while emitting
+  the managed result under the originally requested group tag.
+- Direct targets keep their existing result tag. Concrete URLTest history stays
+  attached to the probed leaf so group health and selection remain accurate.
 
 ## Native VK Calls
 

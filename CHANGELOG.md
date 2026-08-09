@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.13.16-extended-hydracore.5
+
+- Fixed targeted managed URLTest sessions so an outbound group probes its
+  concrete `Now()` leaf while result events retain the requested group tag.
+  Direct targets and concrete-leaf URLTest history remain unchanged.
+
 ## v1.13.16-extended-hydracore.4
 
 - Updated the exact `sing-box-extended` baseline to 2.6.2 commit

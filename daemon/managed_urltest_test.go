@@ -161,6 +161,51 @@ func TestCollectConcreteURLTestTargetsDeduplicatesNestedGroups(t *testing.T) {
 	}
 }
 
+func TestResolveURLTestTargetsPreservesRequestedGroupResultTag(t *testing.T) {
+	t.Parallel()
+	leaf := &testURLTestOutbound{tag: "leaf"}
+	manager := &testURLTestOutboundManager{outbounds: map[string]adapter.Outbound{
+		"root":     &testURLTestGroup{tag: "root", members: []string{"selected"}},
+		"selected": &testURLTestGroup{tag: "selected", now: "leaf", members: []string{"leaf"}},
+		"leaf":     leaf,
+	}}
+
+	targets, err := resolveURLTestTargets(manager, "root", "selected", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("unexpected target count: %d", len(targets))
+	}
+	target := targets[0]
+	if target.outbound != leaf || target.tag != "leaf" {
+		t.Fatalf("target did not resolve to selected leaf: %#v", target)
+	}
+	if target.managedResultTag() != "selected" {
+		t.Fatalf("unexpected managed result tag: %q", target.managedResultTag())
+	}
+}
+
+func TestResolveURLTestTargetsLeavesDirectResultTagUnchanged(t *testing.T) {
+	t.Parallel()
+	leaf := &testURLTestOutbound{tag: "leaf"}
+	manager := &testURLTestOutboundManager{outbounds: map[string]adapter.Outbound{
+		"root": &testURLTestGroup{tag: "root", members: []string{"leaf"}},
+		"leaf": leaf,
+	}}
+
+	targets, err := resolveURLTestTargets(manager, "root", "leaf", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].outbound != leaf {
+		t.Fatalf("unexpected direct target: %#v", targets)
+	}
+	if targets[0].managedResultTag() != "leaf" || targets[0].resultTag != "" {
+		t.Fatalf("direct result tag changed: %#v", targets[0])
+	}
+}
+
 func TestCollectConcreteURLTestTargetsRejectsCycles(t *testing.T) {
 	t.Parallel()
 	manager := &testURLTestOutboundManager{outbounds: map[string]adapter.Outbound{

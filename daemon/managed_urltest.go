@@ -56,8 +56,17 @@ type urlTestSessionOptions struct {
 }
 
 type urlTestTarget struct {
-	tag      string
-	outbound adapter.Outbound
+	tag string
+	// resultTag aliases only managed result events; probes and history use tag.
+	resultTag string
+	outbound  adapter.Outbound
+}
+
+func (t urlTestTarget) managedResultTag() string {
+	if t.resultTag != "" {
+		return t.resultTag
+	}
+	return t.tag
 }
 
 type urlTestProbe func(ctx context.Context, link string, outbound adapter.Outbound) (uint16, error)
@@ -85,7 +94,7 @@ func (s *StartedService) startURLTest(request *URLTestRequest) (*URLTestSession,
 	boxService := s.instance
 
 	targets, err := resolveURLTestTargets(
-		boxService,
+		boxService.instance.Outbound(),
 		groupTag,
 		strings.TrimSpace(request.TargetOutboundTag),
 		strings.TrimSpace(request.PriorityOutboundTag),
@@ -190,8 +199,7 @@ func validateURLTestLink(link string) error {
 	return nil
 }
 
-func resolveURLTestTargets(boxService *Instance, groupTag string, targetTag string, priorityTag string, excludeTag string) ([]urlTestTarget, error) {
-	outboundManager := boxService.instance.Outbound()
+func resolveURLTestTargets(outboundManager adapter.OutboundManager, groupTag string, targetTag string, priorityTag string, excludeTag string) ([]urlTestTarget, error) {
 	rootOutbound, loaded := outboundManager.Outbound(groupTag)
 	if !loaded {
 		return nil, E.New("outbound group not found: ", groupTag)
@@ -249,7 +257,11 @@ func resolveURLTestTargets(boxService *Instance, groupTag string, targetTag stri
 		if !isMember {
 			return nil, E.New("target outbound is not a member of group ", groupTag, ": ", targetTag)
 		}
-		return []urlTestTarget{targets[index]}, nil
+		target := targets[index]
+		if targetTag != target.tag {
+			target.resultTag = targetTag
+		}
+		return []urlTestTarget{target}, nil
 	}
 
 	if priorityTag != "" {
@@ -341,7 +353,7 @@ func (s *StartedService) runURLTestSession(ctx context.Context, groupTag string,
 		}
 		now := time.Now()
 		result := &URLTestResult{
-			OutboundTag: target.tag,
+			OutboundTag: target.managedResultTag(),
 			ObservedAt:  now.UnixMilli(),
 		}
 		if err != nil {

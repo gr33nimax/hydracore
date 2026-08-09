@@ -48,7 +48,7 @@ func (s *StartedService) RunStandaloneURLTest(
 		return nil, E.New("standalone URL test runtime is not started")
 	}
 	instance := s.instance
-	targets, err := resolveURLTestTargets(instance, groupTag, targetTag, "", "")
+	targets, err := resolveURLTestTargets(instance.instance.Outbound(), groupTag, targetTag, "", "")
 	s.serviceAccess.RUnlock()
 	if err != nil {
 		return nil, err

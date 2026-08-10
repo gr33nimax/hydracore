@@ -1,10 +1,16 @@
-# HydraCore v1.13.16-extended-hydracore.7
+# HydraCore v1.13.16-extended-hydracore.8
 
-This release separates the Android client and Linux VPS runtime roles, adds
-wire-v2 network handover for native VK Calls multi-user, retains the managed
-URLTest and subscription validation fixes from `.5`/`.6`, and uses the exact
+This release exposes the authenticated Hydra VK Tunnel user to HYDRA Ultimate's
+traffic collector, retains the role-separated Android client and Linux VPS
+runtimes plus wire-v2 network handover from `.7`, and uses the exact
 `sing-box-extended` 2.6.2 baseline
 (`545424b86bc4513f90580ebeab2e2d1514089718`).
+
+## Per-user traffic attribution
+
+- Clash `/connections` metadata now includes the authenticated inbound user.
+- HYDRA Ultimate can therefore attribute Hydra VK Tunnel upload and download
+  counters to each managed user instead of leaving this protocol unassigned.
 
 ## Subscription feature contract
 

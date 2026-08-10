@@ -28,6 +28,7 @@ var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 1, 0}
 
 type pooledWorker struct {
 	id          uint16
+	epoch       uint64
 	conn        net.Conn
 	parent      *PooledTunnel
 	sendQueue   chan []byte
@@ -136,7 +137,11 @@ func (t *PooledTunnel) SetOnClose(callback func()) {
 func (t *PooledTunnel) Reconfigure(_, _ int) {}
 
 func (t *PooledTunnel) AddWorker(id uint16, conn net.Conn) (<-chan struct{}, error) {
-	worker, err := t.reserveWorker(id, conn)
+	return t.AddWorkerEpoch(id, 0, conn)
+}
+
+func (t *PooledTunnel) AddWorkerEpoch(id uint16, epoch uint64, conn net.Conn) (<-chan struct{}, error) {
+	worker, err := t.reserveWorker(id, epoch, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +153,11 @@ func (t *PooledTunnel) AddWorker(id uint16, conn net.Conn) (<-chan struct{}, err
 // ACK), and only then lets worker goroutines read or write DTLS application
 // records. This prevents a queued KCP segment from racing ahead of the ACK.
 func (t *PooledTunnel) AttachWorker(id uint16, conn net.Conn, beforeStart func() error) (<-chan struct{}, error) {
-	worker, err := t.reserveWorker(id, conn)
+	return t.AttachWorkerEpoch(id, 0, conn, beforeStart)
+}
+
+func (t *PooledTunnel) AttachWorkerEpoch(id uint16, epoch uint64, conn net.Conn, beforeStart func() error) (<-chan struct{}, error) {
+	worker, err := t.reserveWorker(id, epoch, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +169,7 @@ func (t *PooledTunnel) AttachWorker(id uint16, conn net.Conn, beforeStart func()
 	return worker.done, nil
 }
 
-func (t *PooledTunnel) reserveWorker(id uint16, conn net.Conn) (*pooledWorker, error) {
+func (t *PooledTunnel) reserveWorker(id uint16, epoch uint64, conn net.Conn) (*pooledWorker, error) {
 	select {
 	case <-t.closed:
 		return nil, errors.New("call multi_user: session already closed")
@@ -168,6 +177,7 @@ func (t *PooledTunnel) reserveWorker(id uint16, conn net.Conn) (*pooledWorker, e
 	}
 	worker := &pooledWorker{
 		id:        id,
+		epoch:     epoch,
 		conn:      conn,
 		parent:    t,
 		sendQueue: make(chan []byte, workerSendQueueDepth),
@@ -176,7 +186,11 @@ func (t *PooledTunnel) reserveWorker(id uint16, conn net.Conn) (*pooledWorker, e
 	worker.lastInbound.Store(time.Now().UnixNano())
 	t.workersMu.Lock()
 	replaced := t.workers[id]
-	if replaced != nil && time.Since(time.Unix(0, replaced.lastInbound.Load())) < t.staleReplacement {
+	if replaced != nil && epoch > 0 && epoch <= replaced.epoch {
+		t.workersMu.Unlock()
+		return nil, errors.New("call multi_user: stale worker epoch")
+	}
+	if replaced != nil && epoch == 0 && time.Since(time.Unix(0, replaced.lastInbound.Load())) < t.staleReplacement {
 		t.workersMu.Unlock()
 		return nil, errors.New("call multi_user: duplicate active worker attach")
 	}
@@ -194,6 +208,15 @@ func (t *PooledTunnel) reserveWorker(id uint16, conn net.Conn) (*pooledWorker, e
 	}
 	t.touch()
 	return worker, nil
+}
+
+func (t *PooledTunnel) DropWorker(id uint16) {
+	t.workersMu.RLock()
+	worker := t.workers[id]
+	t.workersMu.RUnlock()
+	if worker != nil {
+		t.removeWorker(worker)
+	}
 }
 
 func (t *PooledTunnel) startWorker(worker *pooledWorker) {

@@ -151,6 +151,10 @@ type Bridge struct {
 	closer interface{ Close() error }
 }
 
+type networkRebinder interface {
+	RebindNetwork()
+}
+
 func NewBridge(relay *tunnel.RelayBridge) *Bridge {
 	return &Bridge{relay: relay}
 }
@@ -162,6 +166,12 @@ func (b *Bridge) Close() error {
 	}
 	b.relay.Close()
 	return closeErr
+}
+
+func (b *Bridge) RebindNetwork() {
+	if rebinder, loaded := b.closer.(networkRebinder); loaded {
+		rebinder.RebindNetwork()
+	}
 }
 
 func (b *Bridge) DialContext(ctx context.Context, destination string) (net.Conn, error) {

@@ -102,6 +102,35 @@ func TestPooledTunnelDistributesOneKCPConversationAcrossWorkers(t *testing.T) {
 	require.Positive(t, left1.writes.Load())
 }
 
+func TestPooledTunnelHigherEpochImmediatelyReplacesWorker(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewPooledTunnel(0x22334455, 1, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	first, firstPeer := newTestDatagramPair()
+	second, secondPeer := newTestDatagramPair()
+	firstDone, err := tunnel.AddWorkerEpoch(0, 7, first)
+	require.NoError(t, err)
+	secondDone, err := tunnel.AddWorkerEpoch(0, 8, second)
+	require.NoError(t, err)
+
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("older worker was not replaced immediately")
+	}
+	select {
+	case <-secondDone:
+		t.Fatal("newer worker was closed")
+	default:
+	}
+	_, err = tunnel.AddWorkerEpoch(0, 7, firstPeer)
+	require.ErrorContains(t, err, "stale worker epoch")
+	_ = firstPeer.Close()
+	_ = secondPeer.Close()
+}
+
 func TestPooledTunnelHeartbeatKeepsIdleWorkersAliveWithoutApplicationData(t *testing.T) {
 	t.Parallel()
 	client, err := NewPooledTunnel(0x22334455, 1, logger.NOP())

@@ -294,16 +294,20 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 	}
 	request, err := decodeAuthRequest(authBuffer[:n])
 	if err != nil || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
-		_, _ = conn.Write(encodeAuthAck(false, 0))
+		version := byte(authProtocolVersion)
+		if len(authBuffer[:n]) >= 5 && authBuffer[4] == authProtocolVersionV1 {
+			version = authProtocolVersionV1
+		}
+		_, _ = conn.Write(encodeAuthAckVersion(false, 0, version))
 		return
 	}
 	session, created, err := s.getOrCreateSession(request)
 	if err != nil {
-		_, _ = conn.Write(encodeAuthAck(false, 0))
+		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
 		return
 	}
-	done, err := session.tunnel.AttachWorker(request.WorkerID, conn, func() error {
-		_, writeErr := conn.Write(encodeAuthAck(true, session.generation))
+	done, err := session.tunnel.AttachWorkerEpoch(request.WorkerID, request.WorkerEpoch, conn, func() error {
+		_, writeErr := conn.Write(encodeAuthAckVersion(true, session.generation, request.ProtocolVersion))
 		if writeErr == nil {
 			writeErr = conn.SetDeadline(time.Time{})
 		}
@@ -314,7 +318,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		if created {
 			s.deleteSessionIfUnattached(request.SessionID, session)
 		}
-		_, _ = conn.Write(encodeAuthAck(false, 0))
+		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
 		return
 	}
 	releasePending()

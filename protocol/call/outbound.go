@@ -1,3 +1,5 @@
+//go:build !with_call_server || with_call_client
+
 package call
 
 import (
@@ -10,6 +12,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/dialer"
+	H "github.com/sagernet/sing-box/common/hydracore"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -29,20 +32,28 @@ func RegisterOutbound(registry *outbound.Registry) {
 
 type Outbound struct {
 	outbound.Adapter
-	ctx          context.Context
-	logger       logger.ContextLogger
-	options      option.CallOutboundOptions
-	dialer       N.Dialer
-	bridge       *call.Bridge
-	startHandler func()
-	await        chan struct{}
-	awaitOnce    sync.Once
-	started      atomic.Bool
-	closed       atomic.Bool
-	cancel       context.CancelFunc
+	ctx           context.Context
+	logger        logger.ContextLogger
+	options       option.CallOutboundOptions
+	dialer        N.Dialer
+	bridge        *call.Bridge
+	startHandler  func()
+	await         chan struct{}
+	awaitOnce     sync.Once
+	started       atomic.Bool
+	closed        atomic.Bool
+	rebindPending atomic.Bool
+	cancel        context.CancelFunc
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallOutboundOptions) (adapter.Outbound, error) {
+	mode := options.Mode
+	if mode == "" {
+		mode = "p2p"
+	}
+	if !H.SupportsCallMode(mode) {
+		return nil, E.New("call mode is not included in this HydraCore role: ", mode)
+	}
 	if options.Platform == "" {
 		return nil, E.New("missing platform")
 	}
@@ -77,22 +88,22 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	ob.startHandler = func() {
 		defer ob.finishStart()
 		bridge, err := call.Connect(runCtx, call.Config{
-			Platform:     options.Platform,
-			Mode:         options.Mode,
-			JoinLink:     options.JoinLink,
-			JoinLinks:    options.JoinLinks,
-			Server:       options.ServerOptions.Build(),
-			User:         options.User,
-			UserPassword: options.Password,
-			ObfsPassword: options.ObfsPassword,
-			Workers:      options.Workers,
+			Platform:             options.Platform,
+			Mode:                 options.Mode,
+			JoinLink:             options.JoinLink,
+			JoinLinks:            options.JoinLinks,
+			Server:               options.ServerOptions.Build(),
+			User:                 options.User,
+			UserPassword:         options.Password,
+			ObfsPassword:         options.ObfsPassword,
+			Workers:              options.Workers,
 			WorkerConnectTimeout: time.Duration(options.WorkerConnectTimeout),
-			CookieString: options.Cookies.Header(),
-			ReadBuffer:   options.ReadBuffer,
-			Role:         call.RoleJoiner,
-			Dialer:       outboundDialer,
-			DNSRouter:    dnsRouter,
-			Logger:       logger,
+			CookieString:         options.Cookies.Header(),
+			ReadBuffer:           options.ReadBuffer,
+			Role:                 call.RoleJoiner,
+			Dialer:               outboundDialer,
+			DNSRouter:            dnsRouter,
+			Logger:               logger,
 		})
 		if err != nil {
 			if !ob.closed.Load() {
@@ -105,8 +116,28 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			return
 		}
 		ob.bridge = bridge
+		if ob.rebindPending.Swap(false) {
+			bridge.RebindNetwork()
+		}
 	}
 	return ob, nil
+}
+
+// InterfaceUpdated participates in sing-box's standard ResetNetwork lifecycle.
+// Multi-user Calls preserves its logical bridge and replaces only TURN/DTLS
+// workers, so existing proxied flows can survive a mobile handover.
+func (o *Outbound) InterfaceUpdated() {
+	if o.options.Mode != "multi_user" || o.closed.Load() {
+		return
+	}
+	select {
+	case <-o.await:
+		if o.bridge != nil {
+			o.bridge.RebindNetwork()
+		}
+	default:
+		o.rebindPending.Store(true)
+	}
 }
 
 func (o *Outbound) Start(stage adapter.StartStage) error {

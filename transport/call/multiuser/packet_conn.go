@@ -114,25 +114,25 @@ type obfsPacketConn struct {
 	remote   net.Addr
 	codec    *rtpCodec
 	readLock sync.Mutex
+	readBuf  []byte
 }
 
 func newObfsPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec) *obfsPacketConn {
-	return &obfsPacketConn{base: base, remote: remote, codec: codec}
+	return &obfsPacketConn{base: base, remote: remote, codec: codec, readBuf: make([]byte, maximumWirePacket)}
 }
 
 func (c *obfsPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 	c.readLock.Lock()
 	defer c.readLock.Unlock()
-	wire := make([]byte, maximumWirePacket)
 	for {
-		n, addr, err := c.base.ReadFrom(wire)
+		n, addr, err := c.base.ReadFrom(c.readBuf)
 		if err != nil {
 			return 0, nil, err
 		}
 		if !samePacketAddress(addr, c.remote) {
 			continue
 		}
-		plain, err := c.codec.unwrap(wire[:n])
+		plain, err := c.codec.unwrap(c.readBuf[:n])
 		if err != nil {
 			continue
 		}

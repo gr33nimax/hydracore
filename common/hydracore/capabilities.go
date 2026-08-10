@@ -12,6 +12,7 @@ type Identity struct {
 	CoreID      string `json:"core_id"`
 	CoreName    string `json:"core_name"`
 	CoreVersion string `json:"core_version"`
+	Role        string `json:"role"`
 }
 
 type FeatureSet struct {
@@ -31,15 +32,23 @@ type FeatureSet struct {
 	Rmux                         bool `json:"rmux"`
 	Call                         bool `json:"call"`
 	CallVKMultiUser              bool `json:"call_vk_multi_user"`
+	CallVKMultiUserClient        bool `json:"call_vk_multi_user_client"`
+	CallVKMultiUserServer        bool `json:"call_vk_multi_user_server"`
 	AmneziaVersion               int  `json:"amnezia_version"`
 }
 
 type ProtocolSet struct {
-	Inbounds      []string `json:"inbounds"`
-	Outbounds     []string `json:"outbounds"`
-	Endpoints     []string `json:"endpoints"`
-	CallPlatforms []string `json:"call_platforms"`
-	CallModes     []string `json:"call_modes"`
+	Inbounds            []string          `json:"inbounds"`
+	Outbounds           []string          `json:"outbounds"`
+	Endpoints           []string          `json:"endpoints"`
+	CallPlatforms       []string          `json:"call_platforms"`
+	CallModes           []string          `json:"call_modes"`
+	CallVKMultiUserWire WireCompatibility `json:"call_vk_multi_user_wire"`
+}
+
+type WireCompatibility struct {
+	Min int `json:"min"`
+	Max int `json:"max"`
 }
 
 type RemotePolicy struct {
@@ -83,13 +92,11 @@ func Capabilities() CapabilitySet {
 		"mieru", "anytls", "trusttunnel", "hysteria", "hysteria2", "tuic",
 		"sudoku", "snell",
 	}
-	callPlatforms := []string{}
-	callModes := []string{}
-	if callEnabled {
+	if callServerEnabled {
 		safeInboundTypes = append(safeInboundTypes, "call")
+	}
+	if callClientEnabled {
 		safeOutboundTypes = append(safeOutboundTypes, "call")
-		callPlatforms = []string{"dion", "telemost", "vk", "wbstream"}
-		callModes = []string{"p2p", "multi_user"}
 	}
 	return CapabilitySet{
 		APIVersion: APIVersion,
@@ -97,6 +104,7 @@ func Capabilities() CapabilitySet {
 			CoreID:      "io.hydrabox.hydracore",
 			CoreName:    "HydraCore",
 			CoreVersion: C.Version,
+			Role:        distributionRole,
 		},
 		Features: FeatureSet{
 			TargetedURLTest:              true,
@@ -115,14 +123,17 @@ func Capabilities() CapabilitySet {
 			Rmux:                         true,
 			Call:                         callEnabled,
 			CallVKMultiUser:              callEnabled,
+			CallVKMultiUserClient:        callClientEnabled,
+			CallVKMultiUserServer:        callServerEnabled,
 			AmneziaVersion:               3,
 		},
 		Protocols: ProtocolSet{
-			Inbounds:      append([]string(nil), safeInboundTypes...),
-			Outbounds:     append([]string(nil), safeOutboundTypes...),
-			Endpoints:     []string{"wireguard"},
-			CallPlatforms: callPlatforms,
-			CallModes:     callModes,
+			Inbounds:            append([]string(nil), safeInboundTypes...),
+			Outbounds:           append([]string(nil), safeOutboundTypes...),
+			Endpoints:           []string{"wireguard"},
+			CallPlatforms:       append([]string(nil), callPlatforms...),
+			CallModes:           append([]string(nil), callModes...),
+			CallVKMultiUserWire: WireCompatibility{Min: callWireMin, Max: callWireMax},
 		},
 		TUNStacks:              []string{"system", "gvisor", "mixed"},
 		XHTTPModes:             []string{"packet-up", "stream-up", "stream-one"},
@@ -148,6 +159,18 @@ func Capabilities() CapabilitySet {
 			RetainedURLTestSessions:    64,
 		},
 	}
+}
+
+func SupportsCallMode(mode string) bool {
+	if mode != "multi_user" {
+		mode = "p2p"
+	}
+	for _, supportedMode := range callModes {
+		if supportedMode == mode {
+			return true
+		}
+	}
+	return false
 }
 
 func CapabilitiesJSON() string {

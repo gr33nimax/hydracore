@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v1.13.16-extended-hydracore.7
+
+- Split release capabilities and artifacts into a client Android runtime and
+  a VPS Linux runtime while keeping one versioned source tree. Release roles
+  expose only VK Calls `multi_user`; the combined developer tag retains legacy
+  compatibility outside the product release surface.
+- Added Calls wire v2 worker epochs and immediate network rebind so Wi-Fi/mobile
+  handover replaces stale DTLS/TURN workers without discarding the logical KCP
+  session. The VPS accepts wire v1 and v2 for one transition release.
+- Reused the obfuscation read buffer instead of allocating a maximum-size
+  packet buffer for every datagram.
+- Made stable publication an explicit verified workflow action. Ordinary main
+  pushes now produce CI artifacts without silently replacing `latest`.
+
 ## v1.13.16-extended-hydracore.6
 
 - Fixed Hydra Subscription v2 plaintext/JWE validation so a `with_call` build

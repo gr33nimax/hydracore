@@ -17,6 +17,7 @@ const multiUserReconnectMaxBackoff = 30 * time.Second
 type managedMultiUserClient interface {
 	Tunnel() *multiuser.PooledTunnel
 	Done() <-chan struct{}
+	RebindNetwork()
 	Close() error
 }
 
@@ -147,6 +148,15 @@ func (m *multiUserBridgeManager) reconnect() managedMultiUserClient {
 				backoff = multiUserReconnectMaxBackoff
 			}
 		}
+	}
+}
+
+func (m *multiUserBridgeManager) RebindNetwork() {
+	m.clientMu.Lock()
+	current := m.client
+	m.clientMu.Unlock()
+	if current != nil {
+		current.RebindNetwork()
 	}
 }
 

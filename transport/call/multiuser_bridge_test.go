@@ -3,6 +3,7 @@ package call
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ type fakeManagedMultiUserClient struct {
 	done      chan struct{}
 	closeGate <-chan struct{}
 	closeOnce sync.Once
+	rebinds   atomic.Int32
 }
 
 func newFakeManagedMultiUserClient(t *testing.T, conv uint32) *fakeManagedMultiUserClient {
@@ -28,6 +30,7 @@ func newFakeManagedMultiUserClient(t *testing.T, conv uint32) *fakeManagedMultiU
 
 func (c *fakeManagedMultiUserClient) Tunnel() *multiuser.PooledTunnel { return c.tunnel }
 func (c *fakeManagedMultiUserClient) Done() <-chan struct{}           { return c.done }
+func (c *fakeManagedMultiUserClient) RebindNetwork()                  { c.rebinds.Add(1) }
 
 func (c *fakeManagedMultiUserClient) Close() error {
 	c.closeOnce.Do(func() {
@@ -67,6 +70,25 @@ func TestMultiUserBridgeManagerSwapsClientAfterTerminalFailure(t *testing.T) {
 	default:
 		t.Fatal("replacement client was not closed with the manager")
 	}
+}
+
+func TestMultiUserBridgeManagerRebindsCurrentClient(t *testing.T) {
+	t.Parallel()
+	initial := newFakeManagedMultiUserClient(t, 0x44556678)
+	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", 32768, nil, logger.NOP())
+	relay.MarkReady()
+	ctx, cancel := context.WithCancel(context.Background())
+	manager := newMultiUserBridgeManager(ctx, cancel, relay, func(context.Context) (managedMultiUserClient, error) {
+		t.Fatal("network rebind must not recreate the logical client")
+		return nil, context.Canceled
+	}, initial, logger.NOP())
+	t.Cleanup(func() {
+		_ = manager.Close()
+		relay.Close()
+	})
+
+	manager.RebindNetwork()
+	require.Equal(t, int32(1), initial.rebinds.Load())
 }
 
 func TestMultiUserBridgeManagerCloseCancelsReconnect(t *testing.T) {

@@ -1,9 +1,19 @@
-# HydraCore v1.13.16-extended-hydracore.5
+# HydraCore v1.13.16-extended-hydracore.6
 
-This stable patch release fixes managed URLTest result identity and retains the
-Linux/VPS distribution plus native VK Calls multi-user support from `.4` on the
-exact `sing-box-extended` 2.6.2 baseline
+This stable patch release aligns Hydra Subscription validation with the
+advertised native VK Calls multi-user capability and retains the managed
+URLTest identity fix from `.5`, the Linux/VPS distribution, and the exact
+`sing-box-extended` 2.6.2 baseline
 (`545424b86bc4513f90580ebeab2e2d1514089718`).
+
+## Subscription feature contract
+
+- A JWE or plaintext Hydra Subscription v2 document may require both `call`
+  and `call_vk_multi_user` when the release advertises those capabilities.
+- Builds without `with_call` continue to reject both requirements. Unknown
+  feature names remain fail-closed.
+- Regression coverage follows the same encrypted JWE validation path used by
+  HydraBox subscription import.
 
 ## Managed URLTest
 

@@ -1,10 +1,8 @@
-# HydraCore v1.13.16-extended-hydracore.8
+# HydraCore v1.13.16-extended-hydracore.9
 
-This release fixes reusable VLESS/VMess/Trojan XHTTP transport handover,
-separates the Android client and Linux VPS runtime roles, adds wire-v2 network
-handover for native VK Calls multi-user, retains the managed URLTest and
-subscription validation fixes from `.5`/`.6`, and uses the exact
-`sing-box-extended` 2.6.2 baseline
+This release fixes reusable VLESS/VMess/Trojan XHTTP transport handover and
+RuntimeEvents traffic rates, retains authenticated Hydra VK Tunnel user
+attribution from `.8`, and uses the exact `sing-box-extended` 2.6.2 baseline
 (`545424b86bc4513f90580ebeab2e2d1514089718`).
 
 ## XHTTP network handover
@@ -21,6 +19,12 @@ subscription validation fixes from `.5`/`.6`, and uses the exact
 - RuntimeEvents now derives upload and download bytes per second from both
   cumulative counters and the actual observation interval instead of emitting
   permanent zero rates.
+
+## Per-user traffic attribution
+
+- Clash `/connections` metadata now includes the authenticated inbound user.
+- HYDRA Ultimate can therefore attribute Hydra VK Tunnel upload and download
+  counters to each managed user instead of leaving this protocol unassigned.
 
 ## Subscription feature contract
 

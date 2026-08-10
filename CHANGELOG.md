@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Exposed the authenticated inbound user in Clash `/connections` metadata so
+  HYDRA Ultimate can attribute Hydra VK Tunnel traffic per user.
+
 ## v1.13.16-extended-hydracore.7
 
 - Split release capabilities and artifacts into a client Android runtime and

@@ -34,6 +34,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this verified main-branch build as the stable release
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -67,6 +73,10 @@ jobs:
         run: go test -tags with_wireguard ./experimental/libbox
       - name: Test Call protocol build
         run: go test -tags with_call ./experimental/libbox ./protocol/call ./transport/call/... ./include
+      - name: Test client Calls role
+        run: go test -tags with_call_client ./experimental/libbox ./protocol/call ./transport/call/... ./include
+      - name: Test VPS Calls role
+        run: go test -tags with_call_server ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Race test HydraCore inherited runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
       - name: Resource and performance gate
@@ -122,6 +132,7 @@ jobs:
           make lib_android
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          HYDRACORE_BUILD_ROLE: client
       - name: Prepare provenance
         shell: bash
         env:
@@ -133,12 +144,13 @@ jobs:
           test -f libbox.aar
           test -f libbox-sources.jar
           mkdir -p dist
-          cp libbox.aar libbox-sources.jar dist/
+          cp libbox.aar dist/hydracore-client-libbox.aar
+          cp libbox-sources.jar dist/hydracore-client-libbox-sources.jar
           cp contract/subscription/HYDRA_SUBSCRIPTION_V2.md dist/
           cp contract/subscription/schema/hydra-subscription-v2.schema.json dist/
           cp contract/subscription/schema/hydra-subscription-jwe-v2.schema.json dist/
-          sha256sum libbox.aar > dist/libbox.aar.sha256
-          sha256sum libbox-sources.jar > dist/libbox-sources.jar.sha256
+          (cd dist && sha256sum hydracore-client-libbox.aar > hydracore-client-libbox.aar.sha256)
+          (cd dist && sha256sum hydracore-client-libbox-sources.jar > hydracore-client-libbox-sources.jar.sha256)
           (cd dist && sha256sum HYDRA_SUBSCRIPTION_V2.md > HYDRA_SUBSCRIPTION_V2.md.sha256)
           (cd dist && sha256sum hydra-subscription-v2.schema.json > hydra-subscription-v2.schema.json.sha256)
           (cd dist && sha256sum hydra-subscription-jwe-v2.schema.json > hydra-subscription-jwe-v2.schema.json.sha256)
@@ -155,20 +167,22 @@ jobs:
             }' "$ANDROID_NDK_HOME/source.properties"
           )"
           test -n "$ndk_revision"
-          aar_sha256="$(sha256sum libbox.aar | awk '{print $1}')"
-          sources_sha256="$(sha256sum libbox-sources.jar | awk '{print $1}')"
+          aar_sha256="$(sha256sum dist/hydracore-client-libbox.aar | awk '{print $1}')"
+          sources_sha256="$(sha256sum dist/hydracore-client-libbox-sources.jar | awk '{print $1}')"
           source_sha256="$(sha256sum dist/hydracore-source.tar.gz | awk '{print $1}')"
           subscription_spec_sha256="$(sha256sum dist/HYDRA_SUBSCRIPTION_V2.md | awk '{print $1}')"
           subscription_schema_sha256="$(sha256sum dist/hydra-subscription-v2.schema.json | awk '{print $1}')"
           subscription_jwe_schema_sha256="$(sha256sum dist/hydra-subscription-jwe-v2.schema.json | awk '{print $1}')"
-          build_tags_json="$(jq -Rn --arg tags "$LIBBOX_BUILD_TAGS" '$tags | split(",")')"
+          client_build_tags="${LIBBOX_BUILD_TAGS//with_call/with_call_client}"
+          build_tags_json="$(jq -Rn --arg tags "$client_build_tags" '$tags | split(",")')"
           cat > dist/provenance.json <<EOF
           {
             "schema_version": 3,
             "distribution": {
               "id": "io.hydrabox.hydracore",
               "name": "HydraCore",
-              "version": "${hydracore_version}"
+              "version": "${hydracore_version}",
+              "role": "client"
             },
             "source": {
               "repository": "https://github.com/gr33nimax/hydracore",
@@ -194,8 +208,8 @@ jobs:
               "api": ${LIBBOX_ANDROID_API}
             },
             "artifacts": {
-              "libbox.aar": {"sha256": "${aar_sha256}"},
-              "libbox-sources.jar": {"sha256": "${sources_sha256}"},
+              "hydracore-client-libbox.aar": {"sha256": "${aar_sha256}"},
+              "hydracore-client-libbox-sources.jar": {"sha256": "${sources_sha256}"},
               "hydracore-source.tar.gz": {"sha256": "${source_sha256}"},
               "HYDRA_SUBSCRIPTION_V2.md": {"sha256": "${subscription_spec_sha256}"},
               "hydra-subscription-v2.schema.json": {"sha256": "${subscription_schema_sha256}"},
@@ -212,7 +226,7 @@ jobs:
       - name: Upload libbox artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: hydracore-libbox-${{ github.sha }}
+          name: hydracore-client-${{ github.sha }}
           path: dist
           if-no-files-found: error
           retention-days: 14
@@ -244,9 +258,10 @@ jobs:
           set -euo pipefail
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           tags="$(tr -d '\r\n' < release/DEFAULT_BUILD_TAGS_OTHERS)"
+          tags="${tags//with_call/with_call_server}"
           shared_ldflags="$(tr -d '\r\n' < release/LDFLAGS)"
           source_date_epoch="$(git show -s --format=%ct HEAD)"
-          asset="hydracore-linux-${{ matrix.arch }}.tar.gz"
+          asset="hydracore-vps-linux-${{ matrix.arch }}.tar.gz"
           mkdir -p package dist
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
             go build \
@@ -261,8 +276,12 @@ jobs:
             package/sing-box hydra capabilities --json > capabilities.json
             jq --exit-status \
               '.identity.core_id == "io.hydrabox.hydracore" and
+               .identity.role == "vps" and
                .features.call_vk_multi_user == true and
-               .protocols.call_modes == ["p2p", "multi_user"]' \
+               .features.call_vk_multi_user_client == false and
+               .features.call_vk_multi_user_server == true and
+               .protocols.call_modes == ["multi_user"] and
+               .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' \
               capabilities.json >/dev/null
           fi
           tar \
@@ -281,7 +300,8 @@ jobs:
             "schema_version": 1,
             "distribution": {
               "id": "io.hydrabox.hydracore",
-              "version": "${version}"
+              "version": "${version}",
+              "role": "vps"
             },
             "source": {
               "repository": "https://github.com/gr33nimax/hydracore",
@@ -307,7 +327,7 @@ jobs:
       - name: Upload Linux runtime artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: hydracore-linux-${{ matrix.arch }}-${{ github.sha }}
+          name: hydracore-vps-linux-${{ matrix.arch }}-${{ github.sha }}
           path: dist
           if-no-files-found: error
           retention-days: 14
@@ -315,7 +335,8 @@ jobs:
   draft-release:
     name: Publish verified stable runtime
     if: >-
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true &&
       github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -328,12 +349,12 @@ jobs:
       - name: Download verified libbox artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: hydracore-libbox-${{ github.sha }}
+          name: hydracore-client-${{ github.sha }}
           path: dist
       - name: Download verified Linux artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: hydracore-linux-*-${{ github.sha }}
+          pattern: hydracore-vps-linux-*-${{ github.sha }}
           path: dist
           merge-multiple: true
       - name: Verify downloaded artifact
@@ -351,13 +372,14 @@ jobs:
             '.schema_version == 3 and
              .source.commit == $commit and
              .distribution.version == $hydracore_version and
+             .distribution.role == "client" and
              .upstream.project == "sing-box-extended" and
              .upstream.commit == $upstream_commit and
              .android.ndk_requested == $android_ndk_requested' \
             dist/provenance.json >/dev/null
           for artifact in \
-            libbox.aar \
-            libbox-sources.jar \
+            hydracore-client-libbox.aar \
+            hydracore-client-libbox-sources.jar \
             hydracore-source.tar.gz \
             HYDRA_SUBSCRIPTION_V2.md \
             hydra-subscription-v2.schema.json \
@@ -367,7 +389,7 @@ jobs:
             test "$actual" = "$recorded"
           done
           for arch in amd64 arm64; do
-            asset="hydracore-linux-${arch}.tar.gz"
+            asset="hydracore-vps-linux-${arch}.tar.gz"
             test "$(tar -tzf "dist/${asset}")" = "sing-box"
             actual="$(sha256sum "dist/${asset}" | awk '{print $1}')"
             recorded="$(jq -r '.artifact.sha256' "dist/linux-provenance-${arch}.json")"
@@ -378,18 +400,42 @@ jobs:
               --arg arch "$arch" \
               '.source.commit == $commit and
                .distribution.version == $version and
+               .distribution.role == "vps" and
                .runtime.os == "linux" and
                .runtime.arch == $arch and
-               .artifact.name == ("hydracore-linux-" + $arch + ".tar.gz") and
+               .artifact.name == ("hydracore-vps-linux-" + $arch + ".tar.gz") and
                .artifact.binary == "sing-box"' \
               "dist/linux-provenance-${arch}.json" >/dev/null
           done
           mkdir -p verify-linux
-          tar -xzf dist/hydracore-linux-amd64.tar.gz -C verify-linux
+          tar -xzf dist/hydracore-vps-linux-amd64.tar.gz -C verify-linux
           verify-linux/sing-box version | grep -F "$hydracore_version"
           verify-linux/sing-box hydra capabilities --json | jq --exit-status \
-            '.features.call_vk_multi_user == true and
-             .protocols.call_modes == ["p2p", "multi_user"]' >/dev/null
+            '.identity.role == "vps" and
+             .features.call_vk_multi_user == true and
+             .features.call_vk_multi_user_client == false and
+             .features.call_vk_multi_user_server == true and
+             .protocols.call_modes == ["multi_user"] and
+             .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' >/dev/null
+          jq -n \
+            --arg version "$hydracore_version" \
+            --arg commit "$GITHUB_SHA" \
+            --arg client_aar "$(sha256sum dist/hydracore-client-libbox.aar | awk '{print $1}')" \
+            --arg client_sources "$(sha256sum dist/hydracore-client-libbox-sources.jar | awk '{print $1}')" \
+            --arg vps_amd64 "$(sha256sum dist/hydracore-vps-linux-amd64.tar.gz | awk '{print $1}')" \
+            --arg vps_arm64 "$(sha256sum dist/hydracore-vps-linux-arm64.tar.gz | awk '{print $1}')" \
+            '{
+              schema_version: 1,
+              distribution: {id: "io.hydrabox.hydracore", version: $version},
+              source: {commit: $commit},
+              artifacts: {
+                "hydracore-client-libbox.aar": {role: "client", sha256: $client_aar},
+                "hydracore-client-libbox-sources.jar": {role: "client", sha256: $client_sources},
+                "hydracore-vps-linux-amd64.tar.gz": {role: "vps", sha256: $vps_amd64},
+                "hydracore-vps-linux-arm64.tar.gz": {role: "vps", sha256: $vps_arm64}
+              }
+            }' > dist/hydracore-release-manifest.json
+          (cd dist && sha256sum hydracore-release-manifest.json > hydracore-release-manifest.json.sha256)
       - name: Create, populate, and publish stable release
         shell: bash
         env:
@@ -398,7 +444,7 @@ jobs:
           set -euo pipefail
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           test -n "$version"
-          title="HydraCore ${version} - verified Android and Linux runtime"
+          title="HydraCore ${version} - verified client and VPS runtimes"
 
           if gh release view "$version" --json isDraft > release-state.json 2>/dev/null; then
             if [[ "$(jq -r '.isDraft' release-state.json)" != "true" ]]; then

@@ -1,3 +1,5 @@
+//go:build !with_call_client || with_call_server
+
 package call
 
 import (
@@ -8,6 +10,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
 	"github.com/sagernet/sing-box/common/dialer"
+	H "github.com/sagernet/sing-box/common/hydracore"
 	"github.com/sagernet/sing-box/common/listener"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
@@ -41,6 +44,13 @@ type Inbound struct {
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallInboundOptions) (adapter.Inbound, error) {
+	mode := options.Mode
+	if mode == "" {
+		mode = "p2p"
+	}
+	if !H.SupportsCallMode(mode) {
+		return nil, E.New("call mode is not included in this HydraCore role: ", mode)
+	}
 	if options.Platform == "" {
 		return nil, E.New("missing platform")
 	}

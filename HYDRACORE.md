@@ -7,7 +7,7 @@ identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Release baseline
 
-Release `v1.13.16-extended-hydracore.6` is based on the exact
+Release `v1.13.16-extended-hydracore.7` is based on the exact
 `sing-box-extended` commit
 `545424b86bc4513f90580ebeab2e2d1514089718` (descriptive upstream tag
 `v1.13.16-extended-2.6.2`). The full commit, rather than a movable tag, is the
@@ -26,9 +26,11 @@ binds the same values and every artifact digest into `provenance.json`.
 - `HydraCoreValidateConfig(content, profile)` validates either trusted local
   configuration (`local`) or untrusted remote configuration (`remote_v2`).
 - `sing-box hydra capabilities --json` exposes the same manifest to VPS
-  orchestration. Builds with `with_call` report
-  `features.call_vk_multi_user=true` and
-  `protocols.call_modes=["p2p","multi_user"]`.
+  orchestration. Release builds are role-specific: Android reports
+  `identity.role="client"`, `call_vk_multi_user_client=true`, and wire v2;
+  Linux reports `identity.role="vps"`, `call_vk_multi_user_server=true`, and
+  accepts wire v1 through v2 during the transition. Both roles expose only
+  `mode: "multi_user"`.
 
 Remote policy v2 permits only `$schema`, `inbounds`, `outbounds`, and
 `endpoints` at the resource root. It applies strict object typing, unique and
@@ -36,19 +38,19 @@ closed references, cycle detection, reserved-tag checks, nesting and size
 limits, and native HydraCore validation. Local listeners, DNS, providers,
 rule-sets, files, and other host authority are not remotely grantable.
 
-Release builds implement Call inbound and outbound with the `dion`,
-`telemost`, `vk`, and `wbstream` platforms. Call objects are accepted only by
-a core built with `with_call`; their complete native schema is validated rather
-than a second field allowlist. Diagnostics and subscription inspection never
+The Android client artifact contains the VK Calls outbound. The Linux VPS
+artifact contains the VK Calls inbound. Neither release artifact exposes the
+legacy one-room P2P surface. Diagnostics and subscription inspection never
 echo credentials, cookies, join links, or resource documents. Rmux and
 AmneziaWG v3 are also release capabilities; Amnezia resource limits are
 enforced before startup.
 
 ### Native VK multi-user Calls
 
-Missing `mode` and `mode: "p2p"` retain the inherited one-room/one-peer path.
-The new VK-only `mode: "multi_user"` makes the VPS a plain UDP/DTLS endpoint;
-it never joins VK and stores no VK account cookies or room-creator credentials.
+The release contract requires VK-only `mode: "multi_user"`. It makes the VPS
+a plain UDP/DTLS endpoint; the VPS never joins VK and stores no VK account
+cookies or room-creator credentials. The combined developer build tag retains
+the inherited P2P path solely for upstream compatibility tests.
 
 ```json
 {

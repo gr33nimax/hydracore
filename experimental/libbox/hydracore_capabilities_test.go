@@ -18,6 +18,7 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, "io.hydrabox.hydracore", capabilities.Identity.CoreID)
 	require.Equal(t, "HydraCore", capabilities.Identity.CoreName)
 	require.Equal(t, C.Version, capabilities.Identity.CoreVersion)
+	require.NotEmpty(t, capabilities.Identity.Role)
 	require.True(t, capabilities.Features.TargetedURLTest)
 	require.True(t, capabilities.Features.ConfigValidation)
 	require.True(t, capabilities.Features.RuntimeSnapshot)
@@ -38,15 +39,36 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, 64, capabilities.Runtime.RetainedURLTestSessions)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.Call)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKMultiUser)
-	if hydraCoreCallEnabled {
+	switch capabilities.Identity.Role {
+	case "client":
+		require.NotContains(t, capabilities.Protocols.Inbounds, "call")
+		require.Contains(t, capabilities.Protocols.Outbounds, "call")
+		require.True(t, capabilities.Features.CallVKMultiUserClient)
+		require.False(t, capabilities.Features.CallVKMultiUserServer)
+		require.Equal(t, []string{"vk"}, capabilities.Protocols.CallPlatforms)
+		require.Equal(t, []string{"multi_user"}, capabilities.Protocols.CallModes)
+		require.Equal(t, 2, capabilities.Protocols.CallVKMultiUserWire.Min)
+		require.Equal(t, 2, capabilities.Protocols.CallVKMultiUserWire.Max)
+	case "vps":
+		require.Contains(t, capabilities.Protocols.Inbounds, "call")
+		require.NotContains(t, capabilities.Protocols.Outbounds, "call")
+		require.False(t, capabilities.Features.CallVKMultiUserClient)
+		require.True(t, capabilities.Features.CallVKMultiUserServer)
+		require.Equal(t, []string{"vk"}, capabilities.Protocols.CallPlatforms)
+		require.Equal(t, []string{"multi_user"}, capabilities.Protocols.CallModes)
+		require.Equal(t, 1, capabilities.Protocols.CallVKMultiUserWire.Min)
+		require.Equal(t, 2, capabilities.Protocols.CallVKMultiUserWire.Max)
+	case "combined":
 		require.Contains(t, capabilities.Protocols.Inbounds, "call")
 		require.Contains(t, capabilities.Protocols.Outbounds, "call")
 		require.Equal(t, []string{"dion", "telemost", "vk", "wbstream"}, capabilities.Protocols.CallPlatforms)
 		require.Equal(t, []string{"p2p", "multi_user"}, capabilities.Protocols.CallModes)
-	} else {
+	case "base":
 		require.NotContains(t, capabilities.Protocols.Inbounds, "call")
 		require.NotContains(t, capabilities.Protocols.Outbounds, "call")
 		require.Empty(t, capabilities.Protocols.CallPlatforms)
 		require.Empty(t, capabilities.Protocols.CallModes)
+	default:
+		t.Fatalf("unexpected HydraCore role %q", capabilities.Identity.Role)
 	}
 }

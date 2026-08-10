@@ -33,20 +33,63 @@ type ClientOptions struct {
 }
 
 type Client struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	options   ClientOptions
-	logger    logger.ContextLogger
-	server    *net.UDPAddr
-	key       [wrapKeyLength]byte
-	sessionID [16]byte
-	conv      uint32
-	tunnel    *PooledTunnel
-	ready     chan struct{}
-	readyOnce sync.Once
+	ctx        context.Context
+	cancel     context.CancelFunc
+	options    ClientOptions
+	logger     logger.ContextLogger
+	server     *net.UDPAddr
+	key        [wrapKeyLength]byte
+	sessionID  [16]byte
+	conv       uint32
+	tunnel     *PooledTunnel
+	ready      chan struct{}
+	readyOnce  sync.Once
 	generation atomic.Uint64
-	errors    chan error
-	closeOnce sync.Once
+	errors     chan error
+	closeOnce  sync.Once
+	workers    []clientWorkerControl
+}
+
+type clientWorkerControl struct {
+	mu     sync.Mutex
+	epoch  uint64
+	cancel context.CancelFunc
+	wake   chan struct{}
+}
+
+func newClientWorkerControl() clientWorkerControl {
+	return clientWorkerControl{wake: make(chan struct{}, 1)}
+}
+
+func (c *clientWorkerControl) begin(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc, uint64) {
+	c.mu.Lock()
+	c.epoch++
+	epoch := c.epoch
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	c.cancel = cancel
+	c.mu.Unlock()
+	return ctx, cancel, epoch
+}
+
+func (c *clientWorkerControl) finish(epoch uint64, cancel context.CancelFunc) {
+	c.mu.Lock()
+	if c.epoch == epoch {
+		c.cancel = nil
+	}
+	c.mu.Unlock()
+	cancel()
+}
+
+func (c *clientWorkerControl) interrupt() {
+	c.mu.Lock()
+	if c.cancel != nil {
+		c.cancel()
+	}
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
+	c.mu.Unlock()
 }
 
 func ConnectClient(parent context.Context, options ClientOptions, log logger.ContextLogger) (*Client, error) {
@@ -93,8 +136,10 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		tunnel:    tunnel,
 		ready:     make(chan struct{}),
 		errors:    make(chan error, options.Workers),
+		workers:   make([]clientWorkerControl, options.Workers),
 	}
 	for workerID := 0; workerID < options.Workers; workerID++ {
+		client.workers[workerID] = newClientWorkerControl()
 		go client.maintainWorker(uint16(workerID), options.JoinLinks[workerID%len(options.JoinLinks)])
 	}
 	go client.monitorConnectivity()
@@ -169,6 +214,7 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 }
 
 func (c *Client) maintainWorker(workerID uint16, joinLink string) {
+	control := &c.workers[int(workerID)]
 	backoff := time.Second
 	for {
 		select {
@@ -176,7 +222,7 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 			return
 		default:
 		}
-		done, err := c.connectWorker(workerID, joinLink)
+		done, err := c.connectWorker(workerID, joinLink, control)
 		if err == nil {
 			backoff = time.Second
 			c.readyOnce.Do(func() { close(c.ready) })
@@ -195,6 +241,9 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 		timer := time.NewTimer(backoff)
 		select {
 		case <-timer.C:
+		case <-control.wake:
+			timer.Stop()
+			backoff = time.Second
 		case <-c.ctx.Done():
 			timer.Stop()
 			return
@@ -208,9 +257,9 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 	}
 }
 
-func (c *Client) connectWorker(workerID uint16, joinLink string) (<-chan struct{}, error) {
-	ctx, cancel := context.WithTimeout(c.ctx, c.options.WorkerConnectTimeout)
-	defer cancel()
+func (c *Client) connectWorker(workerID uint16, joinLink string, control *clientWorkerControl) (<-chan struct{}, error) {
+	ctx, cancel, workerEpoch := control.begin(c.ctx, c.options.WorkerConnectTimeout)
+	defer control.finish(workerEpoch, cancel)
 	credentials, err := c.options.Credentials(ctx, joinLink)
 	if err != nil {
 		return nil, err
@@ -226,8 +275,8 @@ func (c *Client) connectWorker(workerID uint16, joinLink string) (<-chan struct{
 	}
 	packetConn := newObfsPacketConn(allocation, c.server, codec)
 	conn, err := dtls.Client(packetConn, c.server, &dtls.Config{
-		InsecureSkipVerify:    true, // Authenticated by the outer key and the inner user attach.
-		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+		InsecureSkipVerify:   true, // Authenticated by the outer key and the inner user attach.
+		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 		MTU:                  1100,
 	})
@@ -244,6 +293,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string) (<-chan struct{
 		Conv:        c.conv,
 		WorkerID:    workerID,
 		WorkerTotal: uint16(c.options.Workers),
+		WorkerEpoch: workerEpoch,
 		User:        c.options.User,
 		Password:    c.options.Password,
 	})
@@ -278,7 +328,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string) (<-chan struct{
 		return nil, errors.New("call multi_user: server session state was reset")
 	}
 	_ = conn.SetDeadline(time.Time{})
-	done, err := c.tunnel.AddWorker(workerID, conn)
+	done, err := c.tunnel.AddWorkerEpoch(workerID, workerEpoch, conn)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -290,15 +340,34 @@ func (c *Client) Tunnel() *PooledTunnel { return c.tunnel }
 
 func (c *Client) Done() <-chan struct{} { return c.ctx.Done() }
 
+// RebindNetwork tears down only the physical TURN/DTLS worker transports.
+// KCP, the logical session and RelayBridge remain alive while every worker
+// immediately reconnects through the new default Android network.
+func (c *Client) RebindNetwork() {
+	select {
+	case <-c.ctx.Done():
+		return
+	default:
+	}
+	for workerID := range c.workers {
+		c.workers[workerID].interrupt()
+		c.tunnel.DropWorker(uint16(workerID))
+	}
+	c.logger.Info("call multi_user: network changed, rebinding worker transports")
+}
+
 func (c *Client) monitorConnectivity() {
 	select {
 	case <-c.ready:
 	case <-c.ctx.Done():
 		return
 	}
-	grace := 2 * c.options.WorkerConnectTimeout
-	if grace < 2*time.Minute {
-		grace = 2 * time.Minute
+	grace := c.options.WorkerConnectTimeout / 2
+	if grace < 15*time.Second {
+		grace = 15 * time.Second
+	}
+	if grace > 30*time.Second {
+		grace = 30 * time.Second
 	}
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()

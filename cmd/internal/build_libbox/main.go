@@ -68,7 +68,17 @@ func init() {
 	sharedFlags = append(sharedFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+metadataFlags+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -s -w -buildid=  -checklinkname=0")
 	debugFlags = append(debugFlags, "-ldflags", "-X github.com/sagernet/sing-box/constant.Version="+currentTag+metadataFlags+" -X internal/godebug.defaultGODEBUG=multipathtcp=0 -checklinkname=0")
 
-	sharedTags = append(sharedTags, "with_gvisor", "with_quic", "with_dhcp", "with_wireguard", "with_utls", "with_acme", "with_clash_api", "with_manager", "with_admin_panel", "with_profiler", "with_v2ray_api", "with_masque", "with_mtproxy", "with_ccm", "with_ocm", "with_openvpn", "with_trusttunnel", "with_call", "with_sudoku", "with_snell", "with_naive_outbound", "badlinkname", "tfogo_checklinkname0")
+	callBuildTag := "with_call"
+	switch os.Getenv("HYDRACORE_BUILD_ROLE") {
+	case "", "combined":
+	case "client":
+		callBuildTag = "with_call_client"
+	case "vps":
+		callBuildTag = "with_call_server"
+	default:
+		log.Fatal("invalid HYDRACORE_BUILD_ROLE: expected client, vps, or combined")
+	}
+	sharedTags = append(sharedTags, "with_gvisor", "with_quic", "with_dhcp", "with_wireguard", "with_utls", "with_acme", "with_clash_api", "with_manager", "with_admin_panel", "with_profiler", "with_v2ray_api", "with_masque", "with_mtproxy", "with_ccm", "with_ocm", "with_openvpn", "with_trusttunnel", callBuildTag, "with_sudoku", "with_snell", "with_naive_outbound", "badlinkname", "tfogo_checklinkname0")
 	darwinTags = append(darwinTags, "grpcnotrace")
 	// memcTags = append(memcTags, "with_tailscale")
 	sharedTags = append(sharedTags, "with_tailscale", "ts_omit_logtail", "ts_omit_ssh", "ts_omit_drive", "ts_omit_taildrop", "ts_omit_webclient", "ts_omit_doctor", "ts_omit_capture", "ts_omit_kube", "ts_omit_aws", "ts_omit_synology", "ts_omit_bird")

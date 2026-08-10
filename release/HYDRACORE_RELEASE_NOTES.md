@@ -1,8 +1,8 @@
-# HydraCore v1.13.16-extended-hydracore.6
+# HydraCore v1.13.16-extended-hydracore.7
 
-This stable patch release aligns Hydra Subscription validation with the
-advertised native VK Calls multi-user capability and retains the managed
-URLTest identity fix from `.5`, the Linux/VPS distribution, and the exact
+This release separates the Android client and Linux VPS runtime roles, adds
+wire-v2 network handover for native VK Calls multi-user, retains the managed
+URLTest and subscription validation fixes from `.5`/`.6`, and uses the exact
 `sing-box-extended` 2.6.2 baseline
 (`545424b86bc4513f90580ebeab2e2d1514089718`).
 
@@ -10,7 +10,7 @@ URLTest identity fix from `.5`, the Linux/VPS distribution, and the exact
 
 - A JWE or plaintext Hydra Subscription v2 document may require both `call`
   and `call_vk_multi_user` when the release advertises those capabilities.
-- Builds without `with_call` continue to reject both requirements. Unknown
+- Builds without a Calls role continue to reject both requirements. Unknown
   feature names remain fail-closed.
 - Regression coverage follows the same encrypted JWE validation path used by
   HydraBox subscription import.
@@ -25,7 +25,7 @@ URLTest identity fix from `.5`, the Linux/VPS distribution, and the exact
 ## Native VK Calls
 
 - `mode: "multi_user"` hosts many independent authenticated users on one
-  native UDP Calls inbound. Legacy missing/`p2p` mode remains unchanged.
+  native UDP Calls inbound. Release artifacts do not expose legacy P2P mode.
 - A shared RTP-shaped ChaCha20-Poly1305 layer makes packet unwrap O(1). User
   lookup is O(1), the password hash comparison is constant-time, and attach
   credentials are sent once inside DTLS instead of in every data packet.
@@ -39,6 +39,12 @@ URLTest identity fix from `.5`, the Linux/VPS distribution, and the exact
 - Users, sessions, per-user sessions, workers, pending handshakes, frame
   lengths, duplicate active workers, handshakes, reconnects, and idle state
   all have explicit hard bounds.
+- Wire v2 gives every reconnecting worker a monotonic epoch. Network changes
+  immediately replace stale TURN/DTLS transports while keeping the logical KCP
+  session and RelayBridge alive. The VPS accepts wire v1 and v2 for one
+  transition release; the client emits v2.
+- Obfuscation reads reuse a bounded buffer instead of allocating the maximum
+  packet size for every UDP datagram.
 
 The exact runtime probe is:
 
@@ -46,18 +52,25 @@ The exact runtime probe is:
 sing-box hydra capabilities --json
 ```
 
-It reports `features.call_vk_multi_user=true` and
-`protocols.call_modes=["p2p","multi_user"]` in release builds.
+The client reports role `client`, the client feature, wire v2, and only
+`multi_user`; the VPS reports role `vps`, the server feature, wire v1..2, and
+only `multi_user`. The legacy combined build is not a release artifact.
 
-## VPS artifacts
+## Role-specific artifacts
 
-- `hydracore-linux-amd64.tar.gz`
-- `hydracore-linux-arm64.tar.gz`
+- `hydracore-client-libbox.aar`
+- `hydracore-client-libbox-sources.jar`
+- `hydracore-vps-linux-amd64.tar.gz`
+- `hydracore-vps-linux-arm64.tar.gz`
 
 Each archive contains a root executable named `sing-box` and ships with a
 SHA-256 sidecar plus per-architecture provenance. The release also retains the
-Android `libbox.aar`, generated bindings, attributed source archive,
+client Android bindings, a release manifest, the attributed source archive,
 subscription contracts, checksums, and schema-v3 Android provenance.
+
+Stable publication is explicit: ordinary pushes build and verify artifacts,
+while a maintainer must dispatch the workflow with `publish=true` to update
+the stable release.
 
 ## Security and capacity boundary
 

@@ -77,6 +77,26 @@ func TestXmuxCloseIsTerminal(t *testing.T) {
 	require.Equal(t, int32(1), created.Load())
 }
 
+func TestXmuxResetClosesExistingAndAllowsReplacement(t *testing.T) {
+	var created atomic.Int32
+	manager := NewXmuxManager(option.V2RayXHTTPXmuxOptions{}, func() XmuxConn {
+		created.Add(1)
+		return &testXmuxConn{}
+	})
+
+	first := manager.GetXmuxClient(t.Context())
+	require.NotNil(t, first)
+	manager.Reset()
+	require.True(t, first.XmuxConn.(*testXmuxConn).closed.Load())
+
+	second := manager.GetXmuxClient(t.Context())
+	require.NotNil(t, second)
+	require.NotSame(t, first, second)
+	require.False(t, second.XmuxConn.(*testXmuxConn).closed.Load())
+	require.Equal(t, int32(2), created.Load())
+	manager.Close()
+}
+
 func TestH2KeepAlivePeriodIsBounded(t *testing.T) {
 	require.Equal(t, defaultH2ReadIdle, normalizedH2ReadIdle(0))
 	require.Equal(t, time.Duration(0), normalizedH2ReadIdle(-1))
@@ -168,6 +188,57 @@ func TestClientCloseWinsConcurrentDial(t *testing.T) {
 
 	_, err := client.DialContext(t.Context())
 	require.ErrorIs(t, err, net.ErrClosed)
+}
+
+func TestClientResetWinsConcurrentDialAndAllowsNextDial(t *testing.T) {
+	firstDialer := &blockingDialerClient{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		reader:  &trackingReadCloser{},
+	}
+	secondDialer := &failingDialerClient{}
+	var created atomic.Int32
+	manager := NewXmuxManager(option.V2RayXHTTPXmuxOptions{}, func() XmuxConn {
+		if created.Add(1) == 1 {
+			return firstDialer
+		}
+		return secondDialer
+	})
+	getHTTPClient := func() (DialerClient, *XmuxClient) {
+		xmuxClient := manager.GetXmuxClient(t.Context())
+		if xmuxClient == nil {
+			return nil, nil
+		}
+		return xmuxClient.XmuxConn.(DialerClient), xmuxClient
+	}
+	client := &Client{
+		options:        &option.V2RayXHTTPOptions{Mode: "stream-one"},
+		getHTTPClient:  getHTTPClient,
+		getHTTPClient2: getHTTPClient,
+		xmuxManager:    manager,
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		conn, err := client.DialContext(t.Context())
+		if conn != nil {
+			_ = conn.Close()
+		}
+		result <- err
+	}()
+
+	<-firstDialer.started
+	client.Reset()
+	close(firstDialer.release)
+	require.ErrorIs(t, <-result, net.ErrClosed)
+	require.True(t, firstDialer.reader.closed.Load())
+	require.True(t, firstDialer.closed.Load())
+	require.False(t, client.closed.Load())
+
+	_, err := client.DialContext(t.Context())
+	require.ErrorIs(t, err, errOpenStream)
+	require.Equal(t, int32(2), created.Load())
+	require.NoError(t, client.Close())
 }
 
 func optionRange(value int) badoption.Range[int] {

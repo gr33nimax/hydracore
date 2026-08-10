@@ -103,6 +103,7 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 		}
 
 		current := s.readRuntimeSnapshot()
+		populateRuntimeTrafficRates(previous, current)
 		var events []*RuntimeEvent
 		if !proto.Equal(previous.Service, current.Service) || previous.StartedAt != current.StartedAt {
 			events = append(events, &RuntimeEvent{
@@ -135,6 +136,33 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 			return err
 		}
 	}
+}
+
+func populateRuntimeTrafficRates(previous *RuntimeSnapshot, current *RuntimeSnapshot) {
+	if previous == nil || current == nil || previous.Status == nil || current.Status == nil {
+		return
+	}
+	elapsedMillis := current.ObservedAt - previous.ObservedAt
+	if elapsedMillis <= 0 {
+		return
+	}
+	current.Status.Uplink = runtimeBytesPerSecond(
+		previous.Status.UplinkTotal,
+		current.Status.UplinkTotal,
+		elapsedMillis,
+	)
+	current.Status.Downlink = runtimeBytesPerSecond(
+		previous.Status.DownlinkTotal,
+		current.Status.DownlinkTotal,
+		elapsedMillis,
+	)
+}
+
+func runtimeBytesPerSecond(previousTotal int64, currentTotal int64, elapsedMillis int64) int64 {
+	if currentTotal <= previousTotal || elapsedMillis <= 0 {
+		return 0
+	}
+	return int64(float64(currentTotal-previousTotal) * float64(time.Second/time.Millisecond) / float64(elapsedMillis))
 }
 
 func equalURLTestSessions(left []*URLTestSession, right []*URLTestSession) bool {

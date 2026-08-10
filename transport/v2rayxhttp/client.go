@@ -48,7 +48,11 @@ type Client struct {
 	xmuxManager2    *XmuxManager
 	active          sync.Map
 	closed          atomic.Bool
+	generation      atomic.Uint64
 }
+
+var _ adapter.V2RayClientTransport = (*Client)(nil)
+var _ adapter.V2RayClientTransportResetter = (*Client)(nil)
 
 const (
 	maxPacketUploadBytes = 256 * 1024
@@ -147,6 +151,7 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 	if c.closed.Load() {
 		return nil, stdnet.ErrClosed
 	}
+	generation := c.generation.Load()
 	options := c.options
 	mode := c.options.Mode
 	sessionId := ""
@@ -195,7 +200,7 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 			_ = conn.Close()
 			return nil, err
 		}
-		if !c.trackConnection(conn) {
+		if !c.trackConnection(conn, generation) {
 			_ = conn.Close()
 			return nil, stdnet.ErrClosed
 		}
@@ -219,7 +224,7 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 			_ = conn.Close()
 			return nil, err
 		}
-		if !c.trackConnection(conn) {
+		if !c.trackConnection(conn, generation) {
 			_ = conn.Close()
 			return nil, stdnet.ErrClosed
 		}
@@ -303,7 +308,7 @@ func (c *Client) DialContext(ctx context.Context) (net.Conn, error) {
 			buf.ReleaseMulti(remainder)
 		}
 	}()
-	if !c.trackConnection(conn) {
+	if !c.trackConnection(conn, generation) {
 		_ = conn.Close()
 		return nil, stdnet.ErrClosed
 	}
@@ -314,24 +319,52 @@ func (c *Client) Close() error {
 	if c.closed.Swap(true) {
 		return nil
 	}
-	c.active.Range(func(key, _ any) bool {
-		_ = key.(*splitConn).Close()
-		return true
-	})
-	c.xmuxManager.Close()
+	c.generation.Add(1)
+	c.closeActiveConnections()
+	if c.xmuxManager != nil {
+		c.xmuxManager.Close()
+	}
 	if c.xmuxManager2 != nil {
 		c.xmuxManager2.Close()
 	}
 	return nil
 }
 
-func (c *Client) trackConnection(conn *splitConn) bool {
+// Reset invalidates all in-flight dials and connections using the old network,
+// then leaves the client ready to lazily create fresh physical transports.
+func (c *Client) Reset() {
 	if c.closed.Load() {
+		return
+	}
+	// Use a generation boundary on both sides of the reset. A dial that
+	// starts while managers are being replaced can neither retain an old
+	// transport nor become active under the intermediate generation.
+	c.generation.Add(1)
+	c.closeActiveConnections()
+	if c.xmuxManager != nil {
+		c.xmuxManager.Reset()
+	}
+	if c.xmuxManager2 != nil {
+		c.xmuxManager2.Reset()
+	}
+	c.generation.Add(1)
+	c.closeActiveConnections()
+}
+
+func (c *Client) closeActiveConnections() {
+	c.active.Range(func(key, _ any) bool {
+		_ = key.(*splitConn).Close()
+		return true
+	})
+}
+
+func (c *Client) trackConnection(conn *splitConn, generation uint64) bool {
+	if c.closed.Load() || c.generation.Load() != generation {
 		_ = conn.Close()
 		return false
 	}
 	c.active.Store(conn, struct{}{})
-	if c.closed.Load() {
+	if c.closed.Load() || c.generation.Load() != generation {
 		_ = conn.Close()
 		return false
 	}

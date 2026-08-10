@@ -87,15 +87,35 @@ func NewXmuxManager(options option.V2RayXHTTPXmuxOptions, newConnFunc func() Xmu
 
 func (m *XmuxManager) Close() {
 	m.mtx.Lock()
-	defer m.mtx.Unlock()
 	if m.closed {
+		m.mtx.Unlock()
 		return
 	}
 	m.closed = true
-	for _, xmuxClient := range m.xmuxClients {
+	xmuxClients := m.xmuxClients
+	m.xmuxClients = m.xmuxClients[:0]
+	m.mtx.Unlock()
+	forceCloseXmuxClients(xmuxClients)
+}
+
+// Reset closes physical transports bound to the previous interface while
+// keeping the manager reusable for new dials after a network handover.
+func (m *XmuxManager) Reset() {
+	m.mtx.Lock()
+	if m.closed {
+		m.mtx.Unlock()
+		return
+	}
+	xmuxClients := m.xmuxClients
+	m.xmuxClients = m.xmuxClients[:0]
+	m.mtx.Unlock()
+	forceCloseXmuxClients(xmuxClients)
+}
+
+func forceCloseXmuxClients(xmuxClients []*XmuxClient) {
+	for _, xmuxClient := range xmuxClients {
 		xmuxClient.ForceClose()
 	}
-	m.xmuxClients = m.xmuxClients[:0]
 }
 
 func (m *XmuxManager) newXmuxClient() *XmuxClient {

@@ -1,10 +1,26 @@
-# HydraCore v1.13.16-extended-hydracore.7
+# HydraCore v1.13.16-extended-hydracore.8
 
-This release separates the Android client and Linux VPS runtime roles, adds
-wire-v2 network handover for native VK Calls multi-user, retains the managed
-URLTest and subscription validation fixes from `.5`/`.6`, and uses the exact
+This release fixes reusable VLESS/VMess/Trojan XHTTP transport handover,
+separates the Android client and Linux VPS runtime roles, adds wire-v2 network
+handover for native VK Calls multi-user, retains the managed URLTest and
+subscription validation fixes from `.5`/`.6`, and uses the exact
 `sing-box-extended` 2.6.2 baseline
 (`545424b86bc4513f90580ebeab2e2d1514089718`).
+
+## XHTTP network handover
+
+- An interface update now resets XHTTP's active streams and physical Xmux
+  clients without permanently closing the reusable transport object.
+- Dials racing with a network reset are rejected by generation, while the next
+  dial lazily creates a transport bound to the new interface.
+- Terminal service shutdown still closes XHTTP permanently. Other V2Ray
+  transports keep their existing interface-update behavior.
+
+## Runtime traffic telemetry
+
+- RuntimeEvents now derives upload and download bytes per second from both
+  cumulative counters and the actual observation interval instead of emitting
+  permanent zero rates.
 
 ## Subscription feature contract
 

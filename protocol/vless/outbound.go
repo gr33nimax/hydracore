@@ -138,7 +138,7 @@ func (h *Outbound) MultiplexEnabled() bool {
 
 func (h *Outbound) InterfaceUpdated() {
 	if h.transport != nil {
-		h.transport.Close()
+		adapter.ResetV2RayClientTransport(h.transport)
 	}
 	if h.multiplexDialer != nil {
 		h.multiplexDialer.Reset()

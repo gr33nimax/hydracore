@@ -44,6 +44,46 @@ func TestRuntimeSnapshotIsCompleteWhileIdleAndRedactsFatalError(t *testing.T) {
 	}
 }
 
+func TestPopulateRuntimeTrafficRatesUsesElapsedTimeAndBothDirections(t *testing.T) {
+	previous := &RuntimeSnapshot{
+		ObservedAt: 1_000,
+		Status: &Status{
+			UplinkTotal:   100,
+			DownlinkTotal: 200,
+		},
+	}
+	current := &RuntimeSnapshot{
+		ObservedAt: 1_500,
+		Status: &Status{
+			UplinkTotal:   350,
+			DownlinkTotal: 700,
+		},
+	}
+
+	populateRuntimeTrafficRates(previous, current)
+
+	if current.Status.Uplink != 500 || current.Status.Downlink != 1_000 {
+		t.Fatalf("unexpected runtime rates: uplink=%d downlink=%d", current.Status.Uplink, current.Status.Downlink)
+	}
+}
+
+func TestPopulateRuntimeTrafficRatesRejectsCounterRegression(t *testing.T) {
+	previous := &RuntimeSnapshot{
+		ObservedAt: 1_000,
+		Status:     &Status{UplinkTotal: 500, DownlinkTotal: 600},
+	}
+	current := &RuntimeSnapshot{
+		ObservedAt: 2_000,
+		Status:     &Status{UplinkTotal: 100, DownlinkTotal: 200},
+	}
+
+	populateRuntimeTrafficRates(previous, current)
+
+	if current.Status.Uplink != 0 || current.Status.Downlink != 0 {
+		t.Fatalf("counter regression produced rates: uplink=%d downlink=%d", current.Status.Uplink, current.Status.Downlink)
+	}
+}
+
 func TestManagedURLTestSessionCloneAndRetention(t *testing.T) {
 	t.Parallel()
 	now := time.Now()

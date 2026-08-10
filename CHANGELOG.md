@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.13.16-extended-hydracore.6
+
+- Fixed Hydra Subscription v2 plaintext/JWE validation so a `with_call` build
+  accepts the advertised `call_vk_multi_user` required feature alongside
+  `call`; builds without Calls and unknown requirements remain fail-closed.
+
 ## v1.13.16-extended-hydracore.5
 
 - Fixed targeted managed URLTest sessions so an outbound group probes its

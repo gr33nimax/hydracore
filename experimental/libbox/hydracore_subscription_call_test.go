@@ -47,7 +47,7 @@ func TestHydraSubscriptionV2AcceptsCallInboundAndOutbound(t *testing.T) {
 func TestHydraSubscriptionV2AcceptsVKMultiUserCall(t *testing.T) {
 	content := strings.Replace(validHydraSubscriptionJSON(),
 		`"features":["rmux"]`,
-		`"features":["rmux","call"]`,
+		`"features":["rmux","call","call_vk_multi_user"]`,
 		1,
 	)
 	content = strings.Replace(content,

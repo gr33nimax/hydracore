@@ -7,7 +7,7 @@ identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Release baseline
 
-Release `v1.13.16-extended-hydracore.10` is based on the exact
+Debug release `v1.13.16-extended-hydracore.10-debug.1` is based on the exact
 `sing-box-extended` commit
 `545424b86bc4513f90580ebeab2e2d1514089718` (descriptive upstream tag
 `v1.13.16-extended-2.6.2`). The full commit, rather than a movable tag, is the

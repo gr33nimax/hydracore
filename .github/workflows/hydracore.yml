@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - debug
     paths:
       - '.github/workflows/hydracore.yml'
       - 'HYDRACORE.md'
@@ -33,6 +34,7 @@ on:
   pull_request:
     branches:
       - main
+      - debug
   workflow_dispatch:
     inputs:
       publish:
@@ -88,7 +90,6 @@ jobs:
     name: Build verified Android AAR
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    needs: test
     steps:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -237,7 +238,6 @@ jobs:
     name: Build verified Linux ${{ matrix.arch }} runtime
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -335,15 +335,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  draft-release:
-    name: Publish verified stable runtime
+  publish-release:
+    name: Publish verified runtime
     if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.publish == true &&
-      github.ref == 'refs/heads/main'
+      (github.event_name == 'workflow_dispatch' &&
+       inputs.publish == true &&
+       github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' &&
+       github.ref == 'refs/heads/debug')
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [android, linux]
+    needs: [test, android, linux]
     permissions:
       contents: write
     steps:
@@ -440,7 +442,7 @@ jobs:
               }
             }' > dist/hydracore-release-manifest.json
           (cd dist && sha256sum hydracore-release-manifest.json > hydracore-release-manifest.json.sha256)
-      - name: Create, populate, and publish stable release
+      - name: Create, populate, and publish release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -450,27 +452,57 @@ jobs:
           test -n "$version"
           title="HydraCore ${version} - verified client and VPS runtimes"
 
-          if gh release view "$version" --json isDraft > release-state.json 2>/dev/null; then
-            if [[ "$(jq -r '.isDraft' release-state.json)" != "true" ]]; then
-              echo "Refusing to replace published release ${version}" >&2
+          if [[ "$GITHUB_REF" == "refs/heads/debug" ]]; then
+            if [[ "$version" != *-debug.* ]]; then
+              echo "Debug branch version must contain -debug.: ${version}" >&2
               exit 1
             fi
-            gh release edit "$version" \
-              --draft \
-              --prerelease=false \
-              --target "$GITHUB_SHA" \
-              --title "$title" \
-              --notes-file release/HYDRACORE_RELEASE_NOTES.md
+            if gh release view "$version" --json isPrerelease > release-state.json 2>/dev/null; then
+              if [[ "$(jq -r '.isPrerelease' release-state.json)" != "true" ]]; then
+                echo "Refusing to replace non-debug release ${version}" >&2
+                exit 1
+              fi
+              gh release edit "$version" \
+                --prerelease \
+                --target "$GITHUB_SHA" \
+                --title "$title" \
+                --notes-file release/HYDRACORE_RELEASE_NOTES.md
+            else
+              gh release create "$version" \
+                --prerelease \
+                --target "$GITHUB_SHA" \
+                --title "$title" \
+                --notes-file release/HYDRACORE_RELEASE_NOTES.md
+            fi
           else
-            gh release create "$version" \
-              --draft \
-              --target "$GITHUB_SHA" \
-              --title "$title" \
-              --notes-file release/HYDRACORE_RELEASE_NOTES.md
+            if [[ "$version" == *-debug.* ]]; then
+              echo "Stable publication cannot use a debug version: ${version}" >&2
+              exit 1
+            fi
+            if gh release view "$version" --json isDraft > release-state.json 2>/dev/null; then
+              if [[ "$(jq -r '.isDraft' release-state.json)" != "true" ]]; then
+                echo "Refusing to replace published release ${version}" >&2
+                exit 1
+              fi
+              gh release edit "$version" \
+                --draft \
+                --prerelease=false \
+                --target "$GITHUB_SHA" \
+                --title "$title" \
+                --notes-file release/HYDRACORE_RELEASE_NOTES.md
+            else
+              gh release create "$version" \
+                --draft \
+                --target "$GITHUB_SHA" \
+                --title "$title" \
+                --notes-file release/HYDRACORE_RELEASE_NOTES.md
+            fi
           fi
 
           gh release upload "$version" dist/* --clobber
-          gh release edit "$version" \
-            --draft=false \
-            --prerelease=false \
-            --latest
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            gh release edit "$version" \
+              --draft=false \
+              --prerelease=false \
+              --latest
+          fi

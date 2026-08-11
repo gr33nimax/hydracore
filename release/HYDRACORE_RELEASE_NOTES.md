@@ -1,4 +1,9 @@
-# HydraCore v1.13.16-extended-hydracore.10
+# HydraCore v1.13.16-extended-hydracore.10-debug.1
+
+This is the verified `debug` channel build. It is published automatically only
+after the full Go, Android and Linux workflow succeeds and is intended for
+HYDRA ULTIMATE installations that explicitly select the Hydracore `debug`
+channel. It is not promoted to the stable `latest` release.
 
 This release adds native, operator-gated VK Calls telemetry compatible with
 Hydra Ultimate. It retains the `.9` XHTTP handover and RuntimeEvents fixes,

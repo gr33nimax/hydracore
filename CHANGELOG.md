@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Established a separately versioned `debug` release channel. A push to the
+  `debug` branch publishes verified Android and VPS artifacts as a GitHub
+  prerelease only after all test and build jobs pass.
 - Added operator-gated native VK multi-user server/client telemetry compatible
   with Hydra Ultimate's schema-v1 JSONL ingestion contract.
 - Instrumented VK/TURN/DTLS/inner-auth stages, authenticated outer loss and

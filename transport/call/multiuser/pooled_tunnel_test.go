@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/stretchr/testify/require"
 )
@@ -171,6 +172,48 @@ func TestPooledTunnelHeartbeatKeepsIdleWorkersAliveWithoutApplicationData(t *tes
 	require.Positive(t, right.writes.Load())
 }
 
+func TestPooledTunnelCarriesBoundedTelemetryControlFrames(t *testing.T) {
+	t.Parallel()
+	client, err := NewPooledTunnel(0x66778899, 1, logger.NOP())
+	require.NoError(t, err)
+	server, err := NewPooledTunnel(0x66778899, 1, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	left, right := newTestDatagramPair()
+	_, err = client.AddWorker(0, left)
+	require.NoError(t, err)
+	_, err = server.AddWorker(0, right)
+	require.NoError(t, err)
+
+	leaseReceived := make(chan time.Duration, 1)
+	client.SetTelemetryControlHandler(func(lease time.Duration) { leaseReceived <- lease })
+	recordReceived := make(chan []byte, 1)
+	server.SetTelemetryClientRecordHandler(func(record []byte) { recordReceived <- record })
+	require.True(t, server.RequestClientTelemetry(6*time.Second))
+	select {
+	case lease := <-leaseReceived:
+		require.Equal(t, 6*time.Second, lease)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the telemetry lease")
+	}
+
+	record := telemetry.Snapshot("client", "", "", telemetry.NewAccumulator().Snapshot(telemetry.ClientRequired))
+	payload, err := telemetry.Marshal(record)
+	require.NoError(t, err)
+	require.True(t, client.SendClientTelemetry(payload))
+	select {
+	case received := <-recordReceived:
+		decoded, decodeErr := telemetry.DecodeClientRecord(received)
+		require.NoError(t, decodeErr)
+		require.Equal(t, "client", decoded.Scope)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the client telemetry record")
+	}
+}
+
 func TestPooledTunnelWatchdogRemovesSilentWorker(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewPooledTunnel(0x33445566, 1, logger.NOP())
@@ -189,6 +232,7 @@ func TestPooledTunnelWatchdogRemovesSilentWorker(t *testing.T) {
 		t.Fatal("silent worker was not removed by the liveness watchdog")
 	}
 	require.Zero(t, tunnel.ActiveWorkers())
+	require.Equal(t, float64(1), tunnel.metrics.Value(telemetry.WorkerLivenessExpiredTotal))
 }
 
 func TestServerLatestSessionTakeoverWaitsForPendingAttach(t *testing.T) {

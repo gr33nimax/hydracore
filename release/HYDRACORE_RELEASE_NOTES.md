@@ -1,9 +1,25 @@
-# HydraCore v1.13.16-extended-hydracore.9
+# HydraCore v1.13.16-extended-hydracore.10
 
-This release fixes reusable VLESS/VMess/Trojan XHTTP transport handover and
-RuntimeEvents traffic rates, retains authenticated Hydra VK Tunnel user
-attribution from `.8`, and uses the exact `sing-box-extended` 2.6.2 baseline
+This release adds native, operator-gated VK Calls telemetry compatible with
+Hydra Ultimate. It retains the `.9` XHTTP handover and RuntimeEvents fixes,
+authenticated per-user traffic attribution, role-specific client/VPS
+artifacts, and the exact `sing-box-extended` 2.6.2 baseline
 (`545424b86bc4513f90580ebeab2e2d1514089718`).
+
+## Native VK Calls telemetry
+
+- The VPS follows Hydra Ultimate's active telemetry session and appends the
+  schema-v1 native JSONL stream only while recording is enabled; Hydracore has
+  no experiment-duration timer. A process restart resumes the same session
+  stream, while a genuinely new session rotates it atomically.
+- Authenticated clients receive short fail-safe collection leases and return
+  bounded records through reserved KCP control frames inside the existing
+  TURN/DTLS path. No extra listener or client-controlled identity exists.
+- Metrics cover VK API stages, TURN, DTLS and inner auth, authenticated outer
+  loss/jitter, KCP RTT/retransmission/backpressure, workers, peer/relay queues,
+  network handover, CPU, RSS, Go runtime and best-effort thermal pressure.
+- `sing-box hydra capabilities --json` reports
+  `features.call_vk_telemetry=true` in both client and VPS roles.
 
 ## XHTTP network handover
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
+	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 )
 
@@ -45,14 +46,17 @@ type SessionInfo struct {
 type SessionHandler func(info SessionInfo, tunnel *PooledTunnel) error
 
 type ServerOptions struct {
-	ObfsPassword         string
-	Users                []ServerUser
-	MaxSessions          int
-	MaxWorkersPerSession int
-	MaxPendingHandshakes int
-	HandshakeTimeout     time.Duration
-	SessionIdleTimeout   time.Duration
-	SessionHandler       SessionHandler
+	ObfsPassword             string
+	Users                    []ServerUser
+	MaxSessions              int
+	MaxWorkersPerSession     int
+	MaxPendingHandshakes     int
+	HandshakeTimeout         time.Duration
+	SessionIdleTimeout       time.Duration
+	SessionHandler           SessionHandler
+	TelemetryStateDirectory string
+	TelemetryOutputPath     string
+	TelemetryInterval       time.Duration
 }
 
 type serverUser struct {
@@ -71,6 +75,10 @@ type serverSession struct {
 	generation      uint64
 	createdAt       time.Time
 	pendingAttaches int
+	telemetryMu      sync.Mutex
+	telemetryWindow  time.Time
+	telemetryRecords int
+	telemetryBytes   int
 }
 
 type Server struct {
@@ -93,6 +101,7 @@ type Server struct {
 	pending      chan struct{}
 	closeOnce    sync.Once
 	done         chan struct{}
+	telemetry    *serverTelemetry
 }
 
 func NewServer(parent context.Context, options ServerOptions, log logger.ContextLogger) (*Server, error) {
@@ -112,7 +121,7 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 		return nil, fmt.Errorf("call multi_user: generate DTLS certificate: %w", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	return &Server{
+	server := &Server{
 		ctx:     ctx,
 		cancel:  cancel,
 		logger:  log,
@@ -130,7 +139,9 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 		userSessions: make(map[string]int),
 		pending:      make(chan struct{}, normalized.MaxPendingHandshakes),
 		done:         make(chan struct{}),
-	}, nil
+	}
+	server.telemetry = newServerTelemetry(server, normalized, log)
+	return server, nil
 }
 
 func validateServerOptions(options ServerOptions) (ServerOptions, map[string]serverUser, error) {
@@ -212,6 +223,7 @@ func (s *Server) Start(packetConn net.PacketConn) error {
 	s.peersMu.Unlock()
 	go s.readLoop(packetConn, decoder)
 	go s.reapLoop()
+	s.telemetry.start()
 	return nil
 }
 
@@ -231,7 +243,13 @@ func (s *Server) readLoop(packetConn net.PacketConn, decoder *rtpCodec) {
 		}
 		plain, err := decoder.unwrap(buffer[:n])
 		if err != nil {
+			s.telemetry.metrics.AddHot(telemetry.OuterAuthFailuresTotal, 1)
 			continue
+		}
+		s.telemetry.metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
+		s.telemetry.metrics.AddHot(telemetry.OuterBytesInTotal, uint64(n))
+		if s.telemetry.metrics.CollectionActive() {
+			s.telemetry.metrics.ObserveOuterPacket(buffer[:n], time.Now())
 		}
 		key := remote.Network() + "|" + remote.String()
 		s.peersMu.Lock()
@@ -241,13 +259,15 @@ func (s *Server) readLoop(packetConn net.PacketConn, decoder *rtpCodec) {
 			case s.pending <- struct{}{}:
 				codec, codecErr := newRTPCodec(s.key)
 				if codecErr == nil {
-					peer = newPeerPacketConn(packetConn, remote, codec)
+					peer = newPeerPacketConn(packetConn, remote, codec, s.telemetry.metrics)
 					s.peers[key] = peer
 					go s.handlePeer(key, peer)
 				} else {
 					<-s.pending
 				}
 			default:
+				s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
+				s.telemetry.event("handshake_rejected", "handshake", "pending_limit", "", [16]byte{}, nil)
 			}
 		}
 		s.peersMu.Unlock()
@@ -275,25 +295,52 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		_ = peer.Close()
 	}()
 
+	handshakeStarted := time.Now()
+	handshakeMeasured := false
+	defer func() {
+		if !handshakeMeasured {
+			s.telemetry.metrics.Set(telemetry.HandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
+		}
+	}()
 	conn, err := dtls.Server(peer, peer.remote, s.dtlsConfig)
 	if err != nil {
+		s.telemetry.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
+		s.telemetry.event("dtls_handshake_failed", "dtls", "initialize", "", [16]byte{}, nil)
 		return
 	}
 	defer conn.Close()
+	dtlsStarted := time.Now()
 	handshakeCtx, cancel := context.WithTimeout(s.ctx, s.options.HandshakeTimeout)
 	err = conn.HandshakeContext(handshakeCtx)
 	cancel()
+	s.telemetry.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(dtlsStarted))
 	if err != nil {
+		if s.ctx.Err() != nil {
+			return
+		}
+		s.telemetry.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
+		reason := telemetryFailureReason(err)
+		if reason == "timeout" {
+			s.telemetry.metrics.Add(telemetry.HandshakeTimeoutTotal, 1)
+		}
+		s.telemetry.event("dtls_handshake_failed", "dtls", reason, "", [16]byte{}, nil)
 		return
 	}
+	s.telemetry.metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
 	_ = conn.SetReadDeadline(time.Now().Add(s.options.HandshakeTimeout))
 	authBuffer := make([]byte, maximumAuthFrameLen)
 	n, err := conn.Read(authBuffer)
 	if err != nil {
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			s.telemetry.metrics.Add(telemetry.HandshakeTimeoutTotal, 1)
+			s.telemetry.event("handshake_timeout", "inner_auth", "timeout", "", [16]byte{}, nil)
+		}
 		return
 	}
 	request, err := decodeAuthRequest(authBuffer[:n])
 	if err != nil || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
+		s.telemetry.metrics.Add(telemetry.AuthFailureTotal, 1)
+		s.telemetry.event("auth_failed", "inner_auth", "rejected", "", [16]byte{}, nil)
 		version := byte(authProtocolVersion)
 		if len(authBuffer[:n]) >= 5 && authBuffer[4] == authProtocolVersionV1 {
 			version = authProtocolVersionV1
@@ -301,8 +348,12 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		_, _ = conn.Write(encodeAuthAckVersion(false, 0, version))
 		return
 	}
+	s.telemetry.metrics.Add(telemetry.AuthSuccessTotal, 1)
 	session, created, err := s.getOrCreateSession(request)
 	if err != nil {
+		s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
+		s.telemetry.metrics.Add(telemetry.WorkerAttachFailureTotal, 1)
+		s.telemetry.event("worker_attach_failed", "worker", "session_rejected", request.User, request.SessionID, &request.WorkerID)
 		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
 		return
 	}
@@ -315,12 +366,18 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 	})
 	s.releaseSessionAttach(session)
 	if err != nil {
+		s.telemetry.metrics.Add(telemetry.WorkerAttachFailureTotal, 1)
+		s.telemetry.event("worker_attach_failed", "worker", "attach", request.User, request.SessionID, &request.WorkerID)
 		if created {
 			s.deleteSessionIfUnattached(request.SessionID, session)
 		}
 		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
 		return
 	}
+	s.telemetry.metrics.Add(telemetry.WorkerAttachSuccessTotal, 1)
+	s.telemetry.event("worker_attached", "worker", "success", request.User, request.SessionID, &request.WorkerID)
+	s.telemetry.metrics.Set(telemetry.HandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
+	handshakeMeasured = true
 	releasePending()
 	select {
 	case <-done:
@@ -385,6 +442,8 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		closeServerSessions(evicted)
 		return nil, false, err
 	}
+	tunnel.SetTelemetryCounterParent(s.telemetry.metrics)
+	tunnel.SetTelemetryCollectionActive(s.telemetry.metrics.CollectionActive())
 	generation, err := randomSessionGeneration()
 	if err != nil {
 		s.sessionsMu.Unlock()
@@ -402,8 +461,12 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		generation: generation,
 		createdAt:  time.Now(),
 	}
+	tunnel.SetTelemetryClientRecordHandler(func(payload []byte) {
+		s.telemetry.clientRecord(session, payload)
+	})
 	s.sessions[request.SessionID] = session
 	s.userSessions[request.User]++
+	s.telemetry.metrics.Add(telemetry.SessionCreatedTotal, 1)
 	s.sessionsMu.Unlock()
 	closeServerSessions(evicted)
 
@@ -413,6 +476,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	close(session.ready)
 	if err != nil && s.sessions[request.SessionID] == session {
 		delete(s.sessions, request.SessionID)
+		s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 		if s.userSessions[request.User] <= 1 {
 			delete(s.userSessions, request.User)
 		} else {
@@ -444,6 +508,7 @@ func (s *Server) evictDisconnectedUserSessionsLocked(user string, now time.Time)
 			continue
 		}
 		delete(s.sessions, id)
+		s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 		evicted = append(evicted, session)
 	}
 	if len(evicted) > 0 {
@@ -492,6 +557,7 @@ func (s *Server) deleteIdleSession(id [16]byte, expected *serverSession, idleCut
 		return
 	}
 	delete(s.sessions, id)
+	s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 	if s.userSessions[session.user] <= 1 {
 		delete(s.userSessions, session.user)
 	} else {
@@ -509,6 +575,7 @@ func (s *Server) deleteSessionIfUnattached(id [16]byte, expected *serverSession)
 		return
 	}
 	delete(s.sessions, id)
+	s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 	if s.userSessions[session.user] <= 1 {
 		delete(s.userSessions, session.user)
 	} else {
@@ -573,9 +640,11 @@ func (s *Server) Close() error {
 		s.sessions = make(map[[16]byte]*serverSession)
 		s.userSessions = make(map[string]int)
 		s.sessionsMu.Unlock()
+		s.telemetry.metrics.Add(telemetry.SessionClosedTotal, uint64(len(sessions)))
 		for _, session := range sessions {
 			_ = session.tunnel.Close()
 		}
+		_ = s.telemetry.close()
 	})
 	return nil
 }

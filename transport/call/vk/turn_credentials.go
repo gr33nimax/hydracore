@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/transport/call/common"
+	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 	"golang.org/x/sync/singleflight"
@@ -26,11 +27,16 @@ type cachedTURNCredentials struct {
 }
 
 type TURNCredentialProvider struct {
-	dialer N.Dialer
-	logger logger.ContextLogger
-	mu     sync.Mutex
-	cache  map[string]cachedTURNCredentials
-	group  singleflight.Group
+	dialer  N.Dialer
+	logger  logger.ContextLogger
+	mu      sync.Mutex
+	cache   map[string]cachedTURNCredentials
+	group   singleflight.Group
+	metrics *telemetry.Accumulator
+}
+
+func (p *TURNCredentialProvider) SetTelemetry(metrics *telemetry.Accumulator) {
+	p.metrics = metrics
 }
 
 func NewTURNCredentialProvider(dialer N.Dialer, log logger.ContextLogger) *TURNCredentialProvider {
@@ -52,7 +58,8 @@ func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (Tu
 		if server, loaded := p.cached(joinLink); loaded {
 			return server, nil
 		}
-		server, err := FetchTURNCredentials(ctx, p.dialer, joinLink, "HydraCore", p.logger)
+		fetchContext := telemetry.ContextWithAccumulator(ctx, p.metrics)
+		server, err := FetchTURNCredentials(fetchContext, p.dialer, joinLink, "HydraCore", p.logger)
 		if err != nil {
 			return TurnServer{}, err
 		}
@@ -98,15 +105,35 @@ func FetchTURNCredentials(
 	displayName string,
 	log logger.ContextLogger,
 ) (TurnServer, error) {
+	metrics := telemetry.FromContext(ctx)
+	succeeded := false
+	defer func() {
+		if succeeded {
+			metrics.Add(telemetry.VKAuthSuccessTotal, 1)
+		} else if !errors.Is(ctx.Err(), context.Canceled) {
+			metrics.Add(telemetry.VKAuthFailureTotal, 1)
+		}
+	}()
+	authStarted := time.Now()
 	authJSON, err := RunVKAuthContext(ctx, dialer, joinLink, displayName, log)
+	metrics.Set(telemetry.VKAuthLatencyMS, telemetry.LatencyMS(authStarted))
 	if err != nil {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			reason := "control_plane"
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				reason = "timeout"
+			}
+			metrics.RecordEvent("vk_auth_failed", "vk_auth", reason, nil)
+		}
 		return TurnServer{}, fmt.Errorf("vk TURN auth: %w", err)
 	}
 	var params VKAuthParams
 	if err = json.Unmarshal([]byte(authJSON), &params); err != nil {
+		metrics.RecordEvent("vk_auth_failed", "vk_auth", "invalid_parameters", nil)
 		return TurnServer{}, errors.New("vk TURN auth returned invalid parameters")
 	}
 	if params.APIBaseURL == "" || params.SessionKey == "" || params.ApplicationKey == "" || params.JoinLink == "" {
+		metrics.RecordEvent("vk_auth_failed", "vk_auth", "incomplete_parameters", nil)
 		return TurnServer{}, errors.New("vk TURN auth returned incomplete parameters")
 	}
 	mediaSettings := `{"isAudioEnabled":false,"isVideoEnabled":true,"isScreenSharingEnabled":false}`
@@ -121,8 +148,13 @@ func FetchTURNCredentials(
 		"mediaSettings":   {mediaSettings},
 		"format":          {"json"},
 	}
+	joinStarted := time.Now()
+	defer func() {
+		metrics.Set(telemetry.VKJoinConversationLatencyMS, telemetry.LatencyMS(joinStarted))
+	}()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, params.APIBaseURL, strings.NewReader(body.Encode()))
 	if err != nil {
+		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "request", nil)
 		return TurnServer{}, err
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -131,18 +163,22 @@ func FetchTURNCredentials(
 	client.Timeout = 20 * time.Second
 	response, err := client.Do(request)
 	if err != nil {
+		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "transport", nil)
 		return TurnServer{}, fmt.Errorf("vk TURN join: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "http_status", nil)
 		return TurnServer{}, fmt.Errorf("vk TURN join returned HTTP %d", response.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
+		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "read", nil)
 		return TurnServer{}, err
 	}
 	var joined VKJoinResponse
 	if err = json.Unmarshal(raw, &joined); err != nil {
+		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "invalid_json", nil)
 		return TurnServer{}, errors.New("vk TURN join returned invalid JSON")
 	}
 	server := TurnServer{
@@ -151,7 +187,9 @@ func FetchTURNCredentials(
 		Credential: joined.TurnServer.Credential,
 	}
 	if len(server.URLs) == 0 || server.Username == "" || server.Credential == "" {
+		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "incomplete_credentials", nil)
 		return TurnServer{}, errors.New("vk TURN join returned incomplete credentials")
 	}
+	succeeded = true
 	return server, nil
 }

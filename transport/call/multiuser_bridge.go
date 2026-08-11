@@ -7,6 +7,7 @@ import (
 
 	callcommon "github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/multiuser"
+	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing-box/transport/call/vk"
 	"github.com/sagernet/sing/common/logger"
@@ -37,7 +38,9 @@ type multiUserBridgeManager struct {
 }
 
 func connectMultiUserBridge(ctx context.Context, cfg Config, readBuffer int, log logger.ContextLogger) (*Bridge, error) {
+	metrics := telemetry.NewAccumulator()
 	provider := vk.NewTURNCredentialProvider(cfg.Dialer, log)
+	provider.SetTelemetry(metrics)
 	options := multiuser.ClientOptions{
 		Server:               cfg.Server,
 		JoinLinks:            append([]string(nil), cfg.JoinLinks...),
@@ -56,6 +59,7 @@ func connectMultiUserBridge(ctx context.Context, cfg Config, readBuffer int, log
 				Credential: server.Credential,
 			}, fetchErr
 		},
+		Telemetry: metrics,
 	}
 	managerCtx, cancel := context.WithCancel(ctx)
 	connector := func(connectCtx context.Context) (managedMultiUserClient, error) {

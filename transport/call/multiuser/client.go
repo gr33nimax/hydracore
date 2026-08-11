@@ -14,6 +14,7 @@ import (
 
 	"github.com/pion/dtls/v3"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -30,24 +31,28 @@ type ClientOptions struct {
 	Dialer               N.Dialer
 	DNSRouter            adapter.DNSRouter
 	Credentials          CredentialProvider
+	Telemetry            *telemetry.Accumulator
 }
 
 type Client struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	options    ClientOptions
-	logger     logger.ContextLogger
-	server     *net.UDPAddr
-	key        [wrapKeyLength]byte
-	sessionID  [16]byte
-	conv       uint32
-	tunnel     *PooledTunnel
-	ready      chan struct{}
-	readyOnce  sync.Once
-	generation atomic.Uint64
-	errors     chan error
-	closeOnce  sync.Once
-	workers    []clientWorkerControl
+	ctx            context.Context
+	cancel         context.CancelFunc
+	options        ClientOptions
+	logger         logger.ContextLogger
+	server         *net.UDPAddr
+	key            [wrapKeyLength]byte
+	sessionID      [16]byte
+	conv           uint32
+	tunnel         *PooledTunnel
+	metrics        *telemetry.Accumulator
+	telemetryLease atomic.Int64
+	processSampler telemetry.ProcessSampler
+	ready          chan struct{}
+	readyOnce      sync.Once
+	generation     atomic.Uint64
+	errors         chan error
+	closeOnce      sync.Once
+	workers        []clientWorkerControl
 }
 
 type clientWorkerControl struct {
@@ -119,7 +124,11 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	if err != nil {
 		return nil, err
 	}
-	tunnel, err := NewPooledTunnel(conv, options.Workers, log)
+	metrics := options.Telemetry
+	if metrics == nil {
+		metrics = telemetry.NewAccumulator()
+	}
+	tunnel, err := newPooledTunnel(conv, options.Workers, log, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -134,10 +143,13 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		sessionID: sessionID,
 		conv:      conv,
 		tunnel:    tunnel,
+		metrics:   metrics,
 		ready:     make(chan struct{}),
 		errors:    make(chan error, options.Workers),
 		workers:   make([]clientWorkerControl, options.Workers),
 	}
+	tunnel.SetTelemetryControlHandler(client.enableTelemetry)
+	go client.telemetryLoop()
 	for workerID := 0; workerID < options.Workers; workerID++ {
 		client.workers[workerID] = newClientWorkerControl()
 		go client.maintainWorker(uint16(workerID), options.JoinLinks[workerID%len(options.JoinLinks)])
@@ -216,12 +228,17 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 	control := &c.workers[int(workerID)]
 	backoff := time.Second
+	attempt := 0
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
 		}
+		if attempt > 0 {
+			c.metrics.Add(telemetry.WorkerReconnectTotal, 1)
+		}
+		attempt++
 		done, err := c.connectWorker(workerID, joinLink, control)
 		if err == nil {
 			backoff = time.Second
@@ -238,6 +255,7 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 			}
 			c.logger.Debug(fmt.Sprintf("call multi_user: worker %d reconnecting after transport error", workerID))
 		}
+		c.metrics.Set(telemetry.WorkerReconnectBackoffMS, float64(backoff/time.Millisecond))
 		timer := time.NewTimer(backoff)
 		select {
 		case <-timer.C:
@@ -264,7 +282,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	if err != nil {
 		return nil, err
 	}
-	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID))
+	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), c.metrics, workerID)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +291,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		_ = allocation.Close()
 		return nil, err
 	}
-	packetConn := newObfsPacketConn(allocation, c.server, codec)
+	packetConn := newObfsPacketConn(allocation, c.server, codec, c.metrics)
 	conn, err := dtls.Client(packetConn, c.server, &dtls.Config{
 		InsecureSkipVerify:   true, // Authenticated by the outer key and the inner user attach.
 		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -281,13 +299,29 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		MTU:                  1100,
 	})
 	if err != nil {
+		c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
+		c.metrics.RecordEvent("dtls_handshake_failed", "dtls", "initialize", &workerID)
 		_ = packetConn.Close()
 		return nil, err
 	}
+	handshakeStarted := time.Now()
 	if err = conn.HandshakeContext(ctx); err != nil {
+		c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
+		reason := telemetryFailureReason(err)
+		if reason == "rebind" {
+			c.metrics.RecordEvent("dtls_handshake_interrupted", "dtls", reason, &workerID)
+		} else {
+			c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
+			c.metrics.RecordEvent("dtls_handshake_failed", "dtls", reason, &workerID)
+		}
 		_ = conn.Close()
 		return nil, err
 	}
+	c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
+	c.metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
+	stopAuthInterrupt := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopAuthInterrupt()
+	innerAuthStarted := time.Now()
 	request, err := encodeAuthRequest(authRequest{
 		SessionID:   c.sessionID,
 		Conv:        c.conv,
@@ -298,22 +332,26 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		Password:    c.options.Password,
 	})
 	if err != nil {
+		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "encode")
 		_ = conn.Close()
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(c.options.WorkerConnectTimeout))
 	if _, err = conn.Write(request); err != nil {
+		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "write")
 		_ = conn.Close()
 		return nil, err
 	}
 	ack := make([]byte, 14)
 	n, err := conn.Read(ack)
 	if err != nil {
+		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "read")
 		_ = conn.Close()
 		return nil, err
 	}
 	generation, err := decodeAuthAck(ack[:n])
 	if err != nil {
+		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "rejected")
 		_ = conn.Close()
 		return nil, err
 	}
@@ -323,6 +361,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		expectedGeneration = c.generation.Load()
 	}
 	if generation != expectedGeneration {
+		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "generation")
 		_ = conn.Close()
 		_ = c.Close()
 		return nil, errors.New("call multi_user: server session state was reset")
@@ -330,10 +369,37 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	_ = conn.SetDeadline(time.Time{})
 	done, err := c.tunnel.AddWorkerEpoch(workerID, workerEpoch, conn)
 	if err != nil {
+		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "attach")
 		_ = conn.Close()
 		return nil, err
 	}
+	c.metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
+	c.metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
 	return done, nil
+}
+
+func (c *Client) recordInnerAuthFailure(ctx context.Context, started time.Time, workerID uint16, reason string) {
+	c.metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(started))
+	if errors.Is(ctx.Err(), context.Canceled) {
+		c.metrics.RecordEvent("inner_auth_interrupted", "inner_auth", "rebind", &workerID)
+		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		reason = "timeout"
+	}
+	c.metrics.Add(telemetry.InnerAuthFailureTotal, 1)
+	c.metrics.RecordEvent("inner_auth_failed", "inner_auth", reason, &workerID)
+}
+
+func telemetryFailureReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "rebind"
+	default:
+		return "transport"
+	}
 }
 
 func (c *Client) Tunnel() *PooledTunnel { return c.tunnel }
@@ -349,6 +415,11 @@ func (c *Client) RebindNetwork() {
 		return
 	default:
 	}
+	c.metrics.Add(telemetry.NetworkChangeTotal, 1)
+	if c.tunnel.ActiveWorkers() > 0 {
+		c.metrics.Add(telemetry.NetworkHandoverTotal, 1)
+	}
+	c.metrics.RecordEvent("network_changed", "network", "default_interface", nil)
 	for workerID := range c.workers {
 		c.workers[workerID].interrupt()
 		c.tunnel.DropWorker(uint16(workerID))

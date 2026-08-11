@@ -7,7 +7,7 @@ identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Release baseline
 
-Release `v1.13.16-extended-hydracore.7` is based on the exact
+Release `v1.13.16-extended-hydracore.10` is based on the exact
 `sing-box-extended` commit
 `545424b86bc4513f90580ebeab2e2d1514089718` (descriptive upstream tag
 `v1.13.16-extended-2.6.2`). The full commit, rather than a movable tag, is the
@@ -30,7 +30,7 @@ binds the same values and every artifact digest into `provenance.json`.
   `identity.role="client"`, `call_vk_multi_user_client=true`, and wire v2;
   Linux reports `identity.role="vps"`, `call_vk_multi_user_server=true`, and
   accepts wire v1 through v2 during the transition. Both roles expose only
-  `mode: "multi_user"`.
+  `mode: "multi_user"` and report `call_vk_telemetry=true`.
 
 Remote policy v2 permits only `$schema`, `inbounds`, `outbounds`, and
 `endpoints` at the resource root. It applies strict object typing, unique and
@@ -111,6 +111,14 @@ the theoretical ceiling is roughly 41 Mbit/s at 100 ms RTT or 20 Mbit/s at
 throughput is workload- and VK-dependent. The self-signed DTLS identity is
 protected by the shared `obfs_password`; treat it as a trusted group secret and
 rotate it when membership changes.
+
+Instrumented client and VPS roles report `features.call_vk_telemetry=true`.
+Hydra Ultimate controls an arbitrarily long recording session; Hydracore has
+no experiment-duration timer. The VPS writes a protected native JSONL stream
+only while Ultimate's active-session manifest is live and grants short
+fail-safe collection leases to authenticated clients. The metric contract,
+privacy boundary and measurement limitations are documented in
+[docs/CALL_VK_TELEMETRY.md](docs/CALL_VK_TELEMETRY.md).
 
 ## Hydra Subscription v2
 

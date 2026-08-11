@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added operator-gated native VK multi-user server/client telemetry compatible
+  with Hydra Ultimate's schema-v1 JSONL ingestion contract.
+- Instrumented VK/TURN/DTLS/inner-auth stages, authenticated outer loss and
+  jitter, KCP RTT/retransmission/backpressure, worker/peer/relay queues,
+  network handover and runtime pressure.
+- Client records travel through bounded, rate-limited control frames inside
+  the existing authenticated KCP/DTLS/TURN path; no new listener or
+  client-controlled identity is introduced.
+
 ## v1.13.16-extended-hydracore.8
 
 - Exposed the authenticated inbound user in Clash `/connections` metadata so

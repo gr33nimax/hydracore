@@ -15,6 +15,7 @@ import (
 	"github.com/pion/turn/v4"
 	"github.com/sagernet/sing-box/adapter"
 	D "github.com/sagernet/sing-box/common/dialer"
+	"github.com/sagernet/sing-box/transport/call/telemetry"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -52,8 +53,12 @@ func allocateTURN(
 	dnsRouter adapter.DNSRouter,
 	credentials TURNCredentials,
 	preferred int,
+	metrics *telemetry.Accumulator,
+	workerID uint16,
 ) (net.PacketConn, error) {
+	started := time.Now()
 	if credentials.Username == "" || credentials.Credential == "" {
+		recordTURNFailure(ctx, metrics, started, workerID, "credentials")
 		return nil, errors.New("call multi_user: VK returned incomplete TURN credentials")
 	}
 	destinations := make([]M.Socksaddr, 0, len(credentials.URLs))
@@ -64,19 +69,37 @@ func allocateTURN(
 		}
 	}
 	if len(destinations) == 0 {
+		recordTURNFailure(ctx, metrics, started, workerID, "no_endpoint")
 		return nil, errors.New("call multi_user: no usable UDP TURN URL")
 	}
 	var lastErr error
 	start := preferred % len(destinations)
 	for offset := 0; offset < len(destinations); offset++ {
+		metrics.Add(telemetry.TURNEndpointsTriedTotal, 1)
 		turnDestination := destinations[(start+offset)%len(destinations)]
 		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, turnDestination)
 		if err == nil {
+			metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
+			metrics.Add(telemetry.TURNAllocateSuccessTotal, 1)
 			return connection, nil
 		}
 		lastErr = err
 	}
+	recordTURNFailure(ctx, metrics, started, workerID, "all_endpoints")
 	return nil, fmt.Errorf("call multi_user: all VK TURN endpoints failed: %w", lastErr)
+}
+
+func recordTURNFailure(ctx context.Context, metrics *telemetry.Accumulator, started time.Time, workerID uint16, reason string) {
+	metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
+	if errors.Is(ctx.Err(), context.Canceled) {
+		metrics.RecordEvent("turn_allocate_interrupted", "turn", "rebind", &workerID)
+		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		reason = "timeout"
+	}
+	metrics.Add(telemetry.TURNAllocateFailureTotal, 1)
+	metrics.RecordEvent("turn_allocate_failed", "turn", reason, &workerID)
 }
 
 func allocateTURNEndpoint(

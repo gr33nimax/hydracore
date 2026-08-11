@@ -12,6 +12,10 @@ const (
 	MsgUDPReply   byte = 0x07
 	MsgConfig     byte = 0x08
 	MsgConfigAck  byte = 0x09
+	// MsgTelemetryControl and MsgTelemetryRecord are reserved multi_user
+	// control frames. Legacy relays ignore unknown control messages.
+	MsgTelemetryControl byte = 0x0a
+	MsgTelemetryRecord  byte = 0x0b
 )
 
 const ControlConnID uint32 = 0
@@ -21,6 +25,15 @@ type DataTunnel interface {
 	SetOnData(fn func([]byte))
 	SetOnClose(fn func())
 	Reconfigure(fps, batch int)
+}
+
+type RelayTelemetry interface {
+	RelaySetActive(tcp, udp int)
+	RelayAddBytes(bytes uint64)
+	RelayQueueDelta(bytes int)
+	RelayResetQueue()
+	RelayQueueDrop()
+	RelayConnectFailure()
 }
 
 func EncodeVP8Config(fps, batch, trackCount int) []byte {

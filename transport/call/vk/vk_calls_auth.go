@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sagernet/sing-box/transport/call/common"
+	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -45,6 +47,9 @@ func RunVKAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayNam
 		log.Info("vk-auth: authenticated via VK Calls path")
 		return authJSON, nil
 	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	log.Warn(fmt.Sprintf("vk-auth: VK Calls path failed, falling back to legacy: %v", err))
 	return runVKLegacyAuthContext(ctx, dialer, joinLink, displayName, log)
 }
@@ -64,6 +69,7 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 	canonicalJoinLink := "https://vk.com/call/join/" + joinToken
 
 	log.Info("vk-auth: trying VK Calls anonymous path")
+	stageStarted := time.Now()
 	step1, err := vkCallsPost(ctx, client, vkCallsAPIBaseURL+"/auth.getAnonymToken", url.Values{
 		"v":         {vkCallsAPIVersion},
 		"client_id": {vkCallsClientID},
@@ -72,17 +78,22 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 		"anonymName": {displayName},
 		"lang":      {"en"},
 	})
+	recordVKStageLatency(ctx, telemetry.VKAuthAnonymTokenLatencyMS, stageStarted)
 	if err != nil {
+		recordVKStageFailure(ctx, "vk_anonym_token", "request")
 		return "", fmt.Errorf("auth.getAnonymToken: %w", err)
 	}
 	if err := vkCallsResponseError(step1); err != nil {
+		recordVKStageFailure(ctx, "vk_anonym_token", "response")
 		return "", fmt.Errorf("auth.getAnonymToken: %w", err)
 	}
 	anonymousToken, ok := vkCallsNestedString(step1, "response", "token")
 	if !ok {
+		recordVKStageFailure(ctx, "vk_anonym_token", "missing_field")
 		return "", fmt.Errorf("auth.getAnonymToken: missing response.token")
 	}
 
+	stageStarted = time.Now()
 	step2, err := vkCallsPost(ctx, client, vkCallsAPIBaseURL+"/messages.getCallPreview", url.Values{
 		"v":               {vkCallsAPIVersion},
 		"anonymous_token": {anonymousToken},
@@ -92,21 +103,27 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 		"lang":            {"en"},
 		"link":            {canonicalJoinLink},
 	})
+	recordVKStageLatency(ctx, telemetry.VKCallPreviewLatencyMS, stageStarted)
 	if err != nil {
+		recordVKStageFailure(ctx, "vk_call_preview", "request")
 		return "", fmt.Errorf("messages.getCallPreview: %w", err)
 	}
 	if err := vkCallsResponseError(step2); err != nil {
+		recordVKStageFailure(ctx, "vk_call_preview", "response")
 		return "", fmt.Errorf("messages.getCallPreview: %w", err)
 	}
 	userID, ok := vkCallsNestedNumberString(step2, "response", "user_id")
 	if !ok {
+		recordVKStageFailure(ctx, "vk_call_preview", "missing_field")
 		return "", fmt.Errorf("messages.getCallPreview: missing response.user_id")
 	}
 	secret, ok := vkCallsNestedString(step2, "response", "secret")
 	if !ok {
+		recordVKStageFailure(ctx, "vk_call_preview", "missing_field")
 		return "", fmt.Errorf("messages.getCallPreview: missing response.secret")
 	}
 
+	stageStarted = time.Now()
 	step3, err := vkCallsPost(ctx, client, vkCallsAPIBaseURL+"/messages.getAnonymCallToken", url.Values{
 		"v":               {vkCallsAPIVersion},
 		"anonymous_token": {anonymousToken},
@@ -117,14 +134,18 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 		"secret":          {secret},
 		"lang":            {"en"},
 	})
+	recordVKStageLatency(ctx, telemetry.VKAnonymCallTokenLatencyMS, stageStarted)
 	if err != nil {
+		recordVKStageFailure(ctx, "vk_anonym_call_token", "request")
 		return "", fmt.Errorf("messages.getAnonymCallToken: %w", err)
 	}
 	if err := vkCallsResponseError(step3); err != nil {
+		recordVKStageFailure(ctx, "vk_anonym_call_token", "response")
 		return "", fmt.Errorf("messages.getAnonymCallToken: %w", err)
 	}
 	callToken, ok := vkCallsNestedString(step3, "response", "token")
 	if !ok {
+		recordVKStageFailure(ctx, "vk_anonym_call_token", "missing_field")
 		return "", fmt.Errorf("messages.getAnonymCallToken: missing response.token")
 	}
 
@@ -136,20 +157,25 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 	if err != nil {
 		return "", fmt.Errorf("auth.anonymLogin session data: %w", err)
 	}
+	stageStarted = time.Now()
 	step4, err := vkCallsPost(ctx, client, vkCallsOKBaseURL, url.Values{
 		"session_data":    {string(sessionData)},
 		"method":          {"auth.anonymLogin"},
 		"format":          {"JSON"},
 		"application_key": {vkCallsApplicationKey},
 	})
+	recordVKStageLatency(ctx, telemetry.VKAnonymLoginLatencyMS, stageStarted)
 	if err != nil {
+		recordVKStageFailure(ctx, "vk_anonym_login", "request")
 		return "", fmt.Errorf("auth.anonymLogin: %w", err)
 	}
 	if err := vkCallsOKResponseError(step4); err != nil {
+		recordVKStageFailure(ctx, "vk_anonym_login", "response")
 		return "", fmt.Errorf("auth.anonymLogin: %w", err)
 	}
 	sessionKey, ok := vkCallsNestedString(step4, "session_key")
 	if !ok {
+		recordVKStageFailure(ctx, "vk_anonym_login", "missing_field")
 		return "", fmt.Errorf("auth.anonymLogin: missing session_key")
 	}
 
@@ -167,6 +193,21 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 		return "", fmt.Errorf("encode VK Calls auth result: %w", err)
 	}
 	return string(encoded), nil
+}
+
+func recordVKStageLatency(ctx context.Context, metric telemetry.Metric, started time.Time) {
+	telemetry.FromContext(ctx).Set(metric, telemetry.LatencyMS(started))
+}
+
+func recordVKStageFailure(ctx context.Context, stage, reason string) {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		telemetry.FromContext(ctx).RecordEvent("vk_auth_interrupted", stage, "rebind", nil)
+		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		reason = "timeout"
+	}
+	telemetry.FromContext(ctx).RecordEvent("vk_auth_stage_failed", stage, reason, nil)
 }
 
 func vkCallsPost(ctx context.Context, client *http.Client, endpoint string, query url.Values) (map[string]interface{}, error) {

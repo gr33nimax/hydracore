@@ -77,6 +77,8 @@ jobs:
         run: go test -tags with_call_client ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Test VPS Calls role
         run: go test -tags with_call_server ./experimental/libbox ./protocol/call ./transport/call/... ./include
+      - name: Race test Call telemetry and transport
+        run: go test -race ./transport/call/telemetry ./transport/call/multiuser ./transport/call/tunnel
       - name: Race test HydraCore inherited runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
       - name: Resource and performance gate
@@ -280,6 +282,7 @@ jobs:
                .features.call_vk_multi_user == true and
                .features.call_vk_multi_user_client == false and
                .features.call_vk_multi_user_server == true and
+               .features.call_vk_telemetry == true and
                .protocols.call_modes == ["multi_user"] and
                .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' \
               capabilities.json >/dev/null
@@ -415,6 +418,7 @@ jobs:
              .features.call_vk_multi_user == true and
              .features.call_vk_multi_user_client == false and
              .features.call_vk_multi_user_server == true and
+             .features.call_vk_telemetry == true and
              .protocols.call_modes == ["multi_user"] and
              .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' >/dev/null
           jq -n \

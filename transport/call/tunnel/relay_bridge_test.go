@@ -110,3 +110,14 @@ func TestUDPClientCloseAndDeliverAreConcurrentSafe(t *testing.T) {
 		}
 	}
 }
+
+func TestRelayPayloadBytesExcludeFramingAndDestination(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, 5, relayPayloadBytes(MsgData, []byte("hello")))
+	require.Equal(t, 5, relayPayloadBytes(MsgUDPReply, []byte("hello")))
+	udpPayload := append([]byte{byte(len("1.1.1.1:53"))}, []byte("1.1.1.1:53")...)
+	udpPayload = append(udpPayload, []byte("hello")...)
+	require.Equal(t, 5, relayPayloadBytes(MsgUDP, udpPayload))
+	require.Zero(t, relayPayloadBytes(MsgConnect, []byte("1.1.1.1:80")))
+	require.Zero(t, relayPayloadBytes(MsgUDP, []byte{8, 'x'}))
+}

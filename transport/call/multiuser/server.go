@@ -241,19 +241,26 @@ func (s *Server) readLoop(packetConn net.PacketConn, decoder *rtpCodec) {
 				return
 			}
 		}
-		plain, err := decoder.unwrap(buffer[:n])
-		if err != nil {
-			s.telemetry.metrics.AddHot(telemetry.OuterAuthFailuresTotal, 1)
-			continue
-		}
-		s.telemetry.metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
-		s.telemetry.metrics.AddHot(telemetry.OuterBytesInTotal, uint64(n))
-		if s.telemetry.metrics.CollectionActive() {
-			s.telemetry.metrics.ObserveOuterPacket(buffer[:n], time.Now())
-		}
 		key := remote.Network() + "|" + remote.String()
 		s.peersMu.Lock()
 		peer := s.peers[key]
+		s.peersMu.Unlock()
+		metrics := s.telemetry.metrics
+		if peer != nil {
+			metrics = peer.telemetryMetrics()
+		}
+		plain, err := decoder.unwrap(buffer[:n])
+		if err != nil {
+			metrics.AddHot(telemetry.OuterAuthFailuresTotal, 1)
+			continue
+		}
+		metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
+		metrics.AddHot(telemetry.OuterBytesInTotal, uint64(n))
+		if metrics.CollectionActive() {
+			metrics.ObserveOuterPacket(buffer[:n], time.Now())
+		}
+		s.peersMu.Lock()
+		peer = s.peers[key]
 		if peer == nil {
 			select {
 			case s.pending <- struct{}{}:
@@ -357,6 +364,8 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
 		return
 	}
+	workerMetrics := session.tunnel.telemetryWorker(request.WorkerID)
+	peer.setTelemetryMetrics(workerMetrics)
 	done, err := session.tunnel.AttachWorkerEpoch(request.WorkerID, request.WorkerEpoch, conn, func() error {
 		_, writeErr := conn.Write(encodeAuthAckVersion(true, session.generation, request.ProtocolVersion))
 		if writeErr == nil {
@@ -366,7 +375,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 	})
 	s.releaseSessionAttach(session)
 	if err != nil {
-		s.telemetry.metrics.Add(telemetry.WorkerAttachFailureTotal, 1)
+		workerMetrics.Add(telemetry.WorkerAttachFailureTotal, 1)
 		s.telemetry.event("worker_attach_failed", "worker", "attach", request.User, request.SessionID, &request.WorkerID)
 		if created {
 			s.deleteSessionIfUnattached(request.SessionID, session)
@@ -374,7 +383,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
 		return
 	}
-	s.telemetry.metrics.Add(telemetry.WorkerAttachSuccessTotal, 1)
+	workerMetrics.Add(telemetry.WorkerAttachSuccessTotal, 1)
 	s.telemetry.event("worker_attached", "worker", "success", request.User, request.SessionID, &request.WorkerID)
 	s.telemetry.metrics.Set(telemetry.HandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 	handshakeMeasured = true

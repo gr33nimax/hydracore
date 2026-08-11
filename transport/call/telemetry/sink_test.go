@@ -91,6 +91,40 @@ func TestSinkRejectsSymlinkedActivePointer(t *testing.T) {
 	require.False(t, active)
 }
 
+func TestSinkBoundsTheRuntimeStagingFileByRotatingTheSameSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the native VPS sink relies on POSIX rename semantics")
+	}
+	stateDirectory := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "run", "calls-telemetry.jsonl")
+	sessionID := "20260811T120000Z-deadbeef"
+	writeJSON(t, filepath.Join(stateDirectory, "active.json"), map[string]any{"session_id": sessionID})
+	writeJSON(t, filepath.Join(stateDirectory, sessionID+".json"), map[string]any{
+		"session_id": sessionID,
+		"stopped_at": 0,
+	})
+	sink := NewSink(SinkConfig{
+		StateDirectory: stateDirectory,
+		OutputPath:     outputPath,
+		MaxOutputBytes: 4096,
+	})
+	t.Cleanup(func() { _ = sink.Close() })
+	active, _, err := sink.Sync()
+	require.NoError(t, err)
+	require.True(t, active)
+	record := Snapshot("server", "", "server", NewAccumulator().Snapshot(ServerRequired))
+	for range 16 {
+		require.NoError(t, sink.Write(record))
+	}
+	require.Greater(t, sink.Rotations(), uint64(0))
+	segments, err := filepath.Glob(outputPath + "." + sessionID + ".part-*.jsonl")
+	require.NoError(t, err)
+	require.NotEmpty(t, segments)
+	info, err := os.Stat(outputPath)
+	require.NoError(t, err)
+	require.LessOrEqual(t, info.Size(), int64(4096))
+}
+
 func writeJSON(t *testing.T, path string, value any) {
 	t.Helper()
 	payload, err := json.Marshal(value)

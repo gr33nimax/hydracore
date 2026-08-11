@@ -46,6 +46,8 @@ type Client struct {
 	tunnel         *PooledTunnel
 	metrics        *telemetry.Accumulator
 	telemetryLease atomic.Int64
+	telemetryLeaseExpired atomic.Bool
+	telemetrySequence atomic.Uint64
 	processSampler telemetry.ProcessSampler
 	ready          chan struct{}
 	readyOnce      sync.Once
@@ -227,6 +229,7 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 
 func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 	control := &c.workers[int(workerID)]
+	metrics := c.tunnel.telemetryWorker(workerID)
 	backoff := time.Second
 	attempt := 0
 	for {
@@ -236,7 +239,7 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 		default:
 		}
 		if attempt > 0 {
-			c.metrics.Add(telemetry.WorkerReconnectTotal, 1)
+			metrics.Add(telemetry.WorkerReconnectTotal, 1)
 		}
 		attempt++
 		done, err := c.connectWorker(workerID, joinLink, control)
@@ -255,7 +258,7 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 			}
 			c.logger.Debug(fmt.Sprintf("call multi_user: worker %d reconnecting after transport error", workerID))
 		}
-		c.metrics.Set(telemetry.WorkerReconnectBackoffMS, float64(backoff/time.Millisecond))
+		metrics.Set(telemetry.WorkerReconnectBackoffMS, float64(backoff/time.Millisecond))
 		timer := time.NewTimer(backoff)
 		select {
 		case <-timer.C:
@@ -278,11 +281,13 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 func (c *Client) connectWorker(workerID uint16, joinLink string, control *clientWorkerControl) (<-chan struct{}, error) {
 	ctx, cancel, workerEpoch := control.begin(c.ctx, c.options.WorkerConnectTimeout)
 	defer control.finish(workerEpoch, cancel)
+	metrics := c.tunnel.telemetryWorker(workerID)
+	ctx = telemetry.ContextWithAccumulator(ctx, metrics)
 	credentials, err := c.options.Credentials(ctx, joinLink)
 	if err != nil {
 		return nil, err
 	}
-	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), c.metrics, workerID)
+	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), metrics, workerID)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +296,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		_ = allocation.Close()
 		return nil, err
 	}
-	packetConn := newObfsPacketConn(allocation, c.server, codec, c.metrics)
+	packetConn := newObfsPacketConn(allocation, c.server, codec, metrics)
 	conn, err := dtls.Client(packetConn, c.server, &dtls.Config{
 		InsecureSkipVerify:   true, // Authenticated by the outer key and the inner user attach.
 		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -299,26 +304,26 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		MTU:                  1100,
 	})
 	if err != nil {
-		c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
-		c.metrics.RecordEvent("dtls_handshake_failed", "dtls", "initialize", &workerID)
+		metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
+		metrics.RecordEvent("dtls_handshake_failed", "dtls", "initialize", &workerID)
 		_ = packetConn.Close()
 		return nil, err
 	}
 	handshakeStarted := time.Now()
 	if err = conn.HandshakeContext(ctx); err != nil {
-		c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
+		metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 		reason := telemetryFailureReason(err)
 		if reason == "rebind" {
-			c.metrics.RecordEvent("dtls_handshake_interrupted", "dtls", reason, &workerID)
+			metrics.RecordEvent("dtls_handshake_interrupted", "dtls", reason, &workerID)
 		} else {
-			c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
-			c.metrics.RecordEvent("dtls_handshake_failed", "dtls", reason, &workerID)
+			metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
+			metrics.RecordEvent("dtls_handshake_failed", "dtls", reason, &workerID)
 		}
 		_ = conn.Close()
 		return nil, err
 	}
-	c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
-	c.metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
+	metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
+	metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
 	stopAuthInterrupt := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopAuthInterrupt()
 	innerAuthStarted := time.Now()
@@ -332,26 +337,26 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		Password:    c.options.Password,
 	})
 	if err != nil {
-		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "encode")
+		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "encode")
 		_ = conn.Close()
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(c.options.WorkerConnectTimeout))
 	if _, err = conn.Write(request); err != nil {
-		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "write")
+		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "write")
 		_ = conn.Close()
 		return nil, err
 	}
 	ack := make([]byte, 14)
 	n, err := conn.Read(ack)
 	if err != nil {
-		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "read")
+		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "read")
 		_ = conn.Close()
 		return nil, err
 	}
 	generation, err := decodeAuthAck(ack[:n])
 	if err != nil {
-		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "rejected")
+		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "rejected")
 		_ = conn.Close()
 		return nil, err
 	}
@@ -361,7 +366,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		expectedGeneration = c.generation.Load()
 	}
 	if generation != expectedGeneration {
-		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "generation")
+		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "generation")
 		_ = conn.Close()
 		_ = c.Close()
 		return nil, errors.New("call multi_user: server session state was reset")
@@ -369,26 +374,26 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	_ = conn.SetDeadline(time.Time{})
 	done, err := c.tunnel.AddWorkerEpoch(workerID, workerEpoch, conn)
 	if err != nil {
-		c.recordInnerAuthFailure(ctx, innerAuthStarted, workerID, "attach")
+		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "attach")
 		_ = conn.Close()
 		return nil, err
 	}
-	c.metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
-	c.metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
+	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
+	metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
 	return done, nil
 }
 
-func (c *Client) recordInnerAuthFailure(ctx context.Context, started time.Time, workerID uint16, reason string) {
-	c.metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(started))
+func (c *Client) recordInnerAuthFailure(metrics *telemetry.Accumulator, ctx context.Context, started time.Time, workerID uint16, reason string) {
+	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(started))
 	if errors.Is(ctx.Err(), context.Canceled) {
-		c.metrics.RecordEvent("inner_auth_interrupted", "inner_auth", "rebind", &workerID)
+		metrics.RecordEvent("inner_auth_interrupted", "inner_auth", "rebind", &workerID)
 		return
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		reason = "timeout"
 	}
-	c.metrics.Add(telemetry.InnerAuthFailureTotal, 1)
-	c.metrics.RecordEvent("inner_auth_failed", "inner_auth", reason, &workerID)
+	metrics.Add(telemetry.InnerAuthFailureTotal, 1)
+	metrics.RecordEvent("inner_auth_failed", "inner_auth", reason, &workerID)
 }
 
 func telemetryFailureReason(err error) string {

@@ -24,7 +24,7 @@ type peerPacketConn struct {
 	base          net.PacketConn
 	remote        net.Addr
 	codec         *rtpCodec
-	metrics       *telemetry.Accumulator
+	metrics       atomic.Pointer[telemetry.Accumulator]
 	readQueue     chan receivedPacket
 	closed        chan struct{}
 	closeOnce     sync.Once
@@ -33,13 +33,24 @@ type peerPacketConn struct {
 }
 
 func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, metrics *telemetry.Accumulator) *peerPacketConn {
-	return &peerPacketConn{
+	connection := &peerPacketConn{
 		base:      base,
 		remote:    remote,
 		codec:     codec,
-		metrics:   metrics,
 		readQueue: make(chan receivedPacket, 64),
 		closed:    make(chan struct{}),
+	}
+	connection.metrics.Store(metrics)
+	return connection
+}
+
+func (c *peerPacketConn) telemetryMetrics() *telemetry.Accumulator {
+	return c.metrics.Load()
+}
+
+func (c *peerPacketConn) setTelemetryMetrics(metrics *telemetry.Accumulator) {
+	if metrics != nil {
+		c.metrics.Store(metrics)
 	}
 }
 
@@ -47,12 +58,12 @@ func (c *peerPacketConn) enqueue(payload []byte, addr net.Addr) bool {
 	copyPayload := append([]byte(nil), payload...)
 	select {
 	case c.readQueue <- receivedPacket{payload: copyPayload, addr: addr}:
-		c.metrics.AddHotGauge(telemetry.PeerReadQueueDepth, 1)
+		c.telemetryMetrics().AddHotGauge(telemetry.PeerReadQueueDepth, 1)
 		return true
 	case <-c.closed:
 		return false
 	default:
-		c.metrics.AddHot(telemetry.PeerReadQueueDropsTotal, 1)
+		c.telemetryMetrics().AddHot(telemetry.PeerReadQueueDropsTotal, 1)
 		return false
 	}
 }
@@ -64,7 +75,7 @@ func (c *peerPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 	}
 	select {
 	case packet := <-c.readQueue:
-		c.metrics.AddHotGauge(telemetry.PeerReadQueueDepth, -1)
+		c.telemetryMetrics().AddHotGauge(telemetry.PeerReadQueueDepth, -1)
 		return copy(buffer, packet.payload), packet.addr, nil
 	case <-c.closed:
 		return 0, nil, errPacketConnClosed
@@ -84,14 +95,14 @@ func (c *peerPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
 	}
 	wire, err := c.codec.wrap(payload)
 	if err != nil {
-		c.metrics.AddHot(telemetry.OuterWrapFailuresTotal, 1)
+		c.telemetryMetrics().AddHot(telemetry.OuterWrapFailuresTotal, 1)
 		return 0, err
 	}
 	if _, err = c.base.WriteTo(wire, c.remote); err != nil {
 		return 0, err
 	}
-	c.metrics.AddHot(telemetry.OuterPacketsOutTotal, 1)
-	c.metrics.AddHot(telemetry.OuterBytesOutTotal, uint64(len(wire)))
+	c.telemetryMetrics().AddHot(telemetry.OuterPacketsOutTotal, 1)
+	c.telemetryMetrics().AddHot(telemetry.OuterBytesOutTotal, uint64(len(wire)))
 	return len(payload), nil
 }
 

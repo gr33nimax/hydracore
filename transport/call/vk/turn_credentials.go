@@ -51,14 +51,22 @@ func NewTURNCredentialProvider(dialer N.Dialer, log logger.ContextLogger) *TURNC
 }
 
 func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (TurnServer, error) {
+	metrics := telemetry.FromContext(ctx)
+	if metrics == nil {
+		metrics = p.metrics
+	}
+	metrics.Add(telemetry.VKCredentialRequestTotal, 1)
 	if server, loaded := p.cached(joinLink); loaded {
+		metrics.Add(telemetry.VKCredentialCacheHitTotal, 1)
 		return server, nil
 	}
 	result := p.group.DoChan(joinLink, func() (any, error) {
 		if server, loaded := p.cached(joinLink); loaded {
+			metrics.Add(telemetry.VKCredentialCacheHitTotal, 1)
 			return server, nil
 		}
-		fetchContext := telemetry.ContextWithAccumulator(ctx, p.metrics)
+		metrics.Add(telemetry.VKCredentialFetchTotal, 1)
+		fetchContext := telemetry.ContextWithAccumulator(ctx, metrics)
 		server, err := FetchTURNCredentials(fetchContext, p.dialer, joinLink, "HydraCore", p.logger)
 		if err != nil {
 			return TurnServer{}, err

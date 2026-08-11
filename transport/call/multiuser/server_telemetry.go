@@ -13,8 +13,8 @@ const serverTelemetryInterval = 2 * time.Second
 
 const (
 	clientTelemetryWindow     = 2 * time.Second
-	clientTelemetryMaxRecords = 64
-	clientTelemetryMaxBytes   = 256 * 1024
+	clientTelemetryMaxRecords = 256
+	clientTelemetryMaxBytes   = 1024 * 1024
 )
 
 type serverTelemetry struct {
@@ -25,6 +25,8 @@ type serverTelemetry struct {
 	logger         logger.ContextLogger
 	processSampler telemetry.ProcessSampler
 	started        atomic.Bool
+	sequence       atomic.Uint64
+	sinkRotations  uint64
 	done           chan struct{}
 }
 
@@ -86,27 +88,69 @@ func (t *serverTelemetry) emit() {
 		return
 	}
 	t.setCollectionActive(sessions, true)
+	sequence := t.sequence.Add(1)
+	rotations := t.sink.Rotations()
+	if rotations > t.sinkRotations {
+		t.metrics.Add(telemetry.TelemetrySinkRotationsTotal, rotations-t.sinkRotations)
+		t.sinkRotations = rotations
+	}
 
 	telemetry.SampleServerRuntime(t.metrics)
 	t.processSampler.Sample(t.metrics)
 	t.metrics.Set(telemetry.HandshakePending, float64(len(t.server.pending)))
 	t.metrics.Set(telemetry.SessionActive, float64(len(sessions)))
 	t.metrics.Set(telemetry.PeerReadQueueDepth, float64(t.server.peerQueueDepth()))
+	t.metrics.Set(telemetry.TelemetrySequence, float64(sequence))
 	metrics := t.metrics.Snapshot(serverSnapshotMetrics())
 	for _, session := range sessions {
-		mergeTunnelMetrics(metrics, session.tunnel.TelemetryValues())
+		values := session.tunnel.TelemetryValues()
+		mergeTunnelMetrics(metrics, values)
+		t.emitSession(session, sequence)
 	}
 	serverRecord := telemetry.Snapshot("server", "", "server", metrics)
 	if err = t.sink.Write(serverRecord); err != nil {
 		t.logger.Warn("call telemetry: write server snapshot: ", err)
 		return
 	}
-	lease := 3 * t.interval
-	if lease < 6*time.Second {
-		lease = 6 * time.Second
-	}
 	for _, session := range sessions {
-		session.tunnel.RequestClientTelemetry(lease)
+		if session.tunnel.ActiveWorkers() == 0 {
+			continue
+		}
+		if !session.tunnel.RequestClientTelemetry(120 * time.Second) {
+			session.tunnel.metrics.Add(telemetry.TelemetryControlDropsTotal, 1)
+		}
+	}
+}
+
+func (t *serverTelemetry) emitSession(session *serverSession, sequence uint64) {
+	identity := hex.EncodeToString(session.id[:])
+	workers := session.tunnel.telemetryWorkerSnapshots(serverWorkerSnapshotMetrics())
+	mergeWorkerNetworkGauges(session.tunnel.metrics, workers)
+	peerDepth := 0.0
+	for _, worker := range workers {
+		peerDepth += metricNumber(worker.metrics[telemetry.Name(telemetry.PeerReadQueueDepth)])
+	}
+	session.tunnel.metrics.Set(telemetry.PeerReadQueueDepth, peerDepth)
+	metrics := session.tunnel.metrics.Snapshot(serverSessionSnapshotMetrics())
+	now := time.Now()
+	metrics[telemetry.Name(telemetry.SessionActive)] = 1.0
+	metrics[telemetry.Name(telemetry.SessionAgeSeconds)] = max(0, now.Sub(session.createdAt).Seconds())
+	metrics[telemetry.Name(telemetry.SessionIdleSeconds)] = max(0, now.Sub(session.tunnel.LastActivity()).Seconds())
+	metrics[telemetry.Name(telemetry.WorkerDesired)] = float64(session.expected)
+	metrics[telemetry.Name(telemetry.TelemetrySequence)] = sequence
+	if err := t.sink.Write(telemetry.Snapshot("server", session.user, identity, metrics)); err != nil {
+		t.logger.Warn("call telemetry: write server session snapshot: ", err)
+		return
+	}
+	for _, worker := range workers {
+		worker.metrics[telemetry.Name(telemetry.TelemetrySequence)] = sequence
+		workerID := worker.id
+		record := telemetry.Snapshot("server", session.user, identity, worker.metrics)
+		record.WorkerID = &workerID
+		if err := t.sink.Write(record); err != nil {
+			t.logger.Warn("call telemetry: write server worker snapshot: ", err)
+			return
+		}
 	}
 }
 
@@ -129,6 +173,57 @@ func serverSnapshotMetrics() []telemetry.Metric {
 		telemetry.RuntimeThermalState,
 		telemetry.RuntimeThermalAvailable,
 	)
+}
+
+func serverSessionSnapshotMetrics() []telemetry.Metric {
+	metrics := append([]telemetry.Metric(nil), telemetry.TunnelMetrics...)
+	return append(metrics,
+		telemetry.SessionActive,
+		telemetry.SessionAgeSeconds,
+		telemetry.SessionIdleSeconds,
+		telemetry.WorkerDesired,
+		telemetry.WorkerAttachSuccessTotal,
+		telemetry.WorkerAttachFailureTotal,
+		telemetry.OuterPacketsInTotal,
+		telemetry.OuterPacketsOutTotal,
+		telemetry.OuterBytesInTotal,
+		telemetry.OuterBytesOutTotal,
+		telemetry.OuterAuthFailuresTotal,
+		telemetry.OuterWrapFailuresTotal,
+		telemetry.OuterReorderedPacketsTotal,
+		telemetry.OuterDuplicatePacketsTotal,
+		telemetry.PeerReadQueueDepth,
+		telemetry.PeerReadQueueDropsTotal,
+		telemetry.NetworkLossRatio,
+		telemetry.NetworkJitterMS,
+		telemetry.TelemetrySequence,
+		telemetry.TelemetryControlDropsTotal,
+		telemetry.TelemetryRecordDropsTotal,
+	)
+}
+
+func serverWorkerSnapshotMetrics() []telemetry.Metric {
+	return []telemetry.Metric{
+		telemetry.WorkerActive,
+		telemetry.WorkerAttachSuccessTotal,
+		telemetry.WorkerAttachFailureTotal,
+		telemetry.WorkerSendQueueDepth,
+		telemetry.WorkerSendQueueDropsTotal,
+		telemetry.WorkerLivenessExpiredTotal,
+		telemetry.PeerReadQueueDepth,
+		telemetry.PeerReadQueueDropsTotal,
+		telemetry.OuterPacketsInTotal,
+		telemetry.OuterPacketsOutTotal,
+		telemetry.OuterBytesInTotal,
+		telemetry.OuterBytesOutTotal,
+		telemetry.OuterAuthFailuresTotal,
+		telemetry.OuterWrapFailuresTotal,
+		telemetry.OuterReorderedPacketsTotal,
+		telemetry.OuterDuplicatePacketsTotal,
+		telemetry.NetworkLossRatio,
+		telemetry.NetworkJitterMS,
+		telemetry.TelemetrySequence,
+	}
 }
 
 func (s *Server) peerQueueDepth() int {
@@ -184,6 +279,7 @@ func metricNumber(value any) float64 {
 func (t *serverTelemetry) clientRecord(session *serverSession, payload []byte) {
 	receivedAt := time.Now()
 	if !session.allowClientTelemetry(len(payload), receivedAt) {
+		session.tunnel.metrics.Add(telemetry.TelemetryRecordDropsTotal, 1)
 		return
 	}
 	record, err := telemetry.DecodeClientRecord(payload)

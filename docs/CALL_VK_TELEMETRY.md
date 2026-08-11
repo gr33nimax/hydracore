@@ -15,15 +15,34 @@ new session, the runtime atomically replaces
 schema-v1 records accepted by Hydra Ultimate. A protected adjacent session
 marker lets a restarted Hydracore process resume the same active stream
 without truncating records; a different Ultimate session still rotates it.
+The active staging file is capped at 64 MiB. When it fills, HydraCore atomically
+hands the old inode to a session-scoped `part-*.jsonl` file and immediately
+continues in a new active file. Ultimate drains and removes acknowledged handoff
+parts, so normal collection stays bounded without losing the unread tail. A
+monotonic rotation counter and per-entity sequence values prove whether the
+collector kept up. Durable retention belongs to Ultimate's compressed timeline.
 
-While recording is active, the server periodically grants every authenticated
-client a short telemetry lease. Client records use reserved KCP control frames
+While recording is active, the server grants only sessions with a live worker
+a renewable 120-second telemetry lease. Client records use reserved KCP control frames
 inside the existing RTP-shaped, TURN, DTLS and inner-authenticated path. No new
 listener, HTTP endpoint or client credential is introduced. The VPS validates
 record size, schema, metric names and scalar values, rate-limits each session,
 discards client-supplied identities and timestamps, validates worker IDs, and
 assigns the authenticated user, native session and VPS receipt time itself.
 Legacy peers ignore the reserved control messages.
+
+Snapshots have explicit analytical boundaries:
+
+- `server_process`: VPS/runtime, handshake and global lifecycle totals;
+- `server_session`: one authenticated user/session, shared KCP and relay state;
+- `server_worker`: one physical DTLS/TURN worker and its outer/queue path;
+- `client_session`: shared KCP, network/runtime and aggregate worker state;
+- `client_worker`: one VK/TURN/DTLS path, including a non-secret TURN endpoint
+  ordinal rather than its URL or address.
+
+Worker counters roll up to their session and process parents, but Ultimate
+never sums parent and child records together. This preserves both complete
+process accounting and unambiguous per-tester diagnosis.
 
 ## Measurements
 
@@ -35,6 +54,8 @@ Server snapshots cover:
 - peer and worker queue depth, queue drops and no-available-worker drops;
 - per-tunnel KCP pending data, output/retransmitted segments, ACK-derived RTT,
   derived RTO and accumulated send-backpressure time;
+- the effective KCP MTU, send/receive windows, maximum pending depth, update
+  interval, fast-resend setting and congestion-control flag;
 - active TCP/UDP relay flows, relayed payload bytes, buffered relay bytes,
   relay queue drops and destination-connect failures;
 - Go goroutine, heap and cumulative GC-pause values plus process CPU, RSS and
@@ -44,7 +65,8 @@ Client snapshots add:
 
 - total VK authentication latency and the anonymous-token, call-preview,
   anonymous-call-token, anonymous-login and join-conversation stages;
-- TURN endpoints attempted, allocation outcomes and allocation latency;
+- VK credential requests versus real fetches/cache hits, TURN endpoint count,
+  selected endpoint ordinal, attempts, allocation outcomes and latency;
 - DTLS and inner user-auth outcomes and latency;
 - desired/active workers, reconnects, current reconnect backoff and queue loss;
 - authenticated outer packet loss from per-SSRC RTP sequence windows, packet
@@ -81,6 +103,10 @@ destinations or packet payloads. Hydra Ultimate pseudonymizes the user and
 native session while ingesting the local JSONL file.
 
 Hot packet paths use atomic counters. Sequence/jitter tracking and client
-runtime sampling are enabled only during a live telemetry lease. Client
-snapshots are emitted every two seconds, and the server lease expires
-automatically if the VPS stops refreshing it.
+runtime sampling turn on with the first live lease. Control-path stalls shorter
+than 120 seconds do not reset RTT/loss baselines. A fully expired lease disables
+hot collection, increments an expiry counter, and a later renewal starts a new
+measurement epoch. Client snapshots are emitted every two seconds. Control
+enqueue failures, client record enqueue failures, server rate-limit drops,
+lease expirations and staging rotations are explicit metrics rather than
+silent loss.

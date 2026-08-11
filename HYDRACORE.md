@@ -115,8 +115,13 @@ rotate it when membership changes.
 Instrumented client and VPS roles report `features.call_vk_telemetry=true`.
 Hydra Ultimate controls an arbitrarily long recording session; Hydracore has
 no experiment-duration timer. The VPS writes a protected native JSONL stream
-only while Ultimate's active-session manifest is live and grants short
-fail-safe collection leases to authenticated clients. The metric contract,
+only while Ultimate's active-session manifest is live and grants renewable
+120-second fail-safe collection leases to authenticated clients. Snapshots are
+split into process, authenticated session, and worker entities so KCP,
+VK/TURN/DTLS, outer-wire, queue, reconnect, and loss signals are not mixed
+between testers. Sequence and delivery counters expose telemetry gaps. The
+transient `/run` staging stream uses 64 MiB atomic handoff parts that Ultimate
+drains before deletion. Ultimate owns durable compressed retention. The metric contract,
 privacy boundary and measurement limitations are documented in
 [docs/CALL_VK_TELEMETRY.md](docs/CALL_VK_TELEMETRY.md).
 

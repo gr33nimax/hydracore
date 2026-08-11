@@ -1,9 +1,18 @@
-# HydraCore v1.13.16-extended-hydracore.10-debug.1
+# HydraCore v1.13.16-extended-hydracore.10-debug.2
 
 This is the verified `debug` channel build. It is published automatically only
 after the full Go, Android and Linux workflow succeeds and is intended for
 HYDRA ULTIMATE installations that explicitly select the Hydracore `debug`
 channel. It is not promoted to the stable `latest` release.
+
+This revision makes the telemetry dataset safe for multi-tester protocol
+analysis: process, authenticated session, and individual worker snapshots are
+separated; TURN choice is exposed only as a non-secret ordinal; control and
+record loss are counted; and a 120-second lease protects RTT/loss baselines
+from ordinary control delays. Empty sessions no longer receive control
+traffic that can keep them alive. The transient `/run` source uses atomic,
+session-scoped handoff parts and reports its rotations; Hydra Ultimate drains
+each old inode before deletion and retains the complete compressed timeline.
 
 This release adds native, operator-gated VK Calls telemetry compatible with
 Hydra Ultimate. It retains the `.9` XHTTP handover and RuntimeEvents fixes,

@@ -69,10 +69,14 @@ func allocateTURN(
 		}
 	}
 	if len(destinations) == 0 {
+		metrics.Set(telemetry.TURNEndpointCount, 0)
+		metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
 		recordTURNFailure(ctx, metrics, started, workerID, "no_endpoint")
 		return nil, errors.New("call multi_user: no usable UDP TURN URL")
 	}
 	var lastErr error
+	metrics.Set(telemetry.TURNEndpointCount, float64(len(destinations)))
+	metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
 	start := preferred % len(destinations)
 	for offset := 0; offset < len(destinations); offset++ {
 		metrics.Add(telemetry.TURNEndpointsTriedTotal, 1)
@@ -80,6 +84,7 @@ func allocateTURN(
 		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, turnDestination)
 		if err == nil {
 			metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
+			metrics.Set(telemetry.TURNSelectedEndpointOrdinal, float64((start+offset)%len(destinations)+1))
 			metrics.Add(telemetry.TURNAllocateSuccessTotal, 1)
 			return connection, nil
 		}

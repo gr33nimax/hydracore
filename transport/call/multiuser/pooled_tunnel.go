@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,7 @@ type pooledWorker struct {
 	epoch       uint64
 	conn        net.Conn
 	parent      *PooledTunnel
+	metrics     *telemetry.Accumulator
 	sendQueue   chan []byte
 	done        chan struct{}
 	closeOnce   sync.Once
@@ -66,6 +68,7 @@ type PooledTunnel struct {
 
 	lastActivity atomic.Int64
 	metrics      *telemetry.Accumulator
+	workerMetrics map[uint16]*telemetry.Accumulator
 	kcpSent      map[uint32]kcpSentSegment
 	kcpSRTTMS    float64
 	kcpRTTVARMS  float64
@@ -105,6 +108,7 @@ func newPooledTunnel(conv uint32, maxWorkers int, log logger.ContextLogger, metr
 		staleReplacement:  workerStaleReplacement,
 		recvBuf:           make([]byte, pooledKCPReceiveBuffer),
 		metrics:           metrics,
+		workerMetrics:     make(map[uint16]*telemetry.Accumulator),
 		kcpSent:           make(map[uint32]kcpSentSegment),
 		closed:            make(chan struct{}),
 	}
@@ -154,6 +158,14 @@ func (t *PooledTunnel) SendData(frame []byte) {
 }
 
 func (t *PooledTunnel) trySendData(frame []byte) bool {
+	return t.trySendDataWithActivity(frame, true)
+}
+
+func (t *PooledTunnel) trySendControlData(frame []byte) bool {
+	return t.trySendDataWithActivity(frame, false)
+}
+
+func (t *PooledTunnel) trySendDataWithActivity(frame []byte, activity bool) bool {
 	if len(frame) == 0 {
 		return false
 	}
@@ -171,7 +183,9 @@ func (t *PooledTunnel) trySendData(frame []byte) bool {
 		return false
 	}
 	t.kcp.Update()
-	t.touch()
+	if activity {
+		t.touch()
+	}
 	return true
 }
 
@@ -203,6 +217,24 @@ func (t *PooledTunnel) SetTelemetryCollectionActive(active bool) {
 		t.kcpRTTVARMS = 0
 		t.kcpMu.Unlock()
 	}
+	t.workersMu.RLock()
+	for _, metrics := range t.workerMetrics {
+		metrics.SetCollectionActive(active)
+	}
+	t.workersMu.RUnlock()
+}
+
+func (t *PooledTunnel) telemetryWorker(id uint16) *telemetry.Accumulator {
+	t.workersMu.Lock()
+	defer t.workersMu.Unlock()
+	metrics := t.workerMetrics[id]
+	if metrics == nil {
+		metrics = telemetry.NewAccumulator()
+		metrics.SetCounterParent(t.metrics)
+		metrics.SetCollectionActive(t.metrics.CollectionActive())
+		t.workerMetrics[id] = metrics
+	}
+	return metrics
 }
 
 func (t *PooledTunnel) SetTelemetryControlHandler(handler func(time.Duration)) {
@@ -261,6 +293,7 @@ func (t *PooledTunnel) reserveWorker(id uint16, epoch uint64, conn net.Conn) (*p
 		epoch:     epoch,
 		conn:      conn,
 		parent:    t,
+		metrics:   t.telemetryWorker(id),
 		sendQueue: make(chan []byte, workerSendQueueDepth),
 		done:      make(chan struct{}),
 	}
@@ -284,6 +317,7 @@ func (t *PooledTunnel) reserveWorker(id uint16, epoch uint64, conn net.Conn) (*p
 		t.workerIDs = append(t.workerIDs, id)
 	}
 	t.workersMu.Unlock()
+	worker.metrics.Set(telemetry.WorkerActive, 1)
 	if replaced != nil {
 		replaced.close()
 	}
@@ -358,9 +392,9 @@ func (w *pooledWorker) watchdogLoop() {
 		case now := <-ticker.C:
 			lastInbound := time.Unix(0, w.lastInbound.Load())
 			if now.Sub(lastInbound) >= w.parent.livenessTimeout {
-				w.parent.metrics.Add(telemetry.WorkerLivenessExpiredTotal, 1)
+				w.metrics.Add(telemetry.WorkerLivenessExpiredTotal, 1)
 				workerID := w.id
-				w.parent.metrics.RecordEvent("worker_liveness_expired", "worker", "timeout", &workerID)
+				w.metrics.RecordEvent("worker_liveness_expired", "worker", "timeout", &workerID)
 				w.parent.removeWorker(w)
 				return
 			}
@@ -395,7 +429,7 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 		case worker.sendQueue <- copySegment:
 			return
 		default:
-			t.metrics.AddHot(telemetry.WorkerSendQueueDropsTotal, 1)
+			worker.metrics.AddHot(telemetry.WorkerSendQueueDropsTotal, 1)
 		}
 	}
 	t.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
@@ -455,6 +489,8 @@ func (t *PooledTunnel) removeWorker(worker *pooledWorker) {
 		}
 	}
 	t.workersMu.Unlock()
+	worker.metrics.Set(telemetry.WorkerActive, 0)
+	worker.metrics.Set(telemetry.WorkerSendQueueDepth, 0)
 	worker.close()
 	t.touch()
 }
@@ -466,6 +502,16 @@ func (t *PooledTunnel) ActiveWorkers() int {
 }
 
 func (t *PooledTunnel) TelemetryValues() map[telemetry.Metric]float64 {
+	t.metrics.Set(telemetry.KCPMTUBytes, pooledKCPMTU)
+	t.metrics.Set(telemetry.KCPSendWindowSegments, pooledKCPWindow)
+	t.metrics.Set(telemetry.KCPReceiveWindowSegments, pooledKCPWindow)
+	t.metrics.Set(telemetry.KCPMaxPendingSegments, pooledKCPMaxPending)
+	t.metrics.Set(telemetry.KCPUpdateIntervalMS, float64(pooledKCPUpdateInterval/time.Millisecond))
+	t.metrics.Set(telemetry.KCPFastResend, 2)
+	t.metrics.Set(telemetry.KCPCongestionControl, 0)
+	t.metrics.Set(telemetry.WorkerSendQueueCapacity, workerSendQueueDepth)
+	t.metrics.Set(telemetry.WorkerHeartbeatIntervalMS, float64(t.heartbeatInterval/time.Millisecond))
+	t.metrics.Set(telemetry.WorkerLivenessTimeoutMS, float64(t.livenessTimeout/time.Millisecond))
 	t.kcpMu.Lock()
 	t.metrics.Set(telemetry.KCPWaitSnd, float64(t.kcp.WaitSnd()))
 	t.metrics.Set(telemetry.KCPRTTMS, t.kcpSRTTMS)
@@ -491,6 +537,33 @@ func (t *PooledTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 		values[metric] = t.metrics.Value(metric)
 	}
 	return values
+}
+
+type workerTelemetrySnapshot struct {
+	id      uint16
+	metrics map[string]any
+}
+
+func (t *PooledTunnel) telemetryWorkerSnapshots(metrics []telemetry.Metric) []workerTelemetrySnapshot {
+	t.workersMu.RLock()
+	defer t.workersMu.RUnlock()
+	result := make([]workerTelemetrySnapshot, 0, len(t.workerMetrics))
+	for id, accumulator := range t.workerMetrics {
+		active := 0.0
+		queueDepth := 0.0
+		if worker := t.workers[id]; worker != nil {
+			active = 1
+			queueDepth = float64(len(worker.sendQueue))
+		}
+		accumulator.Set(telemetry.WorkerActive, active)
+		accumulator.Set(telemetry.WorkerSendQueueDepth, queueDepth)
+		result = append(result, workerTelemetrySnapshot{
+			id:      id,
+			metrics: accumulator.Snapshot(metrics),
+		})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].id < result[j].id })
+	return result
 }
 
 func (t *PooledTunnel) LastActivity() time.Time {

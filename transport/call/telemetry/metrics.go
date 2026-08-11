@@ -70,10 +70,15 @@ const (
 	VKAnonymCallTokenLatencyMS
 	VKAnonymLoginLatencyMS
 	VKJoinConversationLatencyMS
+	VKCredentialRequestTotal
+	VKCredentialFetchTotal
+	VKCredentialCacheHitTotal
 	TURNAllocateSuccessTotal
 	TURNAllocateFailureTotal
 	TURNAllocateLatencyMS
 	TURNEndpointsTriedTotal
+	TURNEndpointCount
+	TURNSelectedEndpointOrdinal
 	InnerAuthSuccessTotal
 	InnerAuthFailureTotal
 	InnerAuthLatencyMS
@@ -81,6 +86,23 @@ const (
 	NetworkJitterMS
 	NetworkHandoverTotal
 	NetworkChangeTotal
+	SessionAgeSeconds
+	SessionIdleSeconds
+	TelemetrySequence
+	TelemetryControlDropsTotal
+	TelemetryRecordDropsTotal
+	TelemetryLeaseExpiredTotal
+	TelemetrySinkRotationsTotal
+	KCPMTUBytes
+	KCPSendWindowSegments
+	KCPReceiveWindowSegments
+	KCPMaxPendingSegments
+	KCPUpdateIntervalMS
+	KCPFastResend
+	KCPCongestionControl
+	WorkerSendQueueCapacity
+	WorkerHeartbeatIntervalMS
+	WorkerLivenessTimeoutMS
 	metricCount
 )
 
@@ -149,10 +171,15 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "vk_anonym_call_token_latency_ms"},
 	{name: "vk_anonym_login_latency_ms"},
 	{name: "vk_join_conversation_latency_ms"},
+	{name: "vk_credential_request_total", counter: true},
+	{name: "vk_credential_fetch_total", counter: true},
+	{name: "vk_credential_cache_hit_total", counter: true},
 	{name: "turn_allocate_success_total", counter: true},
 	{name: "turn_allocate_failure_total", counter: true},
 	{name: "turn_allocate_latency_ms"},
 	{name: "turn_endpoints_tried_total", counter: true},
+	{name: "turn_endpoint_count"},
+	{name: "turn_selected_endpoint_ordinal"},
 	{name: "inner_auth_success_total", counter: true},
 	{name: "inner_auth_failure_total", counter: true},
 	{name: "inner_auth_latency_ms"},
@@ -160,6 +187,23 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "network_jitter_ms"},
 	{name: "network_handover_total", counter: true},
 	{name: "network_change_total", counter: true},
+	{name: "session_age_seconds"},
+	{name: "session_idle_seconds"},
+	{name: "telemetry_sequence"},
+	{name: "telemetry_control_drops_total", counter: true},
+	{name: "telemetry_record_drops_total", counter: true},
+	{name: "telemetry_lease_expired_total", counter: true},
+	{name: "telemetry_sink_rotations_total", counter: true},
+	{name: "kcp_mtu_bytes"},
+	{name: "kcp_send_window_segments"},
+	{name: "kcp_receive_window_segments"},
+	{name: "kcp_max_pending_segments"},
+	{name: "kcp_update_interval_ms"},
+	{name: "kcp_fast_resend"},
+	{name: "kcp_congestion_control"},
+	{name: "worker_send_queue_capacity"},
+	{name: "worker_heartbeat_interval_ms"},
+	{name: "worker_liveness_timeout_ms"},
 }
 
 var ServerRequired = []Metric{
@@ -167,6 +211,8 @@ var ServerRequired = []Metric{
 	DTLSHandshakeSuccessTotal, DTLSHandshakeFailureTotal, DTLSHandshakeLatencyMS,
 	HandshakePending, HandshakeRejectedTotal, HandshakeTimeoutTotal, HandshakeLatencyMS,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
+	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal, OuterAuthFailuresTotal, OuterWrapFailuresTotal,
 	PeerReadQueueDepth, PeerReadQueueDropsTotal,
 	RelayTCPActive, RelayUDPActive, RelayBytesTotal, RelayQueueDepth, RelayQueueDropsTotal, RelayConnectFailureTotal,
@@ -174,26 +220,36 @@ var ServerRequired = []Metric{
 	SessionActive, SessionCreatedTotal, SessionClosedTotal,
 	WorkerActive, WorkerAttachSuccessTotal, WorkerAttachFailureTotal, WorkerSendQueueDepth,
 	WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
+	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
 }
 
 var ClientRequired = []Metric{
 	VKAuthSuccessTotal, VKAuthFailureTotal, VKAuthLatencyMS, VKAuthAnonymTokenLatencyMS,
 	VKCallPreviewLatencyMS, VKAnonymCallTokenLatencyMS, VKAnonymLoginLatencyMS, VKJoinConversationLatencyMS,
+	VKCredentialRequestTotal, VKCredentialFetchTotal, VKCredentialCacheHitTotal,
 	TURNAllocateSuccessTotal, TURNAllocateFailureTotal, TURNAllocateLatencyMS, TURNEndpointsTriedTotal,
+	TURNEndpointCount, TURNSelectedEndpointOrdinal,
 	DTLSHandshakeSuccessTotal, DTLSHandshakeFailureTotal, DTLSHandshakeLatencyMS,
 	InnerAuthSuccessTotal, InnerAuthFailureTotal, InnerAuthLatencyMS,
 	WorkerDesired, WorkerActive, WorkerReconnectTotal, WorkerReconnectBackoffMS,
 	WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerLivenessExpiredTotal,
+	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
+	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	NetworkLossRatio, NetworkJitterMS, NetworkHandoverTotal, NetworkChangeTotal,
 	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal, OuterAuthFailuresTotal,
 	RuntimeCPUPercent, RuntimeRSSBytes, RuntimeThermalState,
+	TelemetrySequence, TelemetryRecordDropsTotal, TelemetryLeaseExpiredTotal,
 }
 
 var TunnelMetrics = []Metric{
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
+	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	RelayTCPActive, RelayUDPActive, RelayBytesTotal, RelayQueueDepth, RelayQueueDropsTotal, RelayConnectFailureTotal,
 	WorkerActive, WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
+	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 }
 
 type Accumulator struct {

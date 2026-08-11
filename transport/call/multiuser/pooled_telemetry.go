@@ -123,12 +123,12 @@ func (t *PooledTunnel) RequestClientTelemetry(lease time.Duration) bool {
 	if seconds < 2 {
 		seconds = 2
 	}
-	if seconds > 30 {
-		seconds = 30
+	if seconds > 120 {
+		seconds = 120
 	}
 	payload := []byte{telemetry.SchemaVersion, 0, 0}
 	binary.BigEndian.PutUint16(payload[1:], uint16(seconds))
-	return t.trySendData(calltunnel.EncodeFrame(calltunnel.ControlConnID, calltunnel.MsgTelemetryControl, payload))
+	return t.trySendControlData(calltunnel.EncodeFrame(calltunnel.ControlConnID, calltunnel.MsgTelemetryControl, payload))
 }
 
 func (t *PooledTunnel) SendClientTelemetry(record []byte) bool {

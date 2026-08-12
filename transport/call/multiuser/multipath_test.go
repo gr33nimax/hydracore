@@ -59,6 +59,12 @@ func TestAdaptiveMultipathKeepsChunksTogetherAndMovesRetransmissions(t *testing.
 	require.Less(t, workers[0].pacingRateBPS.Load(), uint64(adaptiveInitialRateBPS))
 	require.Equal(t, float64(1), workers[0].metrics.Value(telemetry.WorkerPathRetransSegmentsTotal))
 	require.Equal(t, float64(1), workers[1].metrics.Value(telemetry.WorkerPathSwitchesTotal))
+
+	secondRetransmit := scheduler.rankWorkers(append([]*pooledWorker(nil), workers...), firstPacket, time.Now())[0]
+	require.Equal(t, first.id, secondRetransmit.id, "a second retry must leave the path that lost the first retry")
+	scheduler.commitOutput(firstPacket, secondRetransmit, time.Now())
+	require.Less(t, retransmit.pacingRateBPS.Load(), uint64(adaptiveInitialRateBPS))
+	require.Equal(t, float64(1), retransmit.metrics.Value(telemetry.WorkerPathRetransSegmentsTotal))
 }
 
 func newSchedulerTestWorker(id uint16) *pooledWorker {

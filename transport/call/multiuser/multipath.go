@@ -237,15 +237,13 @@ func (s *multipathScheduler) commitOutput(packet []byte, worker *pooledWorker, n
 	for _, sequence := range sequences {
 		segmentSize := kcpSequenceSize(packet, sequence)
 		if previous, exists := s.sent[sequence]; exists {
-			if !previous.retransmitted {
-				if state := s.paths[previous.workerID]; state != nil {
-					state.lossRatio = state.lossRatio*0.875 + 0.125
-					state.rateBPS = max(s.config.minimumRateBPS, state.rateBPS*85/100)
-					if state.worker != nil {
-						state.worker.pacingRateBPS.Store(state.rateBPS)
-					}
-					state.metrics.AddHot(telemetry.WorkerPathRetransSegmentsTotal, 1)
+			if state := s.paths[previous.workerID]; state != nil {
+				state.lossRatio = state.lossRatio*0.875 + 0.125
+				state.rateBPS = max(s.config.minimumRateBPS, state.rateBPS*85/100)
+				if state.worker != nil {
+					state.worker.pacingRateBPS.Store(state.rateBPS)
 				}
+				state.metrics.AddHot(telemetry.WorkerPathRetransSegmentsTotal, 1)
 			}
 			if previous.workerID != worker.id {
 				worker.metrics.AddHot(telemetry.WorkerPathSwitchesTotal, 1)

@@ -283,6 +283,7 @@ jobs:
                .features.call_vk_multi_user_client == false and
                .features.call_vk_multi_user_server == true and
                .features.call_vk_telemetry == true and
+               .features.call_vk_adaptive_multipath == true and
                .protocols.call_modes == ["multi_user"] and
                .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' \
               capabilities.json >/dev/null
@@ -421,6 +422,7 @@ jobs:
              .features.call_vk_multi_user_client == false and
              .features.call_vk_multi_user_server == true and
              .features.call_vk_telemetry == true and
+             .features.call_vk_adaptive_multipath == true and
              .protocols.call_modes == ["multi_user"] and
              .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' >/dev/null
           jq -n \

@@ -72,8 +72,9 @@ artifacts, and the exact `sing-box-extended` 2.6.2 baseline
 
 ## Subscription feature contract
 
-- A JWE or plaintext Hydra Subscription v2 document may require both `call`
-  and `call_vk_multi_user` when the release advertises those capabilities.
+- A JWE or plaintext Hydra Subscription v2 document may require `call`,
+  `call_vk_multi_user`, and `call_vk_adaptive_multipath` when the release
+  advertises those capabilities.
 - Builds without a Calls role continue to reject both requirements. Unknown
   feature names remain fail-closed.
 - Regression coverage follows the same encrypted JWE validation path used by
@@ -96,7 +97,8 @@ artifacts, and the exact `sing-box-extended` 2.6.2 baseline
 - Clients can use one through four distinct VK join links and a total bounded
   worker pool distributed round-robin across them. VK TURN credentials are
   cached/singleflighted and all usable UDP relay URLs are rotated.
-- One KCP conversation is striped across live workers. Authenticated heartbeat
+- One KCP conversation uses either the exact legacy packet striping or the
+  adaptive chunk-affine scheduler across live workers. Authenticated heartbeat
   records evict dead TURN/DTLS paths without consuming user quota forever;
   worker loss/reconnect preserves the session. If server KCP state was reset,
   generation checks rebuild the native session behind the persistent relay.

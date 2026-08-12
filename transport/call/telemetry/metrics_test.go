@@ -27,6 +27,10 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"session_active", "session_created_total", "session_closed_total",
 		"worker_active", "worker_attach_success_total", "worker_attach_failure_total", "worker_send_queue_depth",
 		"worker_send_queue_drops_total", "worker_no_available_drops_total", "worker_liveness_expired_total",
+		"multipath_profile", "multipath_chunk_packets", "multipath_chunk_dwell_ms",
+		"worker_pacing_rate_bps", "worker_pacing_wait_seconds_total", "worker_pacing_packets_total",
+		"worker_path_rtt_ms", "worker_path_loss_ratio", "worker_path_acked_bytes_total",
+		"worker_path_retrans_segments_total", "worker_path_switches_total",
 		"telemetry_sequence", "telemetry_control_drops_total", "telemetry_record_drops_total", "telemetry_sink_rotations_total",
 	}
 	clientExpected := []string{
@@ -40,6 +44,10 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"worker_desired", "worker_active", "worker_reconnect_total", "worker_reconnect_backoff_ms",
 		"worker_send_queue_depth", "worker_send_queue_drops_total", "worker_liveness_expired_total",
 		"worker_send_queue_capacity", "worker_heartbeat_interval_ms", "worker_liveness_timeout_ms",
+		"multipath_profile", "multipath_chunk_packets", "multipath_chunk_dwell_ms",
+		"worker_pacing_rate_bps", "worker_pacing_wait_seconds_total", "worker_pacing_packets_total",
+		"worker_path_rtt_ms", "worker_path_loss_ratio", "worker_path_acked_bytes_total",
+		"worker_path_retrans_segments_total", "worker_path_switches_total",
 		"kcp_wait_snd", "kcp_out_segments_total", "kcp_retrans_segments_total", "kcp_out_bytes_total", "kcp_retrans_bytes_total", "kcp_rtt_ms", "kcp_rto_ms", "kcp_send_blocked_seconds_total",
 		"kcp_mtu_bytes", "kcp_send_window_segments", "kcp_receive_window_segments", "kcp_max_pending_segments",
 		"kcp_update_interval_ms", "kcp_fast_resend", "kcp_congestion_control",

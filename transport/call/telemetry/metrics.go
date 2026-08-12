@@ -23,6 +23,8 @@ const (
 	KCPWaitSnd
 	KCPOutSegmentsTotal
 	KCPRetransSegmentsTotal
+	KCPOutBytesTotal
+	KCPRetransBytesTotal
 	KCPRTTMS
 	KCPRTOMS
 	KCPSendBlockedSecondsTotal
@@ -30,12 +32,23 @@ const (
 	OuterPacketsOutTotal
 	OuterBytesInTotal
 	OuterBytesOutTotal
+	OuterPayloadBytesInTotal
+	OuterPayloadBytesOutTotal
+	OuterOverheadBytesInTotal
+	OuterOverheadBytesOutTotal
 	OuterAuthFailuresTotal
 	OuterWrapFailuresTotal
 	OuterReorderedPacketsTotal
 	OuterDuplicatePacketsTotal
 	PeerReadQueueDepth
+	PeerReadQueueCapacity
 	PeerReadQueueDropsTotal
+	UDPIngressQueueDepth
+	UDPIngressQueueCapacity
+	UDPIngressQueueDropsTotal
+	UDPIngressWorkers
+	UDPSocketReceiveBufferBytes
+	UDPSocketSendBufferBytes
 	RelayTCPActive
 	RelayUDPActive
 	RelayBytesTotal
@@ -124,6 +137,8 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "kcp_wait_snd"},
 	{name: "kcp_out_segments_total", counter: true},
 	{name: "kcp_retrans_segments_total", counter: true},
+	{name: "kcp_out_bytes_total", counter: true},
+	{name: "kcp_retrans_bytes_total", counter: true},
 	{name: "kcp_rtt_ms"},
 	{name: "kcp_rto_ms"},
 	{name: "kcp_send_blocked_seconds_total"},
@@ -131,12 +146,23 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "outer_packets_out_total", counter: true},
 	{name: "outer_bytes_in_total", counter: true},
 	{name: "outer_bytes_out_total", counter: true},
+	{name: "outer_payload_bytes_in_total", counter: true},
+	{name: "outer_payload_bytes_out_total", counter: true},
+	{name: "outer_overhead_bytes_in_total", counter: true},
+	{name: "outer_overhead_bytes_out_total", counter: true},
 	{name: "outer_auth_failures_total", counter: true},
 	{name: "outer_wrap_failures_total", counter: true},
 	{name: "outer_reordered_packets_total", counter: true},
 	{name: "outer_duplicate_packets_total", counter: true},
 	{name: "peer_read_queue_depth"},
+	{name: "peer_read_queue_capacity"},
 	{name: "peer_read_queue_drops_total", counter: true},
+	{name: "udp_ingress_queue_depth"},
+	{name: "udp_ingress_queue_capacity"},
+	{name: "udp_ingress_queue_drops_total", counter: true},
+	{name: "udp_ingress_workers"},
+	{name: "udp_socket_receive_buffer_bytes"},
+	{name: "udp_socket_send_buffer_bytes"},
 	{name: "relay_tcp_active"},
 	{name: "relay_udp_active"},
 	{name: "relay_bytes_total", counter: true},
@@ -210,11 +236,15 @@ var ServerRequired = []Metric{
 	AuthSuccessTotal, AuthFailureTotal,
 	DTLSHandshakeSuccessTotal, DTLSHandshakeFailureTotal, DTLSHandshakeLatencyMS,
 	HandshakePending, HandshakeRejectedTotal, HandshakeTimeoutTotal, HandshakeLatencyMS,
-	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
 	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
-	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal, OuterAuthFailuresTotal, OuterWrapFailuresTotal,
-	PeerReadQueueDepth, PeerReadQueueDropsTotal,
+	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal,
+	OuterPayloadBytesInTotal, OuterPayloadBytesOutTotal, OuterOverheadBytesInTotal, OuterOverheadBytesOutTotal,
+	OuterAuthFailuresTotal, OuterWrapFailuresTotal,
+	PeerReadQueueDepth, PeerReadQueueCapacity, PeerReadQueueDropsTotal,
+	UDPIngressQueueDepth, UDPIngressQueueCapacity, UDPIngressQueueDropsTotal, UDPIngressWorkers,
+	UDPSocketReceiveBufferBytes, UDPSocketSendBufferBytes,
 	RelayTCPActive, RelayUDPActive, RelayBytesTotal, RelayQueueDepth, RelayQueueDropsTotal, RelayConnectFailureTotal,
 	RuntimeGoroutines, RuntimeHeapBytes, RuntimeGCPauseSecondsTotal,
 	SessionActive, SessionCreatedTotal, SessionClosedTotal,
@@ -234,17 +264,19 @@ var ClientRequired = []Metric{
 	WorkerDesired, WorkerActive, WorkerReconnectTotal, WorkerReconnectBackoffMS,
 	WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerLivenessExpiredTotal,
 	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
-	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
 	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	NetworkLossRatio, NetworkJitterMS, NetworkHandoverTotal, NetworkChangeTotal,
-	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal, OuterAuthFailuresTotal,
+	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal,
+	OuterPayloadBytesInTotal, OuterPayloadBytesOutTotal, OuterOverheadBytesInTotal, OuterOverheadBytesOutTotal,
+	OuterAuthFailuresTotal,
 	RuntimeCPUPercent, RuntimeRSSBytes, RuntimeThermalState,
 	TelemetrySequence, TelemetryRecordDropsTotal, TelemetryLeaseExpiredTotal,
 }
 
 var TunnelMetrics = []Metric{
-	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
 	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	RelayTCPActive, RelayUDPActive, RelayBytesTotal, RelayQueueDepth, RelayQueueDropsTotal, RelayConnectFailureTotal,

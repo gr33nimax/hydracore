@@ -99,6 +99,11 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			MaxPendingHandshakes: options.MaxPendingHandshakes,
 			HandshakeTimeout:     time.Duration(options.HandshakeTimeout),
 			SessionIdleTimeout:   time.Duration(options.SessionIdleTimeout),
+			UDPReceiveBufferBytes: options.UDPReceiveBufferBytes,
+			UDPSendBufferBytes:    options.UDPSendBufferBytes,
+			IngressWorkers:        options.IngressWorkers,
+			IngressQueuePackets:   options.IngressQueuePackets,
+			PeerReadQueuePackets:  options.PeerReadQueuePackets,
 			SessionHandler:       h.handleMultiUserSession,
 		}, logger)
 		if err != nil {

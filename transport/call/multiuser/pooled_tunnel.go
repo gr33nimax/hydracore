@@ -20,7 +20,7 @@ const (
 	pooledKCPUpdateInterval = 10 * time.Millisecond
 	pooledKCPReceiveBuffer  = 32 * 1024
 	pooledKCPMaxPending     = pooledKCPWindow * 4
-	workerSendQueueDepth    = 256
+	workerSendQueueDepth    = 512
 	workerHeartbeatInterval = 15 * time.Second
 	workerLivenessTimeout   = 60 * time.Second
 	workerStaleReplacement  = 2 * workerHeartbeatInterval
@@ -423,15 +423,27 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 		}
 	}
 	t.workersMu.RUnlock()
-	for _, worker := range workers {
-		copySegment := append([]byte(nil), segment...)
+	payload := append([]byte(nil), segment...)
+	for attempts := 0; attempts < len(workers); attempts++ {
+		best := attempts
+		for index := attempts + 1; index < len(workers); index++ {
+			if len(workers[index].sendQueue) < len(workers[best].sendQueue) {
+				best = index
+			}
+		}
+		workers[attempts], workers[best] = workers[best], workers[attempts]
+		worker := workers[attempts]
 		select {
-		case worker.sendQueue <- copySegment:
+		case worker.sendQueue <- payload:
 			return
+		case <-worker.done:
 		default:
-			worker.metrics.AddHot(telemetry.WorkerSendQueueDropsTotal, 1)
 		}
 	}
+	// This counter represents one KCP segment that could not be queued
+	// anywhere. The previous implementation incremented it once per full
+	// worker, overstating actual transport loss by up to workerCount.
+	workers[0].metrics.AddHot(telemetry.WorkerSendQueueDropsTotal, 1)
 	t.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
 }
 

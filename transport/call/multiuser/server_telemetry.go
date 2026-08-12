@@ -1,7 +1,9 @@
 package multiuser
 
 import (
+	"crypto/rand"
 	"encoding/hex"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +29,7 @@ type serverTelemetry struct {
 	started        atomic.Bool
 	sequence       atomic.Uint64
 	sinkRotations  uint64
+	generation     string
 	done           chan struct{}
 }
 
@@ -49,8 +52,9 @@ func newServerTelemetry(server *Server, options ServerOptions, log logger.Contex
 			OutputPath:     options.TelemetryOutputPath,
 		}),
 		interval: interval,
-		logger:   log,
-		done:     make(chan struct{}),
+		logger:     log,
+		generation: serverTelemetryGeneration(),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -100,6 +104,10 @@ func (t *serverTelemetry) emit() {
 	t.metrics.Set(telemetry.HandshakePending, float64(len(t.server.pending)))
 	t.metrics.Set(telemetry.SessionActive, float64(len(sessions)))
 	t.metrics.Set(telemetry.PeerReadQueueDepth, float64(t.server.peerQueueDepth()))
+	t.metrics.Set(telemetry.PeerReadQueueCapacity, float64(t.server.options.PeerReadQueuePackets))
+	t.metrics.Set(telemetry.UDPIngressQueueDepth, float64(t.server.ingressDepth.Load()))
+	t.metrics.Set(telemetry.UDPIngressQueueCapacity, float64(t.server.options.IngressQueuePackets))
+	t.metrics.Set(telemetry.UDPIngressWorkers, float64(t.server.options.IngressWorkers))
 	t.metrics.Set(telemetry.TelemetrySequence, float64(sequence))
 	metrics := t.metrics.Snapshot(serverSnapshotMetrics())
 	for _, session := range sessions {
@@ -107,7 +115,7 @@ func (t *serverTelemetry) emit() {
 		mergeTunnelMetrics(metrics, values)
 		t.emitSession(session, sequence)
 	}
-	serverRecord := telemetry.Snapshot("server", "", "server", metrics)
+	serverRecord := telemetry.Snapshot("server", "", t.generation, metrics)
 	if err = t.sink.Write(serverRecord); err != nil {
 		t.logger.Warn("call telemetry: write server snapshot: ", err)
 		return
@@ -137,6 +145,7 @@ func (t *serverTelemetry) emitSession(session *serverSession, sequence uint64) {
 	metrics[telemetry.Name(telemetry.SessionAgeSeconds)] = max(0, now.Sub(session.createdAt).Seconds())
 	metrics[telemetry.Name(telemetry.SessionIdleSeconds)] = max(0, now.Sub(session.tunnel.LastActivity()).Seconds())
 	metrics[telemetry.Name(telemetry.WorkerDesired)] = float64(session.expected)
+	metrics[telemetry.Name(telemetry.PeerReadQueueCapacity)] = float64(t.server.options.PeerReadQueuePackets)
 	metrics[telemetry.Name(telemetry.TelemetrySequence)] = sequence
 	if err := t.sink.Write(telemetry.Snapshot("server", session.user, identity, metrics)); err != nil {
 		t.logger.Warn("call telemetry: write server session snapshot: ", err)
@@ -188,11 +197,16 @@ func serverSessionSnapshotMetrics() []telemetry.Metric {
 		telemetry.OuterPacketsOutTotal,
 		telemetry.OuterBytesInTotal,
 		telemetry.OuterBytesOutTotal,
+		telemetry.OuterPayloadBytesInTotal,
+		telemetry.OuterPayloadBytesOutTotal,
+		telemetry.OuterOverheadBytesInTotal,
+		telemetry.OuterOverheadBytesOutTotal,
 		telemetry.OuterAuthFailuresTotal,
 		telemetry.OuterWrapFailuresTotal,
 		telemetry.OuterReorderedPacketsTotal,
 		telemetry.OuterDuplicatePacketsTotal,
 		telemetry.PeerReadQueueDepth,
+		telemetry.PeerReadQueueCapacity,
 		telemetry.PeerReadQueueDropsTotal,
 		telemetry.NetworkLossRatio,
 		telemetry.NetworkJitterMS,
@@ -211,11 +225,16 @@ func serverWorkerSnapshotMetrics() []telemetry.Metric {
 		telemetry.WorkerSendQueueDropsTotal,
 		telemetry.WorkerLivenessExpiredTotal,
 		telemetry.PeerReadQueueDepth,
+		telemetry.PeerReadQueueCapacity,
 		telemetry.PeerReadQueueDropsTotal,
 		telemetry.OuterPacketsInTotal,
 		telemetry.OuterPacketsOutTotal,
 		telemetry.OuterBytesInTotal,
 		telemetry.OuterBytesOutTotal,
+		telemetry.OuterPayloadBytesInTotal,
+		telemetry.OuterPayloadBytesOutTotal,
+		telemetry.OuterOverheadBytesInTotal,
+		telemetry.OuterOverheadBytesOutTotal,
 		telemetry.OuterAuthFailuresTotal,
 		telemetry.OuterWrapFailuresTotal,
 		telemetry.OuterReorderedPacketsTotal,
@@ -253,14 +272,28 @@ func mergeTunnelMetrics(target map[string]any, values map[telemetry.Metric]float
 		if telemetry.IsCounter(metric) || metric == telemetry.KCPSendBlockedSecondsTotal {
 			continue
 		}
-		if metric == telemetry.KCPRTTMS || metric == telemetry.KCPRTOMS {
+		switch metric {
+		case telemetry.KCPWaitSnd,
+			telemetry.RelayTCPActive,
+			telemetry.RelayUDPActive,
+			telemetry.RelayQueueDepth,
+			telemetry.WorkerActive,
+			telemetry.WorkerSendQueueDepth:
+			target[name] = current + value
+		default:
 			if value > current {
 				target[name] = value
 			}
-			continue
 		}
-		target[name] = current + value
 	}
+}
+
+func serverTelemetryGeneration() string {
+	var identifier [8]byte
+	if _, err := rand.Read(identifier[:]); err == nil {
+		return "server-" + hex.EncodeToString(identifier[:])
+	}
+	return "server-" + strconv.FormatInt(time.Now().UnixNano(), 16)
 }
 
 func metricNumber(value any) float64 {
@@ -319,7 +352,7 @@ func (t *serverTelemetry) event(event, stage, reason, user string, sessionID [16
 	if !t.sink.Active() {
 		return
 	}
-	identity := ""
+	identity := t.generation
 	if sessionID != ([16]byte{}) {
 		identity = hex.EncodeToString(sessionID[:])
 	}

@@ -26,21 +26,27 @@ type peerPacketConn struct {
 	codec         *rtpCodec
 	metrics       atomic.Pointer[telemetry.Accumulator]
 	readQueue     chan receivedPacket
+	deadlineChanged chan struct{}
 	closed        chan struct{}
 	closeOnce     sync.Once
 	readDeadline  atomic.Int64
 	writeDeadline atomic.Int64
 }
 
-func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, metrics *telemetry.Accumulator) *peerPacketConn {
+func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, metrics *telemetry.Accumulator, queueCapacity int) *peerPacketConn {
+	if queueCapacity < 1 {
+		queueCapacity = defaultPeerReadQueuePackets
+	}
 	connection := &peerPacketConn{
-		base:      base,
-		remote:    remote,
-		codec:     codec,
-		readQueue: make(chan receivedPacket, 64),
-		closed:    make(chan struct{}),
+		base:            base,
+		remote:          remote,
+		codec:           codec,
+		readQueue:       make(chan receivedPacket, queueCapacity),
+		deadlineChanged: make(chan struct{}, 1),
+		closed:          make(chan struct{}),
 	}
 	connection.metrics.Store(metrics)
+	metrics.Set(telemetry.PeerReadQueueCapacity, float64(queueCapacity))
 	return connection
 }
 
@@ -51,6 +57,7 @@ func (c *peerPacketConn) telemetryMetrics() *telemetry.Accumulator {
 func (c *peerPacketConn) setTelemetryMetrics(metrics *telemetry.Accumulator) {
 	if metrics != nil {
 		c.metrics.Store(metrics)
+		metrics.Set(telemetry.PeerReadQueueCapacity, float64(cap(c.readQueue)))
 	}
 }
 
@@ -69,18 +76,28 @@ func (c *peerPacketConn) enqueue(payload []byte, addr net.Addr) bool {
 }
 
 func (c *peerPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
-	timer, timeout := packetDeadline(c.readDeadline.Load())
-	if timer != nil {
-		defer timer.Stop()
-	}
-	select {
-	case packet := <-c.readQueue:
-		c.telemetryMetrics().AddHotGauge(telemetry.PeerReadQueueDepth, -1)
-		return copy(buffer, packet.payload), packet.addr, nil
-	case <-c.closed:
-		return 0, nil, errPacketConnClosed
-	case <-timeout:
-		return 0, nil, timeoutError{}
+	for {
+		timer, timeout := packetDeadline(c.readDeadline.Load())
+		select {
+		case packet := <-c.readQueue:
+			stopPacketTimer(timer)
+			c.telemetryMetrics().AddHotGauge(telemetry.PeerReadQueueDepth, -1)
+			return copy(buffer, packet.payload), packet.addr, nil
+		case <-c.closed:
+			stopPacketTimer(timer)
+			return 0, nil, errPacketConnClosed
+		case <-timeout:
+			if deadlineExpired(c.readDeadline.Load()) {
+				return 0, nil, timeoutError{}
+			}
+			continue
+		case <-c.deadlineChanged:
+			stopPacketTimer(timer)
+			// A DTLS cancellation changes the read deadline after ReadFrom is
+			// already blocked. Recalculate it instead of leaving the handshake
+			// goroutine asleep forever.
+			continue
+		}
 	}
 }
 
@@ -103,6 +120,8 @@ func (c *peerPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
 	}
 	c.telemetryMetrics().AddHot(telemetry.OuterPacketsOutTotal, 1)
 	c.telemetryMetrics().AddHot(telemetry.OuterBytesOutTotal, uint64(len(wire)))
+	c.telemetryMetrics().AddHot(telemetry.OuterPayloadBytesOutTotal, uint64(len(payload)))
+	c.telemetryMetrics().AddHot(telemetry.OuterOverheadBytesOutTotal, uint64(len(wire)-len(payload)))
 	return len(payload), nil
 }
 
@@ -117,17 +136,26 @@ func (c *peerPacketConn) SetDeadline(deadline time.Time) error {
 	nanos := deadlineNanos(deadline)
 	c.readDeadline.Store(nanos)
 	c.writeDeadline.Store(nanos)
+	c.signalDeadlineChanged()
 	return nil
 }
 
 func (c *peerPacketConn) SetReadDeadline(deadline time.Time) error {
 	c.readDeadline.Store(deadlineNanos(deadline))
+	c.signalDeadlineChanged()
 	return nil
 }
 
 func (c *peerPacketConn) SetWriteDeadline(deadline time.Time) error {
 	c.writeDeadline.Store(deadlineNanos(deadline))
 	return nil
+}
+
+func (c *peerPacketConn) signalDeadlineChanged() {
+	select {
+	case c.deadlineChanged <- struct{}{}:
+	default:
+	}
 }
 
 type obfsPacketConn struct {
@@ -161,6 +189,8 @@ func (c *obfsPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		}
 		c.metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
 		c.metrics.AddHot(telemetry.OuterBytesInTotal, uint64(n))
+		c.metrics.AddHot(telemetry.OuterPayloadBytesInTotal, uint64(len(plain)))
+		c.metrics.AddHot(telemetry.OuterOverheadBytesInTotal, uint64(n-len(plain)))
 		if c.metrics.CollectionActive() {
 			c.metrics.ObserveOuterPacket(c.readBuf[:n], time.Now())
 		}
@@ -186,6 +216,8 @@ func (c *obfsPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	}
 	c.metrics.AddHot(telemetry.OuterPacketsOutTotal, 1)
 	c.metrics.AddHot(telemetry.OuterBytesOutTotal, uint64(len(wire)))
+	c.metrics.AddHot(telemetry.OuterPayloadBytesOutTotal, uint64(len(payload)))
+	c.metrics.AddHot(telemetry.OuterOverheadBytesOutTotal, uint64(len(wire)-len(payload)))
 	return len(payload), nil
 }
 
@@ -217,6 +249,12 @@ func packetDeadline(nanos int64) (*time.Timer, <-chan time.Time) {
 	}
 	timer := time.NewTimer(duration)
 	return timer, timer.C
+}
+
+func stopPacketTimer(timer *time.Timer) {
+	if timer != nil {
+		timer.Stop()
+	}
 }
 
 func deadlineExpired(nanos int64) bool {

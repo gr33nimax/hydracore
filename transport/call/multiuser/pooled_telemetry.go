@@ -19,8 +19,9 @@ func (t *PooledTunnel) observeKCPOutput(packet []byte) {
 		return
 	}
 	now := time.Now()
-	forEachKCPSegment(packet, func(command byte, sequence uint32) {
+	forEachKCPSegment(packet, func(command byte, sequence uint32, size int) {
 		t.metrics.AddHot(telemetry.KCPOutSegmentsTotal, 1)
+		t.metrics.AddHot(telemetry.KCPOutBytesTotal, uint64(size))
 		if command != kcpCommandPush {
 			return
 		}
@@ -28,6 +29,7 @@ func (t *PooledTunnel) observeKCPOutput(packet []byte) {
 			previous.retransmitted = true
 			t.kcpSent[sequence] = previous
 			t.metrics.AddHot(telemetry.KCPRetransSegmentsTotal, 1)
+			t.metrics.AddHot(telemetry.KCPRetransBytesTotal, uint64(size))
 			return
 		}
 		t.kcpSent[sequence] = kcpSentSegment{sentAt: now}
@@ -39,7 +41,7 @@ func (t *PooledTunnel) observeKCPInput(packet []byte) {
 		return
 	}
 	now := time.Now()
-	forEachKCPSegment(packet, func(command byte, sequence uint32) {
+	forEachKCPSegment(packet, func(command byte, sequence uint32, _ int) {
 		if command != kcpCommandACK {
 			return
 		}
@@ -69,14 +71,15 @@ func (t *PooledTunnel) observeKCPInput(packet []byte) {
 	})
 }
 
-func forEachKCPSegment(packet []byte, callback func(command byte, sequence uint32)) {
+func forEachKCPSegment(packet []byte, callback func(command byte, sequence uint32, size int)) {
 	for len(packet) >= kcpHeaderSize {
 		length := int(binary.LittleEndian.Uint32(packet[20:24]))
 		if length < 0 || kcpHeaderSize+length > len(packet) {
 			return
 		}
-		callback(packet[4], binary.LittleEndian.Uint32(packet[12:16]))
-		packet = packet[kcpHeaderSize+length:]
+		segmentSize := kcpHeaderSize + length
+		callback(packet[4], binary.LittleEndian.Uint32(packet[12:16]), segmentSize)
+		packet = packet[segmentSize:]
 	}
 }
 

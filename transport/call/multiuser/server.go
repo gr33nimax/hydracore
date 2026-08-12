@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/dtls/v3"
@@ -24,11 +26,18 @@ const (
 	HardMaxSessions          = 4096
 	HardMaxUsers             = 4096
 	HardMaxPendingHandshakes = 4096
+	HardMaxIngressWorkers     = 32
+	HardMaxIngressQueuePackets = 65536
+	HardMaxPeerReadQueuePackets = 4096
 
 	defaultMaxWorkers           = 4
 	defaultMaxPendingHandshakes = 256
 	defaultHandshakeTimeout     = 15 * time.Second
 	defaultSessionIdleTimeout   = 5 * time.Minute
+	defaultUDPReceiveBufferBytes = 4 * 1024 * 1024
+	defaultUDPSendBufferBytes    = 4 * 1024 * 1024
+	defaultIngressQueuePackets   = 4096
+	defaultPeerReadQueuePackets  = 128
 	sessionTakeoverGrace        = workerStaleReplacement
 )
 
@@ -53,6 +62,11 @@ type ServerOptions struct {
 	MaxPendingHandshakes     int
 	HandshakeTimeout         time.Duration
 	SessionIdleTimeout       time.Duration
+	UDPReceiveBufferBytes    int
+	UDPSendBufferBytes       int
+	IngressWorkers           int
+	IngressQueuePackets      int
+	PeerReadQueuePackets     int
 	SessionHandler           SessionHandler
 	TelemetryStateDirectory string
 	TelemetryOutputPath     string
@@ -94,6 +108,8 @@ type Server struct {
 	decoder    *rtpCodec
 	peersMu    sync.Mutex
 	peers      map[string]*peerPacketConn
+	ingressQueues []chan receivedPacket
+	ingressDepth atomic.Int64
 
 	sessionsMu   sync.Mutex
 	sessions     map[[16]byte]*serverSession
@@ -184,6 +200,34 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	if options.SessionIdleTimeout < 30*time.Second || options.SessionIdleTimeout > 24*time.Hour {
 		return options, nil, errors.New("call multi_user: session_idle_timeout must be between 30s and 24h")
 	}
+	if options.UDPReceiveBufferBytes == 0 {
+		options.UDPReceiveBufferBytes = defaultUDPReceiveBufferBytes
+	}
+	if options.UDPSendBufferBytes == 0 {
+		options.UDPSendBufferBytes = defaultUDPSendBufferBytes
+	}
+	if options.UDPReceiveBufferBytes < 256*1024 || options.UDPReceiveBufferBytes > 64*1024*1024 ||
+		options.UDPSendBufferBytes < 256*1024 || options.UDPSendBufferBytes > 64*1024*1024 {
+		return options, nil, errors.New("call multi_user: UDP socket buffers must be between 256 KiB and 64 MiB")
+	}
+	if options.IngressWorkers == 0 {
+		options.IngressWorkers = min(4, max(1, runtime.GOMAXPROCS(0)))
+	}
+	if options.IngressWorkers < 1 || options.IngressWorkers > HardMaxIngressWorkers {
+		return options, nil, errors.New("call multi_user: ingress_workers outside hard bounds")
+	}
+	if options.IngressQueuePackets == 0 {
+		options.IngressQueuePackets = defaultIngressQueuePackets
+	}
+	if options.IngressQueuePackets < options.IngressWorkers || options.IngressQueuePackets > HardMaxIngressQueuePackets {
+		return options, nil, errors.New("call multi_user: ingress_queue_packets outside hard bounds")
+	}
+	if options.PeerReadQueuePackets == 0 {
+		options.PeerReadQueuePackets = defaultPeerReadQueuePackets
+	}
+	if options.PeerReadQueuePackets < 16 || options.PeerReadQueuePackets > HardMaxPeerReadQueuePackets {
+		return options, nil, errors.New("call multi_user: peer_read_queue_packets outside hard bounds")
+	}
 	users := make(map[string]serverUser, len(options.Users))
 	for _, user := range options.Users {
 		if err := validateAuthStrings(user.Name, user.Password); err != nil {
@@ -214,21 +258,41 @@ func (s *Server) Start(packetConn net.PacketConn) error {
 		return errors.New("call multi_user: server already started")
 	}
 	s.packetConn = packetConn
-	decoder, err := newRTPCodec(s.key)
-	if err != nil {
-		s.peersMu.Unlock()
-		return err
+	decoders := make([]*rtpCodec, s.options.IngressWorkers)
+	for index := range decoders {
+		decoder, err := newRTPCodec(s.key)
+		if err != nil {
+			s.peersMu.Unlock()
+			return err
+		}
+		decoders[index] = decoder
 	}
-	s.decoder = decoder
+	s.decoder = decoders[0]
+	s.ingressQueues = makeIngressQueues(s.options.IngressWorkers, s.options.IngressQueuePackets)
 	s.peersMu.Unlock()
-	go s.readLoop(packetConn, decoder)
+	s.configurePacketSocket(packetConn)
+	go s.readLoop(packetConn, decoders)
 	go s.reapLoop()
 	s.telemetry.start()
 	return nil
 }
 
-func (s *Server) readLoop(packetConn net.PacketConn, decoder *rtpCodec) {
-	defer close(s.done)
+func (s *Server) readLoop(packetConn net.PacketConn, decoders []*rtpCodec) {
+	var processors sync.WaitGroup
+	for index, queue := range s.ingressQueues {
+		processors.Add(1)
+		go func(packets <-chan receivedPacket, decoder *rtpCodec) {
+			defer processors.Done()
+			s.processIngress(packets, decoder)
+		}(queue, decoders[index])
+	}
+	defer func() {
+		for _, queue := range s.ingressQueues {
+			close(queue)
+		}
+		processors.Wait()
+		close(s.done)
+	}()
 	buffer := make([]byte, maximumWirePacket)
 	for {
 		n, remote, err := packetConn.ReadFrom(buffer)
@@ -242,46 +306,99 @@ func (s *Server) readLoop(packetConn net.PacketConn, decoder *rtpCodec) {
 			}
 		}
 		key := remote.Network() + "|" + remote.String()
-		s.peersMu.Lock()
-		peer := s.peers[key]
-		s.peersMu.Unlock()
-		metrics := s.telemetry.metrics
-		if peer != nil {
-			metrics = peer.telemetryMetrics()
-		}
-		plain, err := decoder.unwrap(buffer[:n])
-		if err != nil {
-			metrics.AddHot(telemetry.OuterAuthFailuresTotal, 1)
-			continue
-		}
-		metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
-		metrics.AddHot(telemetry.OuterBytesInTotal, uint64(n))
-		if metrics.CollectionActive() {
-			metrics.ObserveOuterPacket(buffer[:n], time.Now())
-		}
-		s.peersMu.Lock()
-		peer = s.peers[key]
-		if peer == nil {
-			select {
-			case s.pending <- struct{}{}:
-				codec, codecErr := newRTPCodec(s.key)
-				if codecErr == nil {
-					peer = newPeerPacketConn(packetConn, remote, codec, s.telemetry.metrics)
-					s.peers[key] = peer
-					go s.handlePeer(key, peer)
-				} else {
-					<-s.pending
-				}
-			default:
-				s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
-				s.telemetry.event("handshake_rejected", "handshake", "pending_limit", "", [16]byte{}, nil)
-			}
-		}
-		s.peersMu.Unlock()
-		if peer != nil {
-			peer.enqueue(plain, remote)
+		packet := receivedPacket{payload: append([]byte(nil), buffer[:n]...), addr: remote}
+		queue := s.ingressQueues[ingressShard(key, len(s.ingressQueues))]
+		s.ingressDepth.Add(1)
+		select {
+		case queue <- packet:
+		default:
+			s.ingressDepth.Add(-1)
+			s.telemetry.metrics.AddHot(telemetry.UDPIngressQueueDropsTotal, 1)
 		}
 	}
+}
+
+func (s *Server) processIngress(packets <-chan receivedPacket, decoder *rtpCodec) {
+	for {
+		select {
+		case packet, open := <-packets:
+			if !open {
+				return
+			}
+			s.ingressDepth.Add(-1)
+			s.processWirePacket(packet.payload, packet.addr, decoder)
+		case <-s.ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCodec) {
+	key := remote.Network() + "|" + remote.String()
+	s.peersMu.Lock()
+	peer := s.peers[key]
+	s.peersMu.Unlock()
+	metrics := s.telemetry.metrics
+	if peer != nil {
+		metrics = peer.telemetryMetrics()
+	}
+	plain, err := decoder.unwrap(wire)
+	if err != nil {
+		metrics.AddHot(telemetry.OuterAuthFailuresTotal, 1)
+		return
+	}
+	metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
+	metrics.AddHot(telemetry.OuterBytesInTotal, uint64(len(wire)))
+	metrics.AddHot(telemetry.OuterPayloadBytesInTotal, uint64(len(plain)))
+	metrics.AddHot(telemetry.OuterOverheadBytesInTotal, uint64(len(wire)-len(plain)))
+	if metrics.CollectionActive() {
+		metrics.ObserveOuterPacket(wire, time.Now())
+	}
+	s.peersMu.Lock()
+	peer = s.peers[key]
+	if peer == nil {
+		select {
+		case s.pending <- struct{}{}:
+			codec, codecErr := newRTPCodec(s.key)
+			if codecErr == nil {
+				peer = newPeerPacketConn(s.packetConn, remote, codec, s.telemetry.metrics, s.options.PeerReadQueuePackets)
+				s.peers[key] = peer
+				go s.handlePeer(key, peer)
+			} else {
+				<-s.pending
+			}
+		default:
+			s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
+			s.telemetry.event("handshake_rejected", "handshake", "pending_limit", "", [16]byte{}, nil)
+		}
+	}
+	s.peersMu.Unlock()
+	if peer != nil {
+		peer.enqueue(plain, remote)
+	}
+}
+
+func makeIngressQueues(workers, totalCapacity int) []chan receivedPacket {
+	queues := make([]chan receivedPacket, workers)
+	baseCapacity := totalCapacity / workers
+	remainder := totalCapacity % workers
+	for index := range queues {
+		capacity := baseCapacity
+		if index < remainder {
+			capacity++
+		}
+		queues[index] = make(chan receivedPacket, capacity)
+	}
+	return queues
+}
+
+func ingressShard(key string, shards int) int {
+	hash := uint32(2166136261)
+	for index := 0; index < len(key); index++ {
+		hash ^= uint32(key[index])
+		hash *= 16777619
+	}
+	return int(hash % uint32(shards))
 }
 
 func (s *Server) handlePeer(key string, peer *peerPacketConn) {

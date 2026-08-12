@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,7 +143,7 @@ func TestServerTelemetrySeparatesProcessSessionAndWorkerSnapshots(t *testing.T) 
 	require.NotNil(t, records[1].WorkerID)
 	require.Equal(t, uint16(0), *records[1].WorkerID)
 	require.Equal(t, float64(1234), metricNumber(records[1].Metrics["outer_bytes_out_total"]))
-	require.Equal(t, "server", records[2].SessionID)
+	require.True(t, strings.HasPrefix(records[2].SessionID, "server-"))
 	require.Empty(t, records[2].User)
 }
 
@@ -155,6 +156,24 @@ func TestTelemetryControlDoesNotKeepAnUnattachedSessionAlive(t *testing.T) {
 	require.True(t, tunnel.RequestClientTelemetry(30*time.Second))
 
 	require.Equal(t, before, tunnel.LastActivity())
+}
+
+func TestMergeTunnelMetricsDoesNotMultiplyTransportConfiguration(t *testing.T) {
+	t.Parallel()
+	target := map[string]any{
+		telemetry.Name(telemetry.KCPMTUBytes):           1000.0,
+		telemetry.Name(telemetry.KCPWaitSnd):            10.0,
+		telemetry.Name(telemetry.WorkerSendQueueCapacity): 512.0,
+	}
+	mergeTunnelMetrics(target, map[telemetry.Metric]float64{
+		telemetry.KCPMTUBytes:             1000,
+		telemetry.KCPWaitSnd:              20,
+		telemetry.WorkerSendQueueCapacity: 512,
+	})
+
+	require.Equal(t, 1000.0, target[telemetry.Name(telemetry.KCPMTUBytes)])
+	require.Equal(t, 30.0, target[telemetry.Name(telemetry.KCPWaitSnd)])
+	require.Equal(t, 512.0, target[telemetry.Name(telemetry.WorkerSendQueueCapacity)])
 }
 
 func writeTelemetryJSON(t *testing.T, path string, value any) {

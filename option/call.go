@@ -77,6 +77,11 @@ type CallInboundOptions struct {
 	MaxPendingHandshakes int                `json:"max_pending_handshakes,omitempty"`
 	HandshakeTimeout     badoption.Duration `json:"handshake_timeout,omitempty"`
 	SessionIdleTimeout   badoption.Duration `json:"session_idle_timeout,omitempty"`
+	UDPReceiveBufferBytes int               `json:"udp_receive_buffer_bytes,omitempty"`
+	UDPSendBufferBytes    int               `json:"udp_send_buffer_bytes,omitempty"`
+	IngressWorkers        int               `json:"ingress_workers,omitempty"`
+	IngressQueuePackets   int               `json:"ingress_queue_packets,omitempty"`
+	PeerReadQueuePackets  int               `json:"peer_read_queue_packets,omitempty"`
 	// Email and Password are used to re-authenticate with the dion.vc
 	// platform when the refresh cookie is missing or rejected.
 	Email    string `json:"email,omitempty"`

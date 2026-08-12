@@ -48,6 +48,7 @@ func connectMultiUserBridge(ctx context.Context, cfg Config, readBuffer int, log
 		Password:             cfg.UserPassword,
 		ObfsPassword:         cfg.ObfsPassword,
 		Workers:              cfg.Workers,
+		MultipathProfile:     multiuser.MultipathProfile(cfg.MultipathProfile),
 		WorkerConnectTimeout: cfg.WorkerConnectTimeout,
 		Dialer:               cfg.Dialer,
 		DNSRouter:            cfg.DNSRouter,

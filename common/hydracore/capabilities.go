@@ -35,6 +35,7 @@ type FeatureSet struct {
 	CallVKMultiUserClient        bool `json:"call_vk_multi_user_client"`
 	CallVKMultiUserServer        bool `json:"call_vk_multi_user_server"`
 	CallVKTelemetry              bool `json:"call_vk_telemetry"`
+	CallVKAdaptiveMultipath      bool `json:"call_vk_adaptive_multipath"`
 	AmneziaVersion               int  `json:"amnezia_version"`
 }
 
@@ -127,6 +128,7 @@ func Capabilities() CapabilitySet {
 			CallVKMultiUserClient:        callClientEnabled,
 			CallVKMultiUserServer:        callServerEnabled,
 			CallVKTelemetry:              callEnabled,
+			CallVKAdaptiveMultipath:      callEnabled,
 			AmneziaVersion:               3,
 		},
 		Protocols: ProtocolSet{

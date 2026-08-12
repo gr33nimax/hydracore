@@ -116,10 +116,12 @@ func TestDispatchSegmentCountsOneDropWhenEveryWorkerQueueIsFull(t *testing.T) {
 			conn:      connection,
 			parent:    tunnel,
 			metrics:   tunnel.telemetryWorker(id),
-			sendQueue: make(chan []byte, 1),
+			sendQueue: make(chan queuedSegment, 1),
+			controlQueue: make(chan queuedSegment, 1),
 			done:      make(chan struct{}),
 		}
-		worker.sendQueue <- []byte("already-full")
+		worker.sendQueue <- queuedSegment{payload: []byte("already-full")}
+		worker.controlQueue <- queuedSegment{payload: []byte("already-full")}
 		workers = append(workers, worker)
 	}
 	tunnel.workersMu.Lock()

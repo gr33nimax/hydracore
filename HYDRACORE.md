@@ -7,7 +7,7 @@ identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Release baseline
 
-Debug release `v1.13.16-extended-hydracore.10-debug.1` is based on the exact
+Debug release `v1.13.16-extended-hydracore.10-debug.4` is based on the exact
 `sing-box-extended` commit
 `545424b86bc4513f90580ebeab2e2d1514089718` (descriptive upstream tag
 `v1.13.16-extended-2.6.2`). The full commit, rather than a movable tag, is the
@@ -30,7 +30,8 @@ binds the same values and every artifact digest into `provenance.json`.
   `identity.role="client"`, `call_vk_multi_user_client=true`, and wire v2;
   Linux reports `identity.role="vps"`, `call_vk_multi_user_server=true`, and
   accepts wire v1 through v2 during the transition. Both roles expose only
-  `mode: "multi_user"` and report `call_vk_telemetry=true`.
+  `mode: "multi_user"` and report `call_vk_telemetry=true` plus
+  `call_vk_adaptive_multipath=true`.
 
 Remote policy v2 permits only `$schema`, `inbounds`, `outbounds`, and
 `endpoints` at the resource root. It applies strict object typing, unique and
@@ -58,6 +59,7 @@ the inherited P2P path solely for upstream compatibility tests.
   "tag": "vk-call-server",
   "platform": "vk",
   "mode": "multi_user",
+  "multipath_profile": "adaptive",
   "listen": "0.0.0.0",
   "listen_port": 2443,
   "obfs_password": "group-secret",
@@ -76,6 +78,7 @@ the inherited P2P path solely for upstream compatibility tests.
   "tag": "proxy",
   "platform": "vk",
   "mode": "multi_user",
+  "multipath_profile": "adaptive",
   "server": "vpn.example.com",
   "server_port": 2443,
   "join_links": ["https://vk.com/call/join/room-a", "https://vk.com/call/join/room-b"],
@@ -98,8 +101,13 @@ service guarantee.
 The shared outer secret permits O(1) RTP-shaped packet unwrap. Each worker then
 performs one bounded user attach inside DTLS; the server uses a username map and
 constant-time password-hash comparison. Passwords are not carried in data
-packets. One KCP conversation is striped across all live workers, so losing one
-allocation does not reset application streams. Authenticated heartbeat records
+packets. The default adaptive profile assigns bounded KCP chunks to individual
+TURN paths, moves retransmissions away from the path that lost the first copy,
+prioritizes ACK/control records, and applies an independent loss-responsive
+pacer to every worker. `multipath_profile: "legacy"` retains the former
+packet-striped scheduler for A/B comparison. Both profiles keep one logical
+KCP session, so losing one allocation does not reset application streams.
+Authenticated heartbeat records
 remove silent TURN/DTLS workers, and a terminal session reset reconnects behind
 the persistent relay while closing affected streams cleanly. Hard limits cover
 users, sessions, workers, pending handshakes, frame lengths, duplicate active

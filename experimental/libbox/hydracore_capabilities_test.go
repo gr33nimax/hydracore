@@ -40,6 +40,7 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.Call)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKMultiUser)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKTelemetry)
+	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKAdaptiveMultipath)
 	switch capabilities.Identity.Role {
 	case "client":
 		require.NotContains(t, capabilities.Protocols.Inbounds, "call")

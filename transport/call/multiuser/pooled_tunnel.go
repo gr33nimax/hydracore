@@ -21,6 +21,7 @@ const (
 	pooledKCPReceiveBuffer  = 32 * 1024
 	pooledKCPMaxPending     = pooledKCPWindow * 4
 	workerSendQueueDepth    = 512
+	workerControlQueueDepth = 64
 	workerHeartbeatInterval = 15 * time.Second
 	workerLivenessTimeout   = 60 * time.Second
 	workerStaleReplacement  = 2 * workerHeartbeatInterval
@@ -34,10 +35,13 @@ type pooledWorker struct {
 	conn        net.Conn
 	parent      *PooledTunnel
 	metrics     *telemetry.Accumulator
-	sendQueue   chan []byte
+	sendQueue   chan queuedSegment
+	controlQueue chan queuedSegment
 	done        chan struct{}
 	closeOnce   sync.Once
 	lastInbound atomic.Int64
+	pacingRateBPS atomic.Uint64
+	nextPacedSend time.Time
 }
 
 func (w *pooledWorker) close() {
@@ -61,6 +65,8 @@ type PooledTunnel struct {
 	heartbeatInterval time.Duration
 	livenessTimeout   time.Duration
 	staleReplacement  time.Duration
+	multipath          multipathConfig
+	scheduler          *multipathScheduler
 
 	callbackMu sync.RWMutex
 	onData     func([]byte)
@@ -90,6 +96,14 @@ func NewPooledTunnel(conv uint32, maxWorkers int, log logger.ContextLogger) (*Po
 }
 
 func newPooledTunnel(conv uint32, maxWorkers int, log logger.ContextLogger, metrics *telemetry.Accumulator) (*PooledTunnel, error) {
+	return newPooledTunnelWithProfile(conv, maxWorkers, MultipathProfileLegacy, log, metrics)
+}
+
+func NewPooledTunnelWithProfile(conv uint32, maxWorkers int, profile MultipathProfile, log logger.ContextLogger) (*PooledTunnel, error) {
+	return newPooledTunnelWithProfile(conv, maxWorkers, profile, log, nil)
+}
+
+func newPooledTunnelWithProfile(conv uint32, maxWorkers int, profile MultipathProfile, log logger.ContextLogger, metrics *telemetry.Accumulator) (*PooledTunnel, error) {
 	if conv == 0 {
 		return nil, errors.New("call multi_user: KCP conversation must not be zero")
 	}
@@ -99,6 +113,10 @@ func newPooledTunnel(conv uint32, maxWorkers int, log logger.ContextLogger, metr
 	if metrics == nil {
 		metrics = telemetry.NewAccumulator()
 	}
+	multipath, err := multipathConfigFor(profile)
+	if err != nil {
+		return nil, err
+	}
 	tunnel := &PooledTunnel{
 		logger:            log,
 		workers:           make(map[uint16]*pooledWorker),
@@ -106,12 +124,14 @@ func newPooledTunnel(conv uint32, maxWorkers int, log logger.ContextLogger, metr
 		heartbeatInterval: workerHeartbeatInterval,
 		livenessTimeout:   workerLivenessTimeout,
 		staleReplacement:  workerStaleReplacement,
+		multipath:          multipath,
 		recvBuf:           make([]byte, pooledKCPReceiveBuffer),
 		metrics:           metrics,
 		workerMetrics:     make(map[uint16]*telemetry.Accumulator),
 		kcpSent:           make(map[uint32]kcpSentSegment),
 		closed:            make(chan struct{}),
 	}
+	tunnel.scheduler = newMultipathScheduler(multipath)
 	tunnel.lastActivity.Store(time.Now().UnixNano())
 	tunnel.kcp = kcp.NewKCP(conv, func(buffer []byte, size int) {
 		if size <= 0 {
@@ -120,7 +140,7 @@ func newPooledTunnel(conv uint32, maxWorkers int, log logger.ContextLogger, metr
 		tunnel.observeKCPOutput(buffer[:size])
 		tunnel.dispatchSegment(buffer[:size])
 	})
-	tunnel.kcp.NoDelay(1, 10, 2, 1)
+	tunnel.kcp.NoDelay(1, 10, multipath.fastResend, multipath.congestion)
 	tunnel.kcp.WndSize(pooledKCPWindow, pooledKCPWindow)
 	tunnel.kcp.SetMtu(pooledKCPMTU)
 	go tunnel.updateLoop()
@@ -294,7 +314,8 @@ func (t *PooledTunnel) reserveWorker(id uint16, epoch uint64, conn net.Conn) (*p
 		conn:      conn,
 		parent:    t,
 		metrics:   t.telemetryWorker(id),
-		sendQueue: make(chan []byte, workerSendQueueDepth),
+		sendQueue: make(chan queuedSegment, workerSendQueueDepth),
+		controlQueue: make(chan queuedSegment, workerControlQueueDepth),
 		done:      make(chan struct{}),
 	}
 	worker.lastInbound.Store(time.Now().UnixNano())
@@ -317,8 +338,10 @@ func (t *PooledTunnel) reserveWorker(id uint16, epoch uint64, conn net.Conn) (*p
 		t.workerIDs = append(t.workerIDs, id)
 	}
 	t.workersMu.Unlock()
+	t.scheduler.registerWorker(worker)
 	worker.metrics.Set(telemetry.WorkerActive, 1)
 	if replaced != nil {
+		t.scheduler.removeWorker(replaced)
 		replaced.close()
 	}
 	t.touch()
@@ -362,17 +385,70 @@ func (w *pooledWorker) readLoop() {
 func (w *pooledWorker) writeLoop() {
 	ticker := time.NewTicker(w.parent.heartbeatInterval)
 	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
+	var pending *queuedSegment
+	var pendingReady time.Time
 	for {
-		select {
-		case segment := <-w.sendQueue:
-			if _, err := w.conn.Write(segment); err != nil {
+		if pending != nil {
+			wait := time.Until(pendingReady)
+			if wait <= 0 {
+				if !w.writeQueuedSegment(*pending) {
+					return
+				}
+				pending = nil
+				continue
+			}
+			timer.Reset(wait)
+			select {
+			case segment := <-w.controlQueue:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				if !w.writeQueuedSegment(segment) {
+					return
+				}
+			case <-timer.C:
+				if !w.writeQueuedSegment(*pending) {
+					return
+				}
+				pending = nil
+			case <-ticker.C:
+				if !w.writeHeartbeat() {
+					return
+				}
+			case <-w.done:
+				return
+			case <-w.parent.closed:
 				w.parent.removeWorker(w)
 				return
 			}
-			w.parent.touch()
+			continue
+		}
+		select {
+		case segment := <-w.controlQueue:
+			if !w.writeQueuedSegment(segment) {
+				return
+			}
+			continue
+		default:
+		}
+		select {
+		case segment := <-w.sendQueue:
+			pending = &segment
+			pendingReady = w.reservePacing(len(segment.payload), time.Now())
+		case segment := <-w.controlQueue:
+			if !w.writeQueuedSegment(segment) {
+				return
+			}
 		case <-ticker.C:
-			if _, err := w.conn.Write(workerHeartbeat[:]); err != nil {
-				w.parent.removeWorker(w)
+			if !w.writeHeartbeat() {
 				return
 			}
 		case <-w.done:
@@ -382,6 +458,48 @@ func (w *pooledWorker) writeLoop() {
 			return
 		}
 	}
+}
+
+func (w *pooledWorker) reservePacing(size int, now time.Time) time.Time {
+	rate := w.pacingRateBPS.Load()
+	if rate == 0 || size <= 0 {
+		return now
+	}
+	spacing := time.Duration(float64(size*8) / float64(rate) * float64(time.Second))
+	burst := time.Duration(float64(w.parent.multipath.burstBytes*8) / float64(rate) * float64(time.Second))
+	if w.nextPacedSend.IsZero() || w.nextPacedSend.Before(now.Add(-burst)) {
+		w.nextPacedSend = now.Add(-burst)
+	}
+	readyAt := w.nextPacedSend
+	w.nextPacedSend = w.nextPacedSend.Add(spacing)
+	if readyAt.After(now) {
+		return readyAt
+	}
+	return now
+}
+
+func (w *pooledWorker) writeQueuedSegment(segment queuedSegment) bool {
+	if _, err := w.conn.Write(segment.payload); err != nil {
+		w.parent.removeWorker(w)
+		return false
+	}
+	if w.pacingRateBPS.Load() > 0 {
+		waited := time.Since(segment.enqueuedAt)
+		if waited > 0 {
+			w.metrics.AddHotMonotonic(telemetry.WorkerPacingWaitSecondsTotal, waited.Seconds())
+		}
+		w.metrics.AddHot(telemetry.WorkerPacingPacketsTotal, 1)
+	}
+	w.parent.touch()
+	return true
+}
+
+func (w *pooledWorker) writeHeartbeat() bool {
+	if _, err := w.conn.Write(workerHeartbeat[:]); err != nil {
+		w.parent.removeWorker(w)
+		return false
+	}
+	return true
 }
 
 func (w *pooledWorker) watchdogLoop() {
@@ -423,18 +541,29 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 		}
 	}
 	t.workersMu.RUnlock()
-	payload := append([]byte(nil), segment...)
+	if t.scheduler.adaptive() {
+		workers = t.scheduler.rankWorkers(workers, segment, time.Now())
+	}
+	queued := queuedSegment{payload: append([]byte(nil), segment...), enqueuedAt: time.Now()}
+	control := t.scheduler.adaptive() && len(kcpPushSequences(segment)) == 0
 	for attempts := 0; attempts < len(workers); attempts++ {
-		best := attempts
-		for index := attempts + 1; index < len(workers); index++ {
-			if len(workers[index].sendQueue) < len(workers[best].sendQueue) {
-				best = index
+		if !t.scheduler.adaptive() {
+			best := attempts
+			for index := attempts + 1; index < len(workers); index++ {
+				if len(workers[index].sendQueue)+len(workers[index].controlQueue) < len(workers[best].sendQueue)+len(workers[best].controlQueue) {
+					best = index
+				}
 			}
+			workers[attempts], workers[best] = workers[best], workers[attempts]
 		}
-		workers[attempts], workers[best] = workers[best], workers[attempts]
 		worker := workers[attempts]
+		queue := worker.sendQueue
+		if control {
+			queue = worker.controlQueue
+		}
 		select {
-		case worker.sendQueue <- payload:
+		case queue <- queued:
+			t.scheduler.commitOutput(segment, worker, queued.enqueuedAt)
 			return
 		case <-worker.done:
 		default:
@@ -449,6 +578,7 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 
 func (t *PooledTunnel) inputSegment(segment []byte) {
 	t.kcpMu.Lock()
+	t.scheduler.observeInput(segment, time.Now())
 	t.observeKCPInput(segment)
 	t.kcp.Input(segment, kcp.IKCP_PACKET_REGULAR, true)
 	messages := make([][]byte, 0, 2)
@@ -501,6 +631,7 @@ func (t *PooledTunnel) removeWorker(worker *pooledWorker) {
 		}
 	}
 	t.workersMu.Unlock()
+	t.scheduler.removeWorker(worker)
 	worker.metrics.Set(telemetry.WorkerActive, 0)
 	worker.metrics.Set(telemetry.WorkerSendQueueDepth, 0)
 	worker.close()
@@ -519,9 +650,17 @@ func (t *PooledTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.KCPReceiveWindowSegments, pooledKCPWindow)
 	t.metrics.Set(telemetry.KCPMaxPendingSegments, pooledKCPMaxPending)
 	t.metrics.Set(telemetry.KCPUpdateIntervalMS, float64(pooledKCPUpdateInterval/time.Millisecond))
-	t.metrics.Set(telemetry.KCPFastResend, 2)
-	t.metrics.Set(telemetry.KCPCongestionControl, 0)
-	t.metrics.Set(telemetry.WorkerSendQueueCapacity, workerSendQueueDepth)
+	t.metrics.Set(telemetry.KCPFastResend, float64(t.multipath.fastResend))
+	t.metrics.Set(telemetry.KCPCongestionControl, float64(1-t.multipath.congestion))
+	if t.multipath.profile == MultipathProfileAdaptive {
+		t.metrics.Set(telemetry.WorkerSendQueueCapacity, workerSendQueueDepth+workerControlQueueDepth)
+		t.metrics.Set(telemetry.MultipathProfile, 1)
+	} else {
+		t.metrics.Set(telemetry.WorkerSendQueueCapacity, workerSendQueueDepth)
+		t.metrics.Set(telemetry.MultipathProfile, 0)
+	}
+	t.metrics.Set(telemetry.MultipathChunkPackets, float64(t.multipath.chunkPackets))
+	t.metrics.Set(telemetry.MultipathChunkDwellMS, float64(t.multipath.chunkDwell/time.Millisecond))
 	t.metrics.Set(telemetry.WorkerHeartbeatIntervalMS, float64(t.heartbeatInterval/time.Millisecond))
 	t.metrics.Set(telemetry.WorkerLivenessTimeoutMS, float64(t.livenessTimeout/time.Millisecond))
 	t.kcpMu.Lock()
@@ -540,7 +679,8 @@ func (t *PooledTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.WorkerActive, float64(len(t.workers)))
 	queueDepth := 0
 	for _, worker := range t.workers {
-		queueDepth += len(worker.sendQueue)
+		queueDepth += len(worker.sendQueue) + len(worker.controlQueue)
+		t.scheduler.publishWorkerMetrics(worker)
 	}
 	t.workersMu.RUnlock()
 	t.metrics.Set(telemetry.WorkerSendQueueDepth, float64(queueDepth))
@@ -565,7 +705,8 @@ func (t *PooledTunnel) telemetryWorkerSnapshots(metrics []telemetry.Metric) []wo
 		queueDepth := 0.0
 		if worker := t.workers[id]; worker != nil {
 			active = 1
-			queueDepth = float64(len(worker.sendQueue))
+			queueDepth = float64(len(worker.sendQueue) + len(worker.controlQueue))
+			t.scheduler.publishWorkerMetrics(worker)
 		}
 		accumulator.Set(telemetry.WorkerActive, active)
 		accumulator.Set(telemetry.WorkerSendQueueDepth, queueDepth)

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a wire-compatible adaptive VK multipath scheduler with bounded path
+  affinity, alternate-path retransmission, ACK/control priority, per-worker
+  pacing and explicit legacy A/B fallback. Added matching path telemetry and
+  the `call_vk_adaptive_multipath` capability gate; raw mode is unchanged.
 - Established a separately versioned `debug` release channel. A push to the
   `debug` branch publishes verified Android and VPS artifacts as a GitHub
   prerelease only after all test and build jobs pass.

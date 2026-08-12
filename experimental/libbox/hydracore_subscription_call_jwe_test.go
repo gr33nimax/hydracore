@@ -13,7 +13,7 @@ import (
 func TestHydraSubscriptionJWEAcceptsVKMultiUserRequiredFeature(t *testing.T) {
 	content := strings.Replace(validHydraSubscriptionJSON(),
 		`"features":["rmux"]`,
-		`"features":["rmux","call","call_vk_multi_user"]`,
+		`"features":["rmux","call","call_vk_multi_user","call_vk_adaptive_multipath"]`,
 		1,
 	)
 	key := make([]byte, 32)

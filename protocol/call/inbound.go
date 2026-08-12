@@ -104,6 +104,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			IngressWorkers:        options.IngressWorkers,
 			IngressQueuePackets:   options.IngressQueuePackets,
 			PeerReadQueuePackets:  options.PeerReadQueuePackets,
+			MultipathProfile:      multiuser.MultipathProfile(options.MultipathProfile),
 			SessionHandler:       h.handleMultiUserSession,
 		}, logger)
 		if err != nil {

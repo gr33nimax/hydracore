@@ -35,6 +35,7 @@ type Config struct {
 	UserPassword         string
 	ObfsPassword         string
 	Workers              int
+	MultipathProfile     string
 	WorkerConnectTimeout time.Duration
 	Cookies              string
 	CookieString         string

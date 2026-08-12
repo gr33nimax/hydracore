@@ -97,6 +97,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			UserPassword:         options.Password,
 			ObfsPassword:         options.ObfsPassword,
 			Workers:              options.Workers,
+			MultipathProfile:     options.MultipathProfile,
 			WorkerConnectTimeout: time.Duration(options.WorkerConnectTimeout),
 			CookieString:         options.Cookies.Header(),
 			ReadBuffer:           options.ReadBuffer,

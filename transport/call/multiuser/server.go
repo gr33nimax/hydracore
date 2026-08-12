@@ -67,6 +67,7 @@ type ServerOptions struct {
 	IngressWorkers           int
 	IngressQueuePackets      int
 	PeerReadQueuePackets     int
+	MultipathProfile         MultipathProfile
 	SessionHandler           SessionHandler
 	TelemetryStateDirectory string
 	TelemetryOutputPath     string
@@ -161,6 +162,11 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 }
 
 func validateServerOptions(options ServerOptions) (ServerOptions, map[string]serverUser, error) {
+	profile, err := normalizeMultipathProfile(options.MultipathProfile)
+	if err != nil {
+		return options, nil, err
+	}
+	options.MultipathProfile = profile
 	if options.SessionHandler == nil {
 		return options, nil, errors.New("call multi_user: missing session handler")
 	}
@@ -562,7 +568,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		closeServerSessions(evicted)
 		return nil, false, errors.New("call multi_user: user session limit reached")
 	}
-	tunnel, err := NewPooledTunnel(request.Conv, s.options.MaxWorkersPerSession, s.logger)
+	tunnel, err := NewPooledTunnelWithProfile(request.Conv, s.options.MaxWorkersPerSession, s.options.MultipathProfile, s.logger)
 	if err != nil {
 		s.sessionsMu.Unlock()
 		closeServerSessions(evicted)

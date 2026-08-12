@@ -1,9 +1,23 @@
-# HydraCore v1.13.16-extended-hydracore.10-debug.2
+# HydraCore v1.13.16-extended-hydracore.10-debug.4
 
 This is the verified `debug` channel build. It is published automatically only
 after the full Go, Android and Linux workflow succeeds and is intended for
 HYDRA ULTIMATE installations that explicitly select the Hydracore `debug`
 channel. It is not promoted to the stable `latest` release.
+
+This revision adds the wire-compatible adaptive VK multipath profile derived
+from the long-run tester telemetry. It keeps the former packet-striped
+implementation as `multipath_profile: legacy` for controlled A/B tests. The
+adaptive profile keeps bounded packet chunks on one TURN path, sends a lost
+KCP segment over another live path, prioritizes KCP ACK/control records, and
+paces each worker with loss-driven decrease and clean-ACK increase. It raises
+fast-resend from 2 to 4 only in the adaptive profile to reduce spurious
+retransmission caused by cross-path reordering; raw mode is unchanged.
+
+Native telemetry now exposes the selected profile, chunk bounds, per-worker
+pacing rate/wait, scheduler RTT/loss, acknowledged bytes, retransmissions and
+path switches. `features.call_vk_adaptive_multipath=true` is an explicit
+client/VPS/subscription compatibility gate.
 
 This revision makes the telemetry dataset safe for multi-tester protocol
 analysis: process, authenticated session, and individual worker snapshots are

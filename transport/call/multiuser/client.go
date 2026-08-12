@@ -27,6 +27,7 @@ type ClientOptions struct {
 	Password             string
 	ObfsPassword         string
 	Workers              int
+	MultipathProfile     MultipathProfile
 	WorkerConnectTimeout time.Duration
 	Dialer               N.Dialer
 	DNSRouter            adapter.DNSRouter
@@ -130,7 +131,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	if metrics == nil {
 		metrics = telemetry.NewAccumulator()
 	}
-	tunnel, err := newPooledTunnel(conv, options.Workers, log, metrics)
+	tunnel, err := newPooledTunnelWithProfile(conv, options.Workers, options.MultipathProfile, log, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -180,6 +181,11 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 }
 
 func validateClientOptions(options ClientOptions) (ClientOptions, error) {
+	profile, err := normalizeMultipathProfile(options.MultipathProfile)
+	if err != nil {
+		return options, err
+	}
+	options.MultipathProfile = profile
 	if !options.Server.IsValid() || options.Server.Port == 0 {
 		return options, errors.New("call multi_user: missing server or server_port")
 	}

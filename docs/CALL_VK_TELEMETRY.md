@@ -52,6 +52,8 @@ Server snapshots cover:
 - pending/rejected/timed-out handshakes, DTLS latency and auth outcomes;
 - active/created/closed sessions and worker attach/liveness outcomes;
 - peer and worker queue depth, queue drops and no-available-worker drops;
+- per-worker output-queue delay and packets delayed by at least two KCP update
+  intervals, measured from scheduler enqueue to the socket write attempt;
 - per-tunnel KCP pending data, output/retransmitted segments, ACK-derived RTT,
   derived RTO and accumulated send-backpressure time;
 - the effective KCP MTU, send/receive windows, maximum pending depth, update
@@ -86,6 +88,13 @@ rule). Network loss is based on unique authenticated outer RTP sequence
 numbers with wrap, reordering and duplicate handling. Jitter is outer-packet
 inter-arrival variation; it includes scheduling/burst effects and is therefore
 interpreted together with KCP retransmission and queue pressure.
+
+`worker_path_retry_ratio` is an EWMA of KCP segments re-emitted after assignment
+to a worker. It is scheduler pressure, not physical packet loss. The older
+`worker_path_loss_ratio` name remains a compatibility alias for the same value;
+operators must use `network_loss_ratio` for authenticated outer-path loss.
+`worker_path_rtt_ms` starts at the worker socket write attempt, so local
+output-queue residence is no longer folded into TURN-path RTT.
 
 A client must complete at least one TURN/DTLS/inner-auth worker before it can
 receive a lease or deliver buffered setup events to the VPS. A client that

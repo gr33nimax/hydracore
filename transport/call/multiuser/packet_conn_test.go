@@ -136,3 +136,43 @@ func TestDispatchSegmentCountsOneDropWhenEveryWorkerQueueIsFull(t *testing.T) {
 	require.Equal(t, float64(1), tunnel.metrics.Value(telemetry.WorkerSendQueueDropsTotal))
 	require.Equal(t, float64(1), tunnel.metrics.Value(telemetry.WorkerNoAvailableDropsTotal))
 }
+
+func TestAdaptiveWriteReportsOutputQueueDelayWithoutPostKCPPacing(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewPooledTunnelWithProfile(
+		0x50607080,
+		1,
+		MultipathProfileAdaptive,
+		nil,
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+	tunnel.SetTelemetryCollectionActive(true)
+	connection, peer := newTestDatagramPair()
+	t.Cleanup(func() { _ = connection.Close() })
+	t.Cleanup(func() { _ = peer.Close() })
+	worker := &pooledWorker{
+		id:           0,
+		conn:         connection,
+		parent:       tunnel,
+		metrics:      tunnel.telemetryWorker(0),
+		sendQueue:    make(chan queuedSegment, 1),
+		controlQueue: make(chan queuedSegment, 1),
+		done:         make(chan struct{}),
+	}
+	packet := testKCPPushPacket(77, 100)
+	tunnel.scheduler.registerWorker(worker)
+	tunnel.scheduler.assignOutput(packet, worker, time.Now().Add(-50*time.Millisecond))
+
+	require.True(t, worker.writeQueuedSegment(queuedSegment{
+		payload:    packet,
+		enqueuedAt: time.Now().Add(-50 * time.Millisecond),
+	}))
+	require.GreaterOrEqual(
+		t,
+		worker.metrics.Value(telemetry.WorkerOutputQueueDelayMS),
+		float64(40),
+	)
+	require.Equal(t, float64(1), worker.metrics.Value(telemetry.WorkerOutputQueueLateTotal))
+	require.Zero(t, worker.metrics.Value(telemetry.WorkerPacingWaitSecondsTotal))
+}

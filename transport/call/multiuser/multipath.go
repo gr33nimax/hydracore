@@ -17,26 +17,17 @@ const (
 )
 
 const (
-	adaptiveChunkPackets       = 16
-	adaptiveChunkDwell         = 16 * time.Millisecond
-	adaptiveInitialRateBPS     = 8_000_000
-	adaptiveMinimumRateBPS     = 1_500_000
-	adaptiveMaximumRateBPS     = 32_000_000
-	adaptivePacingBurstBytes   = 8 * 1024
-	adaptiveRateIncreasePeriod = 200 * time.Millisecond
-	adaptiveSentRetention      = 2 * time.Minute
+	adaptiveChunkPackets  = 16
+	adaptiveChunkDwell    = 16 * time.Millisecond
+	adaptiveSentRetention = 2 * time.Minute
 )
 
 type multipathConfig struct {
-	profile        MultipathProfile
-	fastResend     int
-	congestion     int
-	chunkPackets   int
-	chunkDwell     time.Duration
-	initialRateBPS uint64
-	minimumRateBPS uint64
-	maximumRateBPS uint64
-	burstBytes     int
+	profile      MultipathProfile
+	fastResend   int
+	congestion   int
+	chunkPackets int
+	chunkDwell   time.Duration
 }
 
 func normalizeMultipathProfile(profile MultipathProfile) (MultipathProfile, error) {
@@ -62,12 +53,9 @@ func multipathConfigFor(profile MultipathProfile) (multipathConfig, error) {
 	}
 	if profile == MultipathProfileAdaptive {
 		config.fastResend = 4
+		config.congestion = 0
 		config.chunkPackets = adaptiveChunkPackets
 		config.chunkDwell = adaptiveChunkDwell
-		config.initialRateBPS = adaptiveInitialRateBPS
-		config.minimumRateBPS = adaptiveMinimumRateBPS
-		config.maximumRateBPS = adaptiveMaximumRateBPS
-		config.burstBytes = adaptivePacingBurstBytes
 	}
 	return config, nil
 }
@@ -79,19 +67,18 @@ type queuedSegment struct {
 
 type multipathSentSegment struct {
 	workerID      uint16
+	assignedAt    time.Time
 	sentAt        time.Time
 	size          int
 	retransmitted bool
 }
 
 type multipathPathState struct {
-	worker       *pooledWorker
-	metrics      *telemetry.Accumulator
-	rateBPS      uint64
-	rttMS        float64
-	lossRatio    float64
-	lastIncrease time.Time
-	lastChunk    uint64
+	worker        *pooledWorker
+	metrics       *telemetry.Accumulator
+	rttMS         float64
+	retryPressure float64
+	lastChunk     uint64
 }
 
 type multipathScheduler struct {
@@ -129,10 +116,8 @@ func (s *multipathScheduler) registerWorker(worker *pooledWorker) {
 	state := &multipathPathState{
 		worker:  worker,
 		metrics: worker.metrics,
-		rateBPS: s.config.initialRateBPS,
 	}
 	s.paths[worker.id] = state
-	worker.pacingRateBPS.Store(state.rateBPS)
 	s.mu.Unlock()
 }
 
@@ -197,7 +182,7 @@ func (s *multipathScheduler) rankWorkers(workers []*pooledWorker, packet []byte,
 			leftScore := multipathPathScore(left, ranked[i])
 			rightScore := multipathPathScore(right, ranked[j])
 			if len(pushSequences) > 0 && !hasPrevious && left != nil && right != nil &&
-				left.lossRatio < 0.12 && right.lossRatio < 0.12 && left.lastChunk != right.lastChunk {
+				left.retryPressure < 0.12 && right.retryPressure < 0.12 && left.lastChunk != right.lastChunk {
 				return left.lastChunk < right.lastChunk
 			}
 			return leftScore < rightScore
@@ -224,7 +209,7 @@ func (s *multipathScheduler) rankWorkers(workers []*pooledWorker, packet []byte,
 	return workers
 }
 
-func (s *multipathScheduler) commitOutput(packet []byte, worker *pooledWorker, now time.Time) {
+func (s *multipathScheduler) assignOutput(packet []byte, worker *pooledWorker, now time.Time) {
 	if !s.adaptive() || worker == nil {
 		return
 	}
@@ -233,23 +218,55 @@ func (s *multipathScheduler) commitOutput(packet []byte, worker *pooledWorker, n
 		return
 	}
 	s.mu.Lock()
+	s.assignOutputLocked(packet, sequences, worker, now)
+	s.mu.Unlock()
+}
+
+func (s *multipathScheduler) enqueueOutput(
+	packet []byte,
+	worker *pooledWorker,
+	queued queuedSegment,
+	queue chan queuedSegment,
+) bool {
+	if !s.adaptive() || worker == nil {
+		return false
+	}
+	sequences := kcpPushSequences(packet)
+	if len(sequences) == 0 {
+		return false
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
+	select {
+	case queue <- queued:
+		s.assignOutputLocked(packet, sequences, worker, queued.enqueuedAt)
+		return true
+	case <-worker.done:
+		return false
+	default:
+		return false
+	}
+}
+
+func (s *multipathScheduler) assignOutputLocked(
+	packet []byte,
+	sequences []uint32,
+	worker *pooledWorker,
+	now time.Time,
+) {
 	for _, sequence := range sequences {
 		segmentSize := kcpSequenceSize(packet, sequence)
 		if previous, exists := s.sent[sequence]; exists {
 			if state := s.paths[previous.workerID]; state != nil {
-				state.lossRatio = state.lossRatio*0.875 + 0.125
-				state.rateBPS = max(s.config.minimumRateBPS, state.rateBPS*85/100)
-				if state.worker != nil {
-					state.worker.pacingRateBPS.Store(state.rateBPS)
-				}
+				state.retryPressure = state.retryPressure*0.9375 + 0.0625
 				state.metrics.AddHot(telemetry.WorkerPathRetransSegmentsTotal, 1)
 			}
 			if previous.workerID != worker.id {
 				worker.metrics.AddHot(telemetry.WorkerPathSwitchesTotal, 1)
 			}
 			previous.workerID = worker.id
-			previous.sentAt = now
+			previous.assignedAt = now
+			previous.sentAt = time.Time{}
 			previous.retransmitted = true
 			if segmentSize > 0 {
 				previous.size = segmentSize
@@ -258,20 +275,40 @@ func (s *multipathScheduler) commitOutput(packet []byte, worker *pooledWorker, n
 			continue
 		}
 		s.sent[sequence] = multipathSentSegment{
-			workerID: worker.id,
-			sentAt:   now,
-			size:     segmentSize,
+			workerID:   worker.id,
+			assignedAt: now,
+			size:       segmentSize,
 		}
 	}
 	if s.lastPrune.IsZero() || now.Sub(s.lastPrune) >= time.Minute {
 		cutoff := now.Add(-adaptiveSentRetention)
 		for sequence, sent := range s.sent {
-			if sent.sentAt.Before(cutoff) {
+			if sent.assignedAt.Before(cutoff) {
 				delete(s.sent, sequence)
 			}
 		}
 		s.lastPrune = now
 	}
+}
+
+func (s *multipathScheduler) commitWrite(packet []byte, worker *pooledWorker, now time.Time) {
+	if !s.adaptive() || worker == nil {
+		return
+	}
+	sequences := kcpPushSequences(packet)
+	if len(sequences) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, sequence := range sequences {
+		sent, exists := s.sent[sequence]
+		if !exists || sent.workerID != worker.id || !sent.sentAt.IsZero() {
+			continue
+		}
+		sent.sentAt = now
+		s.sent[sequence] = sent
+	}
+	s.mu.Unlock()
 }
 
 func (s *multipathScheduler) observeInput(packet []byte, now time.Time) {
@@ -293,12 +330,12 @@ func (s *multipathScheduler) observeInput(packet []byte, now time.Time) {
 		if state == nil {
 			return
 		}
-		state.lossRatio *= 0.98
+		state.retryPressure *= 0.9375
+		if sent.retransmitted || sent.sentAt.IsZero() {
+			return
+		}
 		if state.worker != nil && sent.size > 0 {
 			state.worker.metrics.AddHot(telemetry.WorkerPathAckedBytesTotal, uint64(sent.size))
-		}
-		if sent.retransmitted {
-			return
 		}
 		rttMS := float64(now.Sub(sent.sentAt)) / float64(time.Millisecond)
 		if rttMS < 0 {
@@ -308,13 +345,6 @@ func (s *multipathScheduler) observeInput(packet []byte, now time.Time) {
 			state.rttMS = rttMS
 		} else {
 			state.rttMS += (rttMS - state.rttMS) / 8
-		}
-		if now.Sub(state.lastIncrease) >= adaptiveRateIncreasePeriod && state.lossRatio < 0.05 {
-			state.rateBPS = min(s.config.maximumRateBPS, state.rateBPS+max(uint64(128_000), state.rateBPS/20))
-			state.lastIncrease = now
-			if state.worker != nil {
-				state.worker.pacingRateBPS.Store(state.rateBPS)
-			}
 		}
 	})
 }
@@ -326,9 +356,11 @@ func (s *multipathScheduler) publishWorkerMetrics(worker *pooledWorker) {
 	s.mu.Lock()
 	state := s.paths[worker.id]
 	if state != nil {
-		worker.metrics.Set(telemetry.WorkerPacingRateBPS, float64(state.rateBPS))
 		worker.metrics.Set(telemetry.WorkerPathRTTMS, state.rttMS)
-		worker.metrics.Set(telemetry.WorkerPathLossRatio, state.lossRatio)
+		worker.metrics.Set(telemetry.WorkerPathRetryRatio, state.retryPressure)
+		// Compatibility alias for the first adaptive telemetry schema. This is
+		// KCP retry pressure, not an estimate of physical TURN packet loss.
+		worker.metrics.Set(telemetry.WorkerPathLossRatio, state.retryPressure)
 	}
 	s.mu.Unlock()
 }
@@ -338,11 +370,7 @@ func multipathPathScore(state *multipathPathState, worker *pooledWorker) float64
 	if state == nil {
 		return queue * 20
 	}
-	ratePenalty := 0.0
-	if state.rateBPS > 0 {
-		ratePenalty = float64(adaptiveInitialRateBPS) / float64(state.rateBPS)
-	}
-	return queue*20 + state.lossRatio*1000 + state.rttMS/5 + ratePenalty
+	return queue*20 + state.retryPressure*250 + state.rttMS/10
 }
 
 func workerPresent(workers []*pooledWorker, id uint16) bool {

@@ -30,18 +30,16 @@ const (
 var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 1, 0}
 
 type pooledWorker struct {
-	id          uint16
-	epoch       uint64
-	conn        net.Conn
-	parent      *PooledTunnel
-	metrics     *telemetry.Accumulator
-	sendQueue   chan queuedSegment
+	id           uint16
+	epoch        uint64
+	conn         net.Conn
+	parent       *PooledTunnel
+	metrics      *telemetry.Accumulator
+	sendQueue    chan queuedSegment
 	controlQueue chan queuedSegment
-	done        chan struct{}
-	closeOnce   sync.Once
-	lastInbound atomic.Int64
-	pacingRateBPS atomic.Uint64
-	nextPacedSend time.Time
+	done         chan struct{}
+	closeOnce    sync.Once
+	lastInbound  atomic.Int64
 }
 
 func (w *pooledWorker) close() {
@@ -385,52 +383,7 @@ func (w *pooledWorker) readLoop() {
 func (w *pooledWorker) writeLoop() {
 	ticker := time.NewTicker(w.parent.heartbeatInterval)
 	defer ticker.Stop()
-	timer := time.NewTimer(time.Hour)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	defer timer.Stop()
-	var pending *queuedSegment
-	var pendingReady time.Time
 	for {
-		if pending != nil {
-			wait := time.Until(pendingReady)
-			if wait <= 0 {
-				if !w.writeQueuedSegment(*pending) {
-					return
-				}
-				pending = nil
-				continue
-			}
-			timer.Reset(wait)
-			select {
-			case segment := <-w.controlQueue:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				if !w.writeQueuedSegment(segment) {
-					return
-				}
-			case <-timer.C:
-				if !w.writeQueuedSegment(*pending) {
-					return
-				}
-				pending = nil
-			case <-ticker.C:
-				if !w.writeHeartbeat() {
-					return
-				}
-			case <-w.done:
-				return
-			case <-w.parent.closed:
-				w.parent.removeWorker(w)
-				return
-			}
-			continue
-		}
 		select {
 		case segment := <-w.controlQueue:
 			if !w.writeQueuedSegment(segment) {
@@ -441,8 +394,9 @@ func (w *pooledWorker) writeLoop() {
 		}
 		select {
 		case segment := <-w.sendQueue:
-			pending = &segment
-			pendingReady = w.reservePacing(len(segment.payload), time.Now())
+			if !w.writeQueuedSegment(segment) {
+				return
+			}
 		case segment := <-w.controlQueue:
 			if !w.writeQueuedSegment(segment) {
 				return
@@ -460,35 +414,19 @@ func (w *pooledWorker) writeLoop() {
 	}
 }
 
-func (w *pooledWorker) reservePacing(size int, now time.Time) time.Time {
-	rate := w.pacingRateBPS.Load()
-	if rate == 0 || size <= 0 {
-		return now
-	}
-	spacing := time.Duration(float64(size*8) / float64(rate) * float64(time.Second))
-	burst := time.Duration(float64(w.parent.multipath.burstBytes*8) / float64(rate) * float64(time.Second))
-	if w.nextPacedSend.IsZero() || w.nextPacedSend.Before(now.Add(-burst)) {
-		w.nextPacedSend = now.Add(-burst)
-	}
-	readyAt := w.nextPacedSend
-	w.nextPacedSend = w.nextPacedSend.Add(spacing)
-	if readyAt.After(now) {
-		return readyAt
-	}
-	return now
-}
-
 func (w *pooledWorker) writeQueuedSegment(segment queuedSegment) bool {
+	writeStartedAt := time.Now()
+	w.parent.scheduler.commitWrite(segment.payload, w, writeStartedAt)
 	if _, err := w.conn.Write(segment.payload); err != nil {
 		w.parent.removeWorker(w)
 		return false
 	}
-	if w.pacingRateBPS.Load() > 0 {
-		waited := time.Since(segment.enqueuedAt)
-		if waited > 0 {
-			w.metrics.AddHotMonotonic(telemetry.WorkerPacingWaitSecondsTotal, waited.Seconds())
+	delay := writeStartedAt.Sub(segment.enqueuedAt)
+	if delay >= 0 {
+		w.metrics.Set(telemetry.WorkerOutputQueueDelayMS, float64(delay)/float64(time.Millisecond))
+		if delay >= 2*pooledKCPUpdateInterval {
+			w.metrics.AddHot(telemetry.WorkerOutputQueueLateTotal, 1)
 		}
-		w.metrics.AddHot(telemetry.WorkerPacingPacketsTotal, 1)
 	}
 	w.parent.touch()
 	return true
@@ -561,9 +499,14 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 		if control {
 			queue = worker.controlQueue
 		}
+		if !control && t.scheduler.adaptive() {
+			if t.scheduler.enqueueOutput(segment, worker, queued, queue) {
+				return
+			}
+			continue
+		}
 		select {
 		case queue <- queued:
-			t.scheduler.commitOutput(segment, worker, queued.enqueuedAt)
 			return
 		case <-worker.done:
 		default:

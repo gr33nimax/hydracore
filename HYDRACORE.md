@@ -7,7 +7,7 @@ identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Release baseline
 
-Debug release `v1.13.16-extended-hydracore.10-debug.5` is based on the exact
+Debug release `v1.13.16-extended-hydracore.10-debug.6` is based on the exact
 `sing-box-extended` commit
 `545424b86bc4513f90580ebeab2e2d1514089718` (descriptive upstream tag
 `v1.13.16-extended-2.6.2`). The full commit, rather than a movable tag, is the
@@ -103,8 +103,10 @@ performs one bounded user attach inside DTLS; the server uses a username map and
 constant-time password-hash comparison. Passwords are not carried in data
 packets. The default adaptive profile assigns bounded KCP chunks to individual
 TURN paths, moves retransmissions away from the path used by the first copy,
-prioritizes ACK/control records, and lets KCP regulate its own send window.
-It never delays an already emitted KCP segment in an external rate limiter.
+and prioritizes ACK/control records. It uses KCP's bounded local and remote
+windows without applying a single dynamic congestion window to all independent
+TURN paths, and never delays an already emitted KCP segment in an external rate
+limiter.
 `multipath_profile: "legacy"` retains the former
 packet-striped scheduler for A/B comparison. Both profiles keep one logical
 KCP session, so losing one allocation does not reset application streams.

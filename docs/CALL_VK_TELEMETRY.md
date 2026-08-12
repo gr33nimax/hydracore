@@ -54,6 +54,8 @@ Server snapshots cover:
 - peer and worker queue depth, queue drops and no-available-worker drops;
 - per-worker output-queue delay and packets delayed by at least two KCP update
   intervals, measured from scheduler enqueue to the socket write attempt;
+- per-worker KCP path attempts and attempts that required another emission, so
+  cumulative retry ratios do not depend on a short-lived scheduler EWMA;
 - per-tunnel KCP pending data, output/retransmitted segments, ACK-derived RTT,
   derived RTO and accumulated send-backpressure time;
 - the effective KCP MTU, send/receive windows, maximum pending depth, update
@@ -89,10 +91,12 @@ numbers with wrap, reordering and duplicate handling. Jitter is outer-packet
 inter-arrival variation; it includes scheduling/burst effects and is therefore
 interpreted together with KCP retransmission and queue pressure.
 
-`worker_path_retry_ratio` is an EWMA of KCP segments re-emitted after assignment
-to a worker. It is scheduler pressure, not physical packet loss. The older
-`worker_path_loss_ratio` name remains a compatibility alias for the same value;
-operators must use `network_loss_ratio` for authenticated outer-path loss.
+`worker_path_retry_ratio` is an EWMA used for immediate scheduler feedback.
+`worker_path_attempt_segments_total` and `worker_path_retrans_segments_total`
+produce the cumulative per-worker retry ratio used by analysis. Neither value
+is physical packet loss. The older `worker_path_loss_ratio` name remains a
+compatibility alias for the EWMA; operators must use `network_loss_ratio` for
+authenticated outer-path loss.
 `worker_path_rtt_ms` starts at the worker socket write attempt, so local
 output-queue residence is no longer folded into TURN-path RTT.
 

@@ -231,6 +231,7 @@ func serverWorkerSnapshotMetrics() []telemetry.Metric {
 		telemetry.WorkerPathLossRatio,
 		telemetry.WorkerPathRetryRatio,
 		telemetry.WorkerPathAckedBytesTotal,
+		telemetry.WorkerPathAttemptSegmentsTotal,
 		telemetry.WorkerPathRetransSegmentsTotal,
 		telemetry.WorkerPathSwitchesTotal,
 		telemetry.WorkerOutputQueueDelayMS,

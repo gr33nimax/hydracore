@@ -1,23 +1,29 @@
-# HydraCore v1.13.16-extended-hydracore.10-debug.5
+# HydraCore v1.13.16-extended-hydracore.10-debug.6
 
 This is the verified `debug` channel build. It is published automatically only
 after the full Go, Android and Linux workflow succeeds and is intended for
 HYDRA ULTIMATE installations that explicitly select the Hydracore `debug`
 channel. It is not promoted to the stable `latest` release.
 
-This revision fixes the adaptive VK multipath regression found by paired
-adaptive/legacy field runs. The previous external worker pacer delayed packets
-after KCP had started their retransmission timers. Those retries were then fed
-back as path loss, drove every worker to the 1.5 Mbit/s floor and created the
-large local queue delay reported as path RTT. Adaptive no longer rate-limits
-already emitted KCP packets. KCP now owns congestion-window timing, while the
-scheduler retains bounded chunk affinity, control priority and retransmission
-path switching. The exact packet-striped legacy profile and raw mode are
-unchanged.
+This revision fixes the remaining adaptive VK throughput bottleneck found by a
+full 1440p field run. Debug.5 removed the post-KCP worker pacer, but still
+enabled the standard dynamic KCP congestion window. One logical KCP stream is
+carried by four independent TURN paths, so ordinary cross-path reordering or a
+loss on one path repeatedly reduced the aggregate congestion window and filled
+`WaitSnd` even while VPS CPU, UDP ingress and socket buffers were idle.
+
+Adaptive now uses KCP's bounded local and advertised remote windows without a
+single dynamic congestion window spanning every TURN path. It retains the
+adaptive-only 16-packet/16-ms chunk affinity, control priority, fast-resend=4,
+actual socket-write RTT, and retransmission path switching. No packet is paced
+after KCP starts its timer. This does not turn adaptive into packet-striped
+legacy: the exact legacy scheduler and raw mode are unchanged.
 
 Native telemetry distinguishes authenticated outer network loss from KCP retry
-pressure and records output-queue delay/late writes. Path RTT begins at the
-socket write attempt rather than scheduler enqueue. The old
+pressure and records output-queue delay/late writes. It now also publishes an
+exact per-worker attempt counter so analysis can report cumulative failed-path
+attempts instead of treating a short-lived retry EWMA as a loss ratio. Path RTT
+begins at the socket write attempt rather than scheduler enqueue. The old
 `worker_path_loss_ratio` is retained only as a compatibility alias for retry
 pressure. `features.call_vk_adaptive_multipath=true` remains the explicit
 client/VPS/subscription compatibility gate.

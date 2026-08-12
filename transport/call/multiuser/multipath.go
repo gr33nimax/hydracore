@@ -23,11 +23,11 @@ const (
 )
 
 type multipathConfig struct {
-	profile      MultipathProfile
-	fastResend   int
-	congestion   int
-	chunkPackets int
-	chunkDwell   time.Duration
+	profile            MultipathProfile
+	fastResend         int
+	noCongestionWindow int
+	chunkPackets       int
+	chunkDwell         time.Duration
 }
 
 func normalizeMultipathProfile(profile MultipathProfile) (MultipathProfile, error) {
@@ -47,13 +47,12 @@ func multipathConfigFor(profile MultipathProfile) (multipathConfig, error) {
 		return multipathConfig{}, err
 	}
 	config := multipathConfig{
-		profile:    profile,
-		fastResend: 2,
-		congestion: 1,
+		profile:            profile,
+		fastResend:         2,
+		noCongestionWindow: 1,
 	}
 	if profile == MultipathProfileAdaptive {
 		config.fastResend = 4
-		config.congestion = 0
 		config.chunkPackets = adaptiveChunkPackets
 		config.chunkDwell = adaptiveChunkDwell
 	}
@@ -255,6 +254,7 @@ func (s *multipathScheduler) assignOutputLocked(
 	now time.Time,
 ) {
 	for _, sequence := range sequences {
+		worker.metrics.AddHot(telemetry.WorkerPathAttemptSegmentsTotal, 1)
 		segmentSize := kcpSequenceSize(packet, sequence)
 		if previous, exists := s.sent[sequence]; exists {
 			if state := s.paths[previous.workerID]; state != nil {

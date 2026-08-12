@@ -15,14 +15,14 @@ func TestMultipathProfilesPreserveLegacyAndBoundAdaptiveDefaults(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, MultipathProfileLegacy, legacy.profile)
 	require.Equal(t, 2, legacy.fastResend)
-	require.Equal(t, 1, legacy.congestion, "legacy KCP behavior must remain unchanged")
+	require.Equal(t, 1, legacy.noCongestionWindow, "legacy KCP behavior must remain unchanged")
 	require.Zero(t, legacy.chunkPackets)
 	require.Zero(t, legacy.chunkDwell)
 
 	adaptive, err := multipathConfigFor(MultipathProfileAdaptive)
 	require.NoError(t, err)
 	require.Equal(t, 4, adaptive.fastResend)
-	require.Equal(t, 0, adaptive.congestion, "adaptive congestion must run inside KCP")
+	require.Equal(t, 1, adaptive.noCongestionWindow, "one KCP cwnd must not throttle four independent TURN paths")
 	require.Positive(t, adaptive.chunkPackets)
 	require.Positive(t, adaptive.chunkDwell)
 
@@ -48,22 +48,26 @@ func TestAdaptiveMultipathKeepsChunksTogetherAndMovesRetransmissions(t *testing.
 	first := scheduler.rankWorkers(append([]*pooledWorker(nil), workers...), firstPacket, time.Now())[0]
 	require.Equal(t, uint16(0), first.id)
 	scheduler.assignOutput(firstPacket, first, time.Now())
+	require.Equal(t, float64(1), first.metrics.Value(telemetry.WorkerPathAttemptSegmentsTotal))
 
 	secondPacket := testKCPPushPacket(11, 100)
 	second := scheduler.rankWorkers(append([]*pooledWorker(nil), workers...), secondPacket, time.Now())[0]
 	require.Equal(t, first.id, second.id, "a bounded data chunk must stay on one TURN path")
 	scheduler.assignOutput(secondPacket, second, time.Now())
+	require.Equal(t, float64(2), first.metrics.Value(telemetry.WorkerPathAttemptSegmentsTotal))
 
 	retransmit := scheduler.rankWorkers(append([]*pooledWorker(nil), workers...), firstPacket, time.Now())[0]
 	require.NotEqual(t, first.id, retransmit.id, "a retransmission should avoid the path that lost the first copy")
 	scheduler.assignOutput(firstPacket, retransmit, time.Now())
 	require.Equal(t, float64(1), workers[0].metrics.Value(telemetry.WorkerPathRetransSegmentsTotal))
+	require.Equal(t, float64(1), retransmit.metrics.Value(telemetry.WorkerPathAttemptSegmentsTotal))
 	require.Equal(t, float64(1), workers[1].metrics.Value(telemetry.WorkerPathSwitchesTotal))
 
 	secondRetransmit := scheduler.rankWorkers(append([]*pooledWorker(nil), workers...), firstPacket, time.Now())[0]
 	require.Equal(t, first.id, secondRetransmit.id, "a second retry must leave the path that lost the first retry")
 	scheduler.assignOutput(firstPacket, secondRetransmit, time.Now())
 	require.Equal(t, float64(1), retransmit.metrics.Value(telemetry.WorkerPathRetransSegmentsTotal))
+	require.Equal(t, float64(3), first.metrics.Value(telemetry.WorkerPathAttemptSegmentsTotal))
 }
 
 func TestAdaptivePathRTTStartsAtSocketWrite(t *testing.T) {

@@ -138,7 +138,7 @@ func newPooledTunnelWithProfile(conv uint32, maxWorkers int, profile MultipathPr
 		tunnel.observeKCPOutput(buffer[:size])
 		tunnel.dispatchSegment(buffer[:size])
 	})
-	tunnel.kcp.NoDelay(1, 10, multipath.fastResend, multipath.congestion)
+	tunnel.kcp.NoDelay(1, 10, multipath.fastResend, multipath.noCongestionWindow)
 	tunnel.kcp.WndSize(pooledKCPWindow, pooledKCPWindow)
 	tunnel.kcp.SetMtu(pooledKCPMTU)
 	go tunnel.updateLoop()
@@ -594,7 +594,7 @@ func (t *PooledTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.KCPMaxPendingSegments, pooledKCPMaxPending)
 	t.metrics.Set(telemetry.KCPUpdateIntervalMS, float64(pooledKCPUpdateInterval/time.Millisecond))
 	t.metrics.Set(telemetry.KCPFastResend, float64(t.multipath.fastResend))
-	t.metrics.Set(telemetry.KCPCongestionControl, float64(1-t.multipath.congestion))
+	t.metrics.Set(telemetry.KCPCongestionControl, float64(1-t.multipath.noCongestionWindow))
 	if t.multipath.profile == MultipathProfileAdaptive {
 		t.metrics.Set(telemetry.WorkerSendQueueCapacity, workerSendQueueDepth+workerControlQueueDepth)
 		t.metrics.Set(telemetry.MultipathProfile, 1)

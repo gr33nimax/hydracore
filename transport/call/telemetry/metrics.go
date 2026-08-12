@@ -126,6 +126,7 @@ const (
 	WorkerPathLossRatio
 	WorkerPathRetryRatio
 	WorkerPathAckedBytesTotal
+	WorkerPathAttemptSegmentsTotal
 	WorkerPathRetransSegmentsTotal
 	WorkerPathSwitchesTotal
 	WorkerOutputQueueDelayMS
@@ -254,6 +255,7 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "worker_path_loss_ratio"},
 	{name: "worker_path_retry_ratio"},
 	{name: "worker_path_acked_bytes_total", counter: true},
+	{name: "worker_path_attempt_segments_total", counter: true},
 	{name: "worker_path_retrans_segments_total", counter: true},
 	{name: "worker_path_switches_total", counter: true},
 	{name: "worker_output_queue_delay_ms"},
@@ -280,7 +282,7 @@ var ServerRequired = []Metric{
 	WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
 	MultipathProfile, MultipathChunkPackets, MultipathChunkDwellMS,
 	WorkerPacingRateBPS, WorkerPacingWaitSecondsTotal, WorkerPacingPacketsTotal,
-	WorkerPathRTTMS, WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal,
+	WorkerPathRTTMS, WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal, WorkerPathAttemptSegmentsTotal,
 	WorkerPathRetransSegmentsTotal, WorkerPathSwitchesTotal,
 	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
 	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
@@ -299,7 +301,7 @@ var ClientRequired = []Metric{
 	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 	MultipathProfile, MultipathChunkPackets, MultipathChunkDwellMS,
 	WorkerPacingRateBPS, WorkerPacingWaitSecondsTotal, WorkerPacingPacketsTotal,
-	WorkerPathRTTMS, WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal,
+	WorkerPathRTTMS, WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal, WorkerPathAttemptSegmentsTotal,
 	WorkerPathRetransSegmentsTotal, WorkerPathSwitchesTotal,
 	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
@@ -322,7 +324,7 @@ var TunnelMetrics = []Metric{
 	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 	MultipathProfile, MultipathChunkPackets, MultipathChunkDwellMS,
 	WorkerPacingRateBPS, WorkerPacingWaitSecondsTotal, WorkerPacingPacketsTotal,
-	WorkerPathRTTMS, WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal,
+	WorkerPathRTTMS, WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal, WorkerPathAttemptSegmentsTotal,
 	WorkerPathRetransSegmentsTotal, WorkerPathSwitchesTotal,
 	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
 }

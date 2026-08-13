@@ -1,10 +1,15 @@
-# HydraCore v1.13.16-extended-hydracore.10-debug.9
+# HydraCore v1.13.16-extended-hydracore.10-debug.10
 
 This is the verified paired client/VPS `debug` build for the four-call adaptive
 VK tunnel. Adaptive mode now has an explicit per-worker transport envelope and
-mandatory physical-path feedback; a debug.9 adaptive endpoint must be deployed
+mandatory physical-path feedback; a debug.10 endpoint must be deployed
 on both the client and VPS. The legacy profile remains available and retains
 its existing KCP wire behavior.
+
+The worker authentication protocol is intentionally bumped to v3 and accepts
+no older wire version. Mixed old/new deployments now fail during the worker
+handshake instead of appearing connected and silently discarding adaptive
+traffic. This debug build therefore requires a coordinated VPS and APK update.
 
 The previous controller inferred the health of a VK/TURN call from ACKs and
 retransmissions belonging to one KCP conversation striped across all four
@@ -14,7 +19,7 @@ not lose the packet. In the field this produced the observed inverse feedback,
 collapsed healthy path windows, and held aggregate goodput near 3-6 Mbit/s even
 when the four physical calls carried materially more wire traffic.
 
-Debug.9 gives every adaptive data datagram a per-call physical packet sequence.
+Debug.10 gives every adaptive data datagram a per-call physical packet sequence.
 The receiver returns a 64-packet selective delivery map through that same
 worker every 10 ms while traffic is active. Only this direct signal can now
 change per-path RTT, loss, delivered rate, or congestion window; shared KCP

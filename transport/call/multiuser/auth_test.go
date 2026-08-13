@@ -31,26 +31,27 @@ func TestAuthRequestRoundTrip(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestAuthRequestAcceptsLegacyV1ForServerTransition(t *testing.T) {
+func TestAuthRequestRejectsPreviousWireVersion(t *testing.T) {
 	t.Parallel()
 	request := authRequest{
 		SessionID:   [16]byte{1, 2, 3, 4},
 		Conv:        0x10203040,
 		WorkerID:    1,
 		WorkerTotal: 4,
+		WorkerEpoch: 7,
 		User:        "alice",
 		Password:    "secret",
 	}
-	frame, err := encodeAuthRequestVersion(request, authProtocolVersionV1)
+	frame, err := encodeAuthRequest(request)
 	require.NoError(t, err)
-	decoded, err := decodeAuthRequest(frame)
-	require.NoError(t, err)
-	require.Equal(t, byte(authProtocolVersionV1), decoded.ProtocolVersion)
-	require.Zero(t, decoded.WorkerEpoch)
-	require.Equal(t, request.SessionID, decoded.SessionID)
-	require.Equal(t, request.Conv, decoded.Conv)
-	require.Equal(t, request.User, decoded.User)
-	require.Equal(t, byte(authProtocolVersionV1), encodeAuthAckVersion(true, 42, authProtocolVersionV1)[4])
+	frame[4] = 2
+	_, err = decodeAuthRequest(frame)
+	require.ErrorContains(t, err, "unsupported auth frame")
+
+	ack := encodeAuthAck(true, 42)
+	ack[4] = 2
+	_, err = decodeAuthAck(ack)
+	require.ErrorContains(t, err, "invalid server auth response")
 }
 
 func TestAuthRequestRejectsInvalidBounds(t *testing.T) {

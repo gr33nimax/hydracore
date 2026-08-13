@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	authProtocolVersionV1 = 1
-	authProtocolVersion   = 2
+	authProtocolVersion   = 3
 	maximumUserLength     = 64
 	maximumPasswordLen    = 256
 	maximumAuthFrameLen   = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
@@ -33,10 +32,6 @@ type authRequest struct {
 }
 
 func encodeAuthRequest(request authRequest) ([]byte, error) {
-	return encodeAuthRequestVersion(request, authProtocolVersion)
-}
-
-func encodeAuthRequestVersion(request authRequest, version byte) ([]byte, error) {
 	if err := validateAuthStrings(request.User, request.Password); err != nil {
 		return nil, err
 	}
@@ -46,28 +41,19 @@ func encodeAuthRequestVersion(request authRequest, version byte) ([]byte, error)
 	if request.Conv == 0 || request.WorkerTotal == 0 || request.WorkerID >= request.WorkerTotal {
 		return nil, errors.New("call multi_user: invalid worker auth metadata")
 	}
-	if version != authProtocolVersionV1 && version != authProtocolVersion {
-		return nil, errors.New("call multi_user: unsupported auth protocol version")
-	}
-	if version == authProtocolVersion && request.WorkerEpoch == 0 {
+	if request.WorkerEpoch == 0 {
 		return nil, errors.New("call multi_user: zero worker epoch")
 	}
-	headerLength := 32
-	if version == authProtocolVersion {
-		headerLength = 40
-	}
+	headerLength := 40
 	frame := make([]byte, headerLength+len(request.User)+len(request.Password))
 	copy(frame[0:4], authMagic[:])
-	frame[4] = version
+	frame[4] = authProtocolVersion
 	copy(frame[5:21], request.SessionID[:])
 	binary.BigEndian.PutUint32(frame[21:25], request.Conv)
 	binary.BigEndian.PutUint16(frame[25:27], request.WorkerID)
 	binary.BigEndian.PutUint16(frame[27:29], request.WorkerTotal)
-	identityOffset := 29
-	if version == authProtocolVersion {
-		binary.BigEndian.PutUint64(frame[29:37], request.WorkerEpoch)
-		identityOffset = 37
-	}
+	binary.BigEndian.PutUint64(frame[29:37], request.WorkerEpoch)
+	identityOffset := 37
 	frame[identityOffset] = byte(len(request.User))
 	binary.BigEndian.PutUint16(frame[identityOffset+1:identityOffset+3], uint16(len(request.Password)))
 	copy(frame[identityOffset+3:identityOffset+3+len(request.User)], request.User)
@@ -77,10 +63,10 @@ func encodeAuthRequestVersion(request authRequest, version byte) ([]byte, error)
 
 func decodeAuthRequest(frame []byte) (authRequest, error) {
 	var request authRequest
-	if len(frame) < 32 || len(frame) > maximumAuthFrameLen {
+	if len(frame) < 40 || len(frame) > maximumAuthFrameLen {
 		return request, errors.New("call multi_user: invalid auth frame length")
 	}
-	if !bytes.Equal(frame[0:4], authMagic[:]) || (frame[4] != authProtocolVersionV1 && frame[4] != authProtocolVersion) {
+	if !bytes.Equal(frame[0:4], authMagic[:]) || frame[4] != authProtocolVersion {
 		return request, errors.New("call multi_user: unsupported auth frame")
 	}
 	request.ProtocolVersion = frame[4]
@@ -91,17 +77,11 @@ func decodeAuthRequest(frame []byte) (authRequest, error) {
 	request.Conv = binary.BigEndian.Uint32(frame[21:25])
 	request.WorkerID = binary.BigEndian.Uint16(frame[25:27])
 	request.WorkerTotal = binary.BigEndian.Uint16(frame[27:29])
-	identityOffset := 29
-	if request.ProtocolVersion == authProtocolVersion {
-		if len(frame) < 40 {
-			return request, errors.New("call multi_user: truncated v2 auth frame")
-		}
-		request.WorkerEpoch = binary.BigEndian.Uint64(frame[29:37])
-		if request.WorkerEpoch == 0 {
-			return request, errors.New("call multi_user: zero worker epoch")
-		}
-		identityOffset = 37
+	request.WorkerEpoch = binary.BigEndian.Uint64(frame[29:37])
+	if request.WorkerEpoch == 0 {
+		return request, errors.New("call multi_user: zero worker epoch")
 	}
+	identityOffset := 37
 	userLength := int(frame[identityOffset])
 	passwordLength := int(binary.BigEndian.Uint16(frame[identityOffset+1 : identityOffset+3]))
 	if userLength == 0 || userLength > maximumUserLength || passwordLength == 0 || passwordLength > maximumPasswordLen {
@@ -133,13 +113,9 @@ func validateAuthStrings(user, password string) error {
 }
 
 func encodeAuthAck(accepted bool, generation uint64) []byte {
-	return encodeAuthAckVersion(accepted, generation, authProtocolVersion)
-}
-
-func encodeAuthAckVersion(accepted bool, generation uint64, version byte) []byte {
 	frame := make([]byte, 14)
 	copy(frame[0:4], ackMagic[:])
-	frame[4] = version
+	frame[4] = authProtocolVersion
 	if accepted {
 		frame[5] = 1
 	}

@@ -471,11 +471,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 	if err != nil || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
 		s.telemetry.metrics.Add(telemetry.AuthFailureTotal, 1)
 		s.telemetry.event("auth_failed", "inner_auth", "rejected", "", [16]byte{}, nil)
-		version := byte(authProtocolVersion)
-		if len(authBuffer[:n]) >= 5 && authBuffer[4] == authProtocolVersionV1 {
-			version = authProtocolVersionV1
-		}
-		_, _ = conn.Write(encodeAuthAckVersion(false, 0, version))
+		_, _ = conn.Write(encodeAuthAck(false, 0))
 		return
 	}
 	s.telemetry.metrics.Add(telemetry.AuthSuccessTotal, 1)
@@ -484,13 +480,13 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
 		s.telemetry.metrics.Add(telemetry.WorkerAttachFailureTotal, 1)
 		s.telemetry.event("worker_attach_failed", "worker", "session_rejected", request.User, request.SessionID, &request.WorkerID)
-		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
+		_, _ = conn.Write(encodeAuthAck(false, 0))
 		return
 	}
 	workerMetrics := session.tunnel.telemetryWorker(request.WorkerID)
 	peer.setTelemetryMetrics(workerMetrics)
 	done, err := session.tunnel.AttachWorkerEpoch(request.WorkerID, request.WorkerEpoch, conn, func() error {
-		_, writeErr := conn.Write(encodeAuthAckVersion(true, session.generation, request.ProtocolVersion))
+		_, writeErr := conn.Write(encodeAuthAck(true, session.generation))
 		if writeErr == nil {
 			writeErr = conn.SetDeadline(time.Time{})
 		}
@@ -503,7 +499,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		if created {
 			s.deleteSessionIfUnattached(request.SessionID, session)
 		}
-		_, _ = conn.Write(encodeAuthAckVersion(false, 0, request.ProtocolVersion))
+		_, _ = conn.Write(encodeAuthAck(false, 0))
 		return
 	}
 	workerMetrics.Add(telemetry.WorkerAttachSuccessTotal, 1)

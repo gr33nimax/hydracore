@@ -152,7 +152,6 @@ func (s *multipathScheduler) registerWorker(worker *pooledWorker) {
 		window:  adaptiveInitialPathWindow,
 		probes:  make(map[uint32]multipathPathProbe),
 	}
-	worker.metrics.Set(telemetry.WorkerPathFeedbackCapable, 1)
 	s.paths[worker.id] = state
 	s.mu.Unlock()
 }

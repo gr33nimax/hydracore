@@ -104,9 +104,14 @@ func newSchedulerTestWorker(id uint16) *pooledWorker {
 }
 
 func testKCPPushPacket(sequence uint32, payloadSize int) []byte {
+	return testKCPPushPacketWithUNA(sequence, 0, payloadSize)
+}
+
+func testKCPPushPacketWithUNA(sequence, una uint32, payloadSize int) []byte {
 	packet := make([]byte, kcpHeaderSize+payloadSize)
 	packet[4] = kcpCommandPush
 	binary.LittleEndian.PutUint32(packet[12:16], sequence)
+	binary.LittleEndian.PutUint32(packet[16:20], una)
 	binary.LittleEndian.PutUint32(packet[20:24], uint32(payloadSize))
 	return packet
 }

@@ -41,26 +41,36 @@ func (t *PooledTunnel) observeKCPInput(packet []byte) {
 		return
 	}
 	now := time.Now()
-	forEachKCPSegment(packet, func(command byte, sequence uint32, _ int) {
+	var cumulativeACK uint32
+	hasCumulativeACK := false
+	acknowledgements := make([]uint32, 0, 1)
+	forEachKCPSegmentHeader(packet, func(command byte, sequence, una uint32, _ int) {
+		if !hasCumulativeACK || kcpSequenceAfter(una, cumulativeACK) {
+			cumulativeACK = una
+			hasCumulativeACK = true
+		}
 		if command != kcpCommandACK {
 			return
 		}
+		acknowledgements = append(acknowledgements, sequence)
+	})
+	for _, sequence := range acknowledgements {
 		sent, exists := t.kcpSent[sequence]
 		if !exists {
-			return
+			continue
 		}
 		delete(t.kcpSent, sequence)
 		if sent.retransmitted {
-			return
+			continue
 		}
 		rtt := float64(now.Sub(sent.sentAt)) / float64(time.Millisecond)
 		if rtt < 0 {
-			return
+			continue
 		}
 		if t.kcpSRTTMS == 0 {
 			t.kcpSRTTMS = rtt
 			t.kcpRTTVARMS = rtt / 2
-			return
+			continue
 		}
 		delta := rtt - t.kcpSRTTMS
 		t.kcpSRTTMS += delta / 8
@@ -68,19 +78,45 @@ func (t *PooledTunnel) observeKCPInput(packet []byte) {
 			delta = -delta
 		}
 		t.kcpRTTVARMS += (delta - t.kcpRTTVARMS) / 4
-	})
+	}
+	if hasCumulativeACK {
+		for sequence := range t.kcpSent {
+			if kcpSequenceBefore(sequence, cumulativeACK) {
+				delete(t.kcpSent, sequence)
+			}
+		}
+	}
 }
 
 func forEachKCPSegment(packet []byte, callback func(command byte, sequence uint32, size int)) {
+	forEachKCPSegmentHeader(packet, func(command byte, sequence, _ uint32, size int) {
+		callback(command, sequence, size)
+	})
+}
+
+func forEachKCPSegmentHeader(packet []byte, callback func(command byte, sequence, una uint32, size int)) {
 	for len(packet) >= kcpHeaderSize {
 		length := int(binary.LittleEndian.Uint32(packet[20:24]))
 		if length < 0 || kcpHeaderSize+length > len(packet) {
 			return
 		}
 		segmentSize := kcpHeaderSize + length
-		callback(packet[4], binary.LittleEndian.Uint32(packet[12:16]), segmentSize)
+		callback(
+			packet[4],
+			binary.LittleEndian.Uint32(packet[12:16]),
+			binary.LittleEndian.Uint32(packet[16:20]),
+			segmentSize,
+		)
 		packet = packet[segmentSize:]
 	}
+}
+
+func kcpSequenceBefore(sequence, reference uint32) bool {
+	return int32(sequence-reference) < 0
+}
+
+func kcpSequenceAfter(sequence, reference uint32) bool {
+	return int32(sequence-reference) > 0
 }
 
 func (t *PooledTunnel) handleTelemetryMessage(message []byte) bool {

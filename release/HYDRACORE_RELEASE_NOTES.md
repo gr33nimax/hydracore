@@ -1,9 +1,24 @@
-# HydraCore v1.13.16-extended-hydracore.10-debug.7
+# HydraCore v1.13.16-extended-hydracore.10-debug.8
 
 This is the verified `debug` channel build. It is published automatically only
 after the full Go, Android and Linux workflow succeeds and is intended for
 HYDRA ULTIMATE installations that explicitly select the Hydracore `debug`
 channel. It is not promoted to the stable `latest` release.
+
+Debug.8 fixes the adaptive flight-accounting regression observed in the first
+debug.7 field run. KCP cumulatively acknowledges every sequence below the UNA
+field of every incoming segment and separately processes exact ACK sequence
+numbers. The first path-window controller mirrored only exact ACKs, so its
+per-path flight map retained packets that KCP had already removed. This made
+healthy paths appear hundreds of segments over their windows and eventually
+held every path at its minimum window.
+
+The scheduler and its native telemetry tracker now mirror both KCP acknowledgement
+forms with wrap-safe sequence comparison. Cumulative acknowledgements release
+the original path's flight, delivery bytes and retry pressure; exact clean ACKs
+continue to provide the path RTT sample. Regression coverage includes a peer
+PUSH that advances UNA without carrying the missing exact ACKs. Wire format,
+subscription schema, legacy mode and raw mode remain unchanged.
 
 This revision addresses the remaining adaptive VK overload found by the v3
 1440p field run. Debug.6 removed the inappropriate single KCP congestion window

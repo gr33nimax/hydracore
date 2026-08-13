@@ -345,41 +345,25 @@ func (s *multipathScheduler) observeInput(packet []byte, now time.Time) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	forEachKCPSegment(packet, func(command byte, sequence uint32, _ int) {
+	var cumulativeACK uint32
+	hasCumulativeACK := false
+	acknowledgements := make([]uint32, 0, 1)
+	forEachKCPSegmentHeader(packet, func(command byte, sequence, una uint32, _ int) {
+		if !hasCumulativeACK || kcpSequenceAfter(una, cumulativeACK) {
+			cumulativeACK = una
+			hasCumulativeACK = true
+		}
 		if command != kcpCommandACK {
 			return
 		}
-		sent, exists := s.sent[sequence]
-		if !exists {
-			return
-		}
-		delete(s.sent, sequence)
-		state := s.paths[sent.worker.id]
-		if state == nil || state.worker != sent.worker {
-			return
-		}
-		s.releaseInflightLocked(state)
-		state.retryPressure *= 0.9375
-		if sent.size > 0 {
-			state.worker.metrics.AddHot(telemetry.WorkerPathAckedBytesTotal, uint64(sent.size))
-			s.observeDeliveryLocked(state, sent.size, now)
-		}
-		if sent.retransmitted || sent.sentAt.IsZero() {
-			return
-		}
-		rttMS := float64(now.Sub(sent.sentAt)) / float64(time.Millisecond)
-		if rttMS < 0 {
-			return
-		}
-		if state.rttMS == 0 {
-			state.rttMS = rttMS
-		} else {
-			state.rttMS += (rttMS - state.rttMS) / 8
-		}
-		if state.retryPressure <= adaptiveRetryHealthyThreshold && state.window < adaptiveMaxPathWindow {
-			state.window = min(adaptiveMaxPathWindow, state.window+1/state.window)
-		}
+		acknowledgements = append(acknowledgements, sequence)
 	})
+	for _, sequence := range acknowledgements {
+		s.acknowledgeLocked(sequence, now, true)
+	}
+	if hasCumulativeACK {
+		s.acknowledgeBeforeLocked(cumulativeACK, now)
+	}
 }
 
 func (s *multipathScheduler) publishWorkerMetrics(worker *pooledWorker) {

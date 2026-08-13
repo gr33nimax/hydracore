@@ -55,6 +55,48 @@ func (s *multipathScheduler) releaseInflightLocked(state *multipathPathState) {
 	}
 }
 
+func (s *multipathScheduler) acknowledgeLocked(sequence uint32, now time.Time, exact bool) {
+	sent, exists := s.sent[sequence]
+	if !exists {
+		return
+	}
+	delete(s.sent, sequence)
+	state := s.paths[sent.worker.id]
+	if state == nil || state.worker != sent.worker {
+		return
+	}
+	s.releaseInflightLocked(state)
+	state.retryPressure *= 0.9375
+	if sent.size > 0 {
+		state.worker.metrics.AddHot(telemetry.WorkerPathAckedBytesTotal, uint64(sent.size))
+		s.observeDeliveryLocked(state, sent.size, now)
+	}
+	if sent.retransmitted || sent.sentAt.IsZero() {
+		return
+	}
+	if exact {
+		rttMS := float64(now.Sub(sent.sentAt)) / float64(time.Millisecond)
+		if rttMS >= 0 {
+			if state.rttMS == 0 {
+				state.rttMS = rttMS
+			} else {
+				state.rttMS += (rttMS - state.rttMS) / 8
+			}
+		}
+	}
+	if state.retryPressure <= adaptiveRetryHealthyThreshold && state.window < adaptiveMaxPathWindow {
+		state.window = min(adaptiveMaxPathWindow, state.window+1/state.window)
+	}
+}
+
+func (s *multipathScheduler) acknowledgeBeforeLocked(una uint32, now time.Time) {
+	for sequence := range s.sent {
+		if kcpSequenceBefore(sequence, una) {
+			s.acknowledgeLocked(sequence, now, false)
+		}
+	}
+}
+
 func (s *multipathScheduler) observeDeliveryLocked(state *multipathPathState, size int, now time.Time) {
 	if !state.lastAck.IsZero() && now.Sub(state.lastAck) > adaptiveDeliveryStale {
 		state.deliveryBPS = 0

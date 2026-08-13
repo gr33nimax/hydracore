@@ -135,9 +135,9 @@ func (s *multipathScheduler) nextControlFrame(worker *pooledWorker, now time.Tim
 	if state == nil || state.worker != worker {
 		return nil
 	}
-	if !state.receiveHas || !state.receiveDirty || (
-		!state.lastFeedback.IsZero() && now.Sub(state.lastFeedback) < multipathFeedbackInterval
-	) {
+	feedbackLimited := !state.lastFeedback.IsZero() &&
+		now.Sub(state.lastFeedback) < multipathFeedbackInterval
+	if !state.receiveHas || !state.receiveDirty || feedbackLimited {
 		return nil
 	}
 	state.receiveDirty = false

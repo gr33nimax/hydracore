@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"bytes"
@@ -44,25 +44,25 @@ func TestAuthRequestRejectsPreviousWireVersion(t *testing.T) {
 	}
 	frame, err := encodeAuthRequest(request)
 	require.NoError(t, err)
-	frame[4] = 2
+	frame[4] = 3
 	_, err = decodeAuthRequest(frame)
 	require.ErrorContains(t, err, "unsupported auth frame")
 
 	ack := encodeAuthAck(true, 42)
-	ack[4] = 2
+	ack[4] = 3
 	_, err = decodeAuthAck(ack)
 	require.ErrorContains(t, err, "invalid server auth response")
 }
 
 func TestAuthRequestRejectsInvalidBounds(t *testing.T) {
 	t.Parallel()
-	_, err := encodeAuthRequest(authRequest{Conv: 1, WorkerTotal: 1, User: "alice", Password: "secret"})
+	_, err := encodeAuthRequest(authRequest{Conv: 1, WorkerTotal: LaneCount, User: "alice", Password: "secret"})
 	require.Error(t, err)
 	_, err = encodeAuthRequest(authRequest{
 		SessionID:   [16]byte{1},
 		Conv:        1,
 		WorkerID:    1,
-		WorkerTotal: 1,
+		WorkerTotal: LaneCount,
 		User:        "alice",
 		Password:    "secret",
 	})
@@ -70,7 +70,7 @@ func TestAuthRequestRejectsInvalidBounds(t *testing.T) {
 	_, err = encodeAuthRequest(authRequest{
 		SessionID:   [16]byte{1},
 		Conv:        1,
-		WorkerTotal: 1,
+		WorkerTotal: LaneCount,
 		User:        string(bytes.Repeat([]byte{'a'}, maximumUserLength+1)),
 		Password:    "secret",
 	})

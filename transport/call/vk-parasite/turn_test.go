@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"context"

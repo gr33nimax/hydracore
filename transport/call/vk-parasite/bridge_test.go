@@ -1,4 +1,4 @@
-package call
+package vkparasite
 
 import (
 	"context"
@@ -7,32 +7,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sagernet/sing-box/transport/call/multiuser"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 	"github.com/stretchr/testify/require"
 )
 
-type fakeManagedMultiUserClient struct {
-	tunnel    *multiuser.PooledTunnel
+type fakeManagedParasiteClient struct {
+	tunnel    *ParasiteTunnel
 	done      chan struct{}
 	closeGate <-chan struct{}
 	closeOnce sync.Once
 	rebinds   atomic.Int32
 }
 
-func newFakeManagedMultiUserClient(t *testing.T, conv uint32) *fakeManagedMultiUserClient {
+func newFakeManagedParasiteClient(t *testing.T, conv uint32) *fakeManagedParasiteClient {
 	t.Helper()
-	dataTunnel, err := multiuser.NewPooledTunnel(conv, 1, logger.NOP())
+	dataTunnel, err := NewParasiteTunnel(conv, logger.NOP())
 	require.NoError(t, err)
-	return &fakeManagedMultiUserClient{tunnel: dataTunnel, done: make(chan struct{})}
+	return &fakeManagedParasiteClient{tunnel: dataTunnel, done: make(chan struct{})}
 }
 
-func (c *fakeManagedMultiUserClient) Tunnel() *multiuser.PooledTunnel { return c.tunnel }
-func (c *fakeManagedMultiUserClient) Done() <-chan struct{}           { return c.done }
-func (c *fakeManagedMultiUserClient) RebindNetwork()                  { c.rebinds.Add(1) }
+func (c *fakeManagedParasiteClient) Tunnel() *ParasiteTunnel { return c.tunnel }
+func (c *fakeManagedParasiteClient) Done() <-chan struct{}           { return c.done }
+func (c *fakeManagedParasiteClient) RebindNetwork()                  { c.rebinds.Add(1) }
 
-func (c *fakeManagedMultiUserClient) Close() error {
+func (c *fakeManagedParasiteClient) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.done)
 		if c.closeGate != nil {
@@ -43,14 +42,14 @@ func (c *fakeManagedMultiUserClient) Close() error {
 	return nil
 }
 
-func TestMultiUserBridgeManagerSwapsClientAfterTerminalFailure(t *testing.T) {
+func TestParasiteBridgeManagerSwapsClientAfterTerminalFailure(t *testing.T) {
 	t.Parallel()
-	initial := newFakeManagedMultiUserClient(t, 0x44556677)
-	replacement := newFakeManagedMultiUserClient(t, 0x55667788)
+	initial := newFakeManagedParasiteClient(t, 0x44556677)
+	replacement := newFakeManagedParasiteClient(t, 0x55667788)
 	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", 32768, nil, logger.NOP())
 	relay.MarkReady()
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := newMultiUserBridgeManager(ctx, cancel, relay, func(context.Context) (managedMultiUserClient, error) {
+	manager := newParasiteBridgeManager(ctx, cancel, relay, func(context.Context) (managedParasiteClient, error) {
 		return replacement, nil
 	}, initial, logger.NOP())
 	t.Cleanup(func() {
@@ -72,13 +71,13 @@ func TestMultiUserBridgeManagerSwapsClientAfterTerminalFailure(t *testing.T) {
 	}
 }
 
-func TestMultiUserBridgeManagerRebindsCurrentClient(t *testing.T) {
+func TestParasiteBridgeManagerRebindsCurrentClient(t *testing.T) {
 	t.Parallel()
-	initial := newFakeManagedMultiUserClient(t, 0x44556678)
+	initial := newFakeManagedParasiteClient(t, 0x44556678)
 	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", 32768, nil, logger.NOP())
 	relay.MarkReady()
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := newMultiUserBridgeManager(ctx, cancel, relay, func(context.Context) (managedMultiUserClient, error) {
+	manager := newParasiteBridgeManager(ctx, cancel, relay, func(context.Context) (managedParasiteClient, error) {
 		t.Fatal("network rebind must not recreate the logical client")
 		return nil, context.Canceled
 	}, initial, logger.NOP())
@@ -91,14 +90,14 @@ func TestMultiUserBridgeManagerRebindsCurrentClient(t *testing.T) {
 	require.Equal(t, int32(1), initial.rebinds.Load())
 }
 
-func TestMultiUserBridgeManagerCloseCancelsReconnect(t *testing.T) {
+func TestParasiteBridgeManagerCloseCancelsReconnect(t *testing.T) {
 	t.Parallel()
-	initial := newFakeManagedMultiUserClient(t, 0x66778899)
+	initial := newFakeManagedParasiteClient(t, 0x66778899)
 	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", 32768, nil, logger.NOP())
 	relay.MarkReady()
 	started := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := newMultiUserBridgeManager(ctx, cancel, relay, func(connectCtx context.Context) (managedMultiUserClient, error) {
+	manager := newParasiteBridgeManager(ctx, cancel, relay, func(connectCtx context.Context) (managedParasiteClient, error) {
 		close(started)
 		<-connectCtx.Done()
 		return nil, connectCtx.Err()
@@ -119,19 +118,19 @@ func TestMultiUserBridgeManagerCloseCancelsReconnect(t *testing.T) {
 	}
 }
 
-func TestMultiUserBridgeManagerWaitsForOldClientCleanupBeforeReconnect(t *testing.T) {
+func TestParasiteBridgeManagerWaitsForOldClientCleanupBeforeReconnect(t *testing.T) {
 	t.Parallel()
-	initial := newFakeManagedMultiUserClient(t, 0x778899aa)
+	initial := newFakeManagedParasiteClient(t, 0x778899aa)
 	closeGate := make(chan struct{})
 	var closeGateOnce sync.Once
 	releaseCloseGate := func() { closeGateOnce.Do(func() { close(closeGate) }) }
 	initial.closeGate = closeGate
-	replacement := newFakeManagedMultiUserClient(t, 0x8899aabb)
+	replacement := newFakeManagedParasiteClient(t, 0x8899aabb)
 	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", 32768, nil, logger.NOP())
 	relay.MarkReady()
 	connectCalled := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := newMultiUserBridgeManager(ctx, cancel, relay, func(context.Context) (managedMultiUserClient, error) {
+	manager := newParasiteBridgeManager(ctx, cancel, relay, func(context.Context) (managedParasiteClient, error) {
 		close(connectCalled)
 		return replacement, nil
 	}, initial, logger.NOP())

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.11
+
+- Replaced the shared VK KCP conversation with four independent wire-v4 lanes.
+- Added per-flow sequence bonding and bounded reordering above the lanes.
+- Consolidated the implementation under `transport/call/vk-parasite` and
+  removed the obsolete scheduler profile and wire-v3 contract.
+
 ## Unreleased
 
 - Added independent delivery windows for adaptive VK/TURN workers. Clean paths
@@ -8,12 +15,12 @@
   pending backpressure now follow the bounded aggregate path window, preventing
   all four Calls workers from filling a shared 2048-segment standing queue.
   Added delivery-rate, window, in-flight and backoff telemetry per worker.
-- Added the paired wire-v3 adaptive VK multipath scheduler with bounded path
+- Replaced the obsolete shared wire-v3 VK scheduler with wire-v4 four-lane KCP
   affinity, alternate-path retransmission, ACK/control priority, per-worker
   feedback and explicit legacy A/B fallback. The scheduler uses bounded KCP
   local/remote windows without a single dynamic congestion window spanning all
   TURN paths and without a post-KCP pacer. Added exact per-path attempt/retry
-  counters and the `call_vk_adaptive_multipath` capability gate; raw mode is
+  counters and the `call_vk_four_lane_kcp` capability gate; raw mode is
   unchanged.
 - Made same-path physical feedback mandatory for adaptive traffic and removed
   transitional worker-auth compatibility. Mixed old/new APK and VPS cores now
@@ -39,7 +46,7 @@
 
 - Split release capabilities and artifacts into a client Android runtime and
   a VPS Linux runtime while keeping one versioned source tree. Release roles
-  expose only VK Calls `multi_user`; the combined developer tag retains legacy
+  expose only VK Calls `vk_parasite`; the combined developer tag retains legacy
   compatibility outside the product release surface.
 - Added Calls wire v2 worker epochs and immediate network rebind so Wi-Fi/mobile
   handover replaces stale DTLS/TURN workers without discarding the logical KCP
@@ -52,7 +59,7 @@
 ## v1.13.16-extended-hydracore.6
 
 - Fixed Hydra Subscription v2 plaintext/JWE validation so a `with_call` build
-  accepts the advertised `call_vk_multi_user` required feature alongside
+  accepts the advertised `call_vk_parasite` required feature alongside
   `call`; builds without Calls and unknown requirements remain fail-closed.
 
 ## v1.13.16-extended-hydracore.5
@@ -65,12 +72,12 @@
 
 - Updated the exact `sing-box-extended` baseline to 2.6.2 commit
   `545424b86bc4513f90580ebeab2e2d1514089718`.
-- Added native VK Calls `multi_user` with O(1) per-user authentication,
+- Added native VK Calls `vk_parasite` with O(1) per-user authentication,
   bounded sessions/handshakes, cached VK TURN credentials, one KCP session
   striped across reconnecting DTLS workers, and up to four distinct room
   links.
 - Added `sing-box hydra capabilities --json` and the canonical
-  `features.call_vk_multi_user` / `protocols.call_modes` contract.
+  `features.call_vk_parasite` / `protocols.call_modes` contract.
 - Added reproducible, checksummed Linux `amd64` and `arm64` release archives
   for VPS deployment alongside the Android AAR.
 

@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"bufio"
@@ -32,7 +32,7 @@ func TestServerTelemetryWritesUltimateCompatibleSnapshot(t *testing.T) {
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword:             "outer-secret",
 		Users:                    []ServerUser{{Name: "alice", Password: "user-secret"}},
-		SessionHandler:           func(SessionInfo, *PooledTunnel) error { return nil },
+		SessionHandler: func(SessionInfo, *ParasiteTunnel) error { return nil },
 		TelemetryStateDirectory: stateDirectory,
 		TelemetryOutputPath:     outputPath,
 	}, logger.NOP())
@@ -41,7 +41,7 @@ func TestServerTelemetryWritesUltimateCompatibleSnapshot(t *testing.T) {
 
 	server.telemetry.emit()
 	request := authRequest{
-		SessionID: [16]byte{1}, Conv: 0x12345678, WorkerTotal: 1,
+		SessionID: [16]byte{1}, Conv: 0x12345678, WorkerTotal: LaneCount,
 		User: "alice", Password: "user-secret",
 	}
 	session, _, err := server.getOrCreateSession(request)
@@ -106,14 +106,14 @@ func TestServerTelemetrySeparatesProcessSessionAndWorkerSnapshots(t *testing.T) 
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword:             "outer-secret",
 		Users:                    []ServerUser{{Name: "alice", Password: "user-secret"}},
-		SessionHandler:           func(SessionInfo, *PooledTunnel) error { return nil },
+		SessionHandler: func(SessionInfo, *ParasiteTunnel) error { return nil },
 		TelemetryStateDirectory: stateDirectory,
 		TelemetryOutputPath:     outputPath,
 	}, logger.NOP())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = server.Close() })
 	request := authRequest{
-		SessionID: [16]byte{1}, Conv: 0x12345678, WorkerTotal: 1,
+		SessionID: [16]byte{1}, Conv: 0x12345678, WorkerTotal: LaneCount,
 		User: "alice", Password: "user-secret",
 	}
 	session, _, err := server.getOrCreateSession(request)
@@ -135,7 +135,7 @@ func TestServerTelemetrySeparatesProcessSessionAndWorkerSnapshots(t *testing.T) 
 		records = append(records, record)
 	}
 	require.NoError(t, scanner.Err())
-	require.Len(t, records, 3)
+	require.Len(t, records, 6)
 	require.Equal(t, "alice", records[0].User)
 	require.Nil(t, records[0].WorkerID)
 	require.Equal(t, float64(1234), metricNumber(records[0].Metrics["outer_bytes_out_total"]))
@@ -143,12 +143,12 @@ func TestServerTelemetrySeparatesProcessSessionAndWorkerSnapshots(t *testing.T) 
 	require.NotNil(t, records[1].WorkerID)
 	require.Equal(t, uint16(0), *records[1].WorkerID)
 	require.Equal(t, float64(1234), metricNumber(records[1].Metrics["outer_bytes_out_total"]))
-	require.True(t, strings.HasPrefix(records[2].SessionID, "server-"))
-	require.Empty(t, records[2].User)
+	require.True(t, strings.HasPrefix(records[5].SessionID, "server-"))
+	require.Empty(t, records[5].User)
 }
 
 func TestTelemetryControlDoesNotKeepAnUnattachedSessionAlive(t *testing.T) {
-	tunnel, err := NewPooledTunnel(1, 1, logger.NOP())
+	tunnel, err := NewParasiteTunnel(1, logger.NOP())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tunnel.Close() })
 	before := tunnel.LastActivity()

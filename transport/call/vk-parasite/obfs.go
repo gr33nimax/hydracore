@@ -4,7 +4,7 @@
 // Adapted from proxy-turn-vk-android go_client/obfs.go and wrap.go at
 // commit 40117047d71f0303504e276b18372c0626b94a35.
 
-package multiuser
+package vkparasite
 
 import (
 	"crypto/cipher"
@@ -32,7 +32,7 @@ const (
 func deriveWrapKey(password string) ([wrapKeyLength]byte, error) {
 	var key [wrapKeyLength]byte
 	if password == "" {
-		return key, errors.New("call multi_user: empty obfs_password")
+		return key, errors.New("call vk_parasite: empty obfs_password")
 	}
 	reader := hkdf.New(
 		sha256.New,

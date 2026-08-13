@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/sing-box/transport/call/telemost"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing-box/transport/call/vk"
+	vkparasite "github.com/sagernet/sing-box/transport/call/vk-parasite"
 	"github.com/sagernet/sing-box/transport/call/wbstream"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -35,7 +36,6 @@ type Config struct {
 	UserPassword         string
 	ObfsPassword         string
 	Workers              int
-	MultipathProfile     string
 	WorkerConnectTimeout time.Duration
 	Cookies              string
 	CookieString         string
@@ -61,14 +61,29 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 	if cookieStr == "" {
 		cookieStr = cfg.Cookies
 	}
-	if cfg.Mode == "multi_user" {
+	if cfg.Mode == "vk_parasite" {
 		if cfg.Platform != "vk" {
-			return nil, E.New("call: multi_user mode is only supported for vk")
+			return nil, E.New("call: vk_parasite mode is only supported for vk")
 		}
 		if cfg.Role != RoleJoiner {
-			return nil, E.New("call: multi_user creator role is hosted by the native inbound")
+			return nil, E.New("call: vk_parasite creator role is hosted by the native inbound")
 		}
-		return connectMultiUserBridge(ctx, cfg, readBuf, log)
+		relay, closer, err := vkparasite.ConnectBridge(ctx, vkparasite.BridgeOptions{
+			Server:               cfg.Server,
+			JoinLinks:            cfg.JoinLinks,
+			User:                 cfg.User,
+			Password:             cfg.UserPassword,
+			ObfsPassword:         cfg.ObfsPassword,
+			Workers:              cfg.Workers,
+			WorkerConnectTimeout: cfg.WorkerConnectTimeout,
+			ReadBuffer:           readBuf,
+			Dialer:               cfg.Dialer,
+			DNSRouter:            cfg.DNSRouter,
+		}, log)
+		if err != nil {
+			return nil, err
+		}
+		return &Bridge{relay: relay, closer: closer}, nil
 	}
 	switch cfg.Platform {
 	case "telemost":

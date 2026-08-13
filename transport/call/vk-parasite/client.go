@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"context"
@@ -27,7 +27,6 @@ type ClientOptions struct {
 	Password             string
 	ObfsPassword         string
 	Workers              int
-	MultipathProfile     MultipathProfile
 	WorkerConnectTimeout time.Duration
 	Dialer               N.Dialer
 	DNSRouter            adapter.DNSRouter
@@ -44,7 +43,7 @@ type Client struct {
 	key            [wrapKeyLength]byte
 	sessionID      [16]byte
 	conv           uint32
-	tunnel         *PooledTunnel
+	tunnel         *ParasiteTunnel
 	metrics        *telemetry.Accumulator
 	telemetryLease atomic.Int64
 	telemetryLeaseExpired atomic.Bool
@@ -131,7 +130,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	if metrics == nil {
 		metrics = telemetry.NewAccumulator()
 	}
-	tunnel, err := newPooledTunnelWithProfile(conv, options.Workers, options.MultipathProfile, log, metrics)
+	tunnel, err := newParasiteTunnel(conv, log, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -170,9 +169,9 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		case <-timer.C:
 			_ = client.Close()
 			if lastErr != nil {
-				return nil, fmt.Errorf("call multi_user: no VK TURN worker connected: %w", lastErr)
+				return nil, fmt.Errorf("call vk_parasite: no VK TURN worker connected: %w", lastErr)
 			}
-			return nil, errors.New("call multi_user: no VK TURN worker connected before timeout")
+			return nil, errors.New("call vk_parasite: no VK TURN worker connected before timeout")
 		case <-parent.Done():
 			_ = client.Close()
 			return nil, parent.Err()
@@ -181,26 +180,21 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 }
 
 func validateClientOptions(options ClientOptions) (ClientOptions, error) {
-	profile, err := normalizeMultipathProfile(options.MultipathProfile)
-	if err != nil {
-		return options, err
-	}
-	options.MultipathProfile = profile
 	if !options.Server.IsValid() || options.Server.Port == 0 {
-		return options, errors.New("call multi_user: missing server or server_port")
+		return options, errors.New("call vk_parasite: missing server or server_port")
 	}
 	if len(options.JoinLinks) < 1 || len(options.JoinLinks) > 4 {
-		return options, errors.New("call multi_user: join_links must contain between 1 and 4 links")
+		return options, errors.New("call vk_parasite: join_links must contain between 1 and 4 links")
 	}
 	normalizedLinks := make([]string, 0, len(options.JoinLinks))
 	seenLinks := make(map[string]struct{}, len(options.JoinLinks))
 	for _, link := range options.JoinLinks {
 		link = strings.TrimSpace(link)
 		if link == "" || len(link) > 2048 {
-			return options, errors.New("call multi_user: invalid join_links entry")
+			return options, errors.New("call vk_parasite: invalid join_links entry")
 		}
 		if _, exists := seenLinks[link]; exists {
-			return options, errors.New("call multi_user: duplicate join_links entry")
+			return options, errors.New("call vk_parasite: duplicate join_links entry")
 		}
 		seenLinks[link] = struct{}{}
 		normalizedLinks = append(normalizedLinks, link)
@@ -210,25 +204,22 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 		return options, err
 	}
 	if len(options.ObfsPassword) == 0 || len(options.ObfsPassword) > maximumPasswordLen {
-		return options, errors.New("call multi_user: invalid obfs_password length")
+		return options, errors.New("call vk_parasite: invalid obfs_password length")
 	}
 	if options.Workers == 0 {
-		options.Workers = len(options.JoinLinks)
+		options.Workers = LaneCount
 	}
-	if options.Workers < 1 || options.Workers > HardMaxWorkers {
-		return options, errors.New("call multi_user: workers outside hard bounds")
-	}
-	if options.Workers > 27*len(options.JoinLinks) {
-		return options, errors.New("call multi_user: workers exceed 27 allocations per join link")
+	if options.Workers != LaneCount {
+		return options, errors.New("call vk_parasite: exactly four VK lanes are required")
 	}
 	if options.WorkerConnectTimeout == 0 {
 		options.WorkerConnectTimeout = 30 * time.Second
 	}
 	if options.WorkerConnectTimeout < time.Second || options.WorkerConnectTimeout > 2*time.Minute {
-		return options, errors.New("call multi_user: worker_connect_timeout must be between 1s and 2m")
+		return options, errors.New("call vk_parasite: worker_connect_timeout must be between 1s and 2m")
 	}
 	if options.Dialer == nil || options.Credentials == nil {
-		return options, errors.New("call multi_user: missing network dependencies")
+		return options, errors.New("call vk_parasite: missing network dependencies")
 	}
 	return options, nil
 }
@@ -262,7 +253,7 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 			case c.errors <- err:
 			default:
 			}
-			c.logger.Debug(fmt.Sprintf("call multi_user: worker %d reconnecting after transport error", workerID))
+			c.logger.Debug(fmt.Sprintf("call vk_parasite: worker %d reconnecting after transport error", workerID))
 		}
 		metrics.Set(telemetry.WorkerReconnectBackoffMS, float64(backoff/time.Millisecond))
 		timer := time.NewTimer(backoff)
@@ -375,7 +366,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "generation")
 		_ = conn.Close()
 		_ = c.Close()
-		return nil, errors.New("call multi_user: server session state was reset")
+		return nil, errors.New("call vk_parasite: server session state was reset")
 	}
 	_ = conn.SetDeadline(time.Time{})
 	done, err := c.tunnel.AddWorkerEpoch(workerID, workerEpoch, conn)
@@ -413,7 +404,7 @@ func telemetryFailureReason(err error) string {
 	}
 }
 
-func (c *Client) Tunnel() *PooledTunnel { return c.tunnel }
+func (c *Client) Tunnel() *ParasiteTunnel { return c.tunnel }
 
 func (c *Client) Done() <-chan struct{} { return c.ctx.Done() }
 
@@ -435,7 +426,7 @@ func (c *Client) RebindNetwork() {
 		c.workers[workerID].interrupt()
 		c.tunnel.DropWorker(uint16(workerID))
 	}
-	c.logger.Info("call multi_user: network changed, rebinding worker transports")
+	c.logger.Info("call vk_parasite: network changed, rebinding worker transports")
 }
 
 func (c *Client) monitorConnectivity() {

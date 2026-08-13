@@ -1,60 +1,75 @@
-package call
+package vkparasite
 
 import (
 	"context"
+	"io"
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing-box/adapter"
 	callcommon "github.com/sagernet/sing-box/transport/call/common"
-	"github.com/sagernet/sing-box/transport/call/multiuser"
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing-box/transport/call/vk"
 	"github.com/sagernet/sing/common/logger"
+	M "github.com/sagernet/sing/common/metadata"
+	N "github.com/sagernet/sing/common/network"
 )
 
-const multiUserReconnectMaxBackoff = 30 * time.Second
+const parasiteReconnectMaxBackoff = 30 * time.Second
 
-type managedMultiUserClient interface {
-	Tunnel() *multiuser.PooledTunnel
+type managedParasiteClient interface {
+	Tunnel() *ParasiteTunnel
 	Done() <-chan struct{}
 	RebindNetwork()
 	Close() error
 }
 
-type multiUserConnector func(ctx context.Context) (managedMultiUserClient, error)
+type BridgeOptions struct {
+	Server               M.Socksaddr
+	JoinLinks            []string
+	User                 string
+	Password             string
+	ObfsPassword         string
+	Workers              int
+	WorkerConnectTimeout time.Duration
+	ReadBuffer           int
+	Dialer               N.Dialer
+	DNSRouter            adapter.DNSRouter
+}
 
-type multiUserBridgeManager struct {
+type parasiteConnector func(ctx context.Context) (managedParasiteClient, error)
+
+type parasiteBridgeManager struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	relay   *tunnel.RelayBridge
-	connect multiUserConnector
+	connect parasiteConnector
 	logger  logger.ContextLogger
 
 	clientMu  sync.Mutex
-	client    managedMultiUserClient
+	client    managedParasiteClient
 	done      chan struct{}
 	closeOnce sync.Once
 }
 
-func connectMultiUserBridge(ctx context.Context, cfg Config, readBuffer int, log logger.ContextLogger) (*Bridge, error) {
+func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLogger) (*tunnel.RelayBridge, io.Closer, error) {
 	metrics := telemetry.NewAccumulator()
 	provider := vk.NewTURNCredentialProvider(cfg.Dialer, log)
 	provider.SetTelemetry(metrics)
-	options := multiuser.ClientOptions{
+	options := ClientOptions{
 		Server:               cfg.Server,
 		JoinLinks:            append([]string(nil), cfg.JoinLinks...),
 		User:                 cfg.User,
-		Password:             cfg.UserPassword,
+		Password:             cfg.Password,
 		ObfsPassword:         cfg.ObfsPassword,
 		Workers:              cfg.Workers,
-		MultipathProfile:     multiuser.MultipathProfile(cfg.MultipathProfile),
 		WorkerConnectTimeout: cfg.WorkerConnectTimeout,
 		Dialer:               cfg.Dialer,
 		DNSRouter:            cfg.DNSRouter,
-		Credentials: func(fetchCtx context.Context, joinLink string) (multiuser.TURNCredentials, error) {
+		Credentials: func(fetchCtx context.Context, joinLink string) (TURNCredentials, error) {
 			server, fetchErr := provider.Fetch(fetchCtx, joinLink)
-			return multiuser.TURNCredentials{
+			return TURNCredentials{
 				URLs:       server.URLs,
 				Username:   server.Username,
 				Credential: server.Credential,
@@ -63,29 +78,29 @@ func connectMultiUserBridge(ctx context.Context, cfg Config, readBuffer int, log
 		Telemetry: metrics,
 	}
 	managerCtx, cancel := context.WithCancel(ctx)
-	connector := func(connectCtx context.Context) (managedMultiUserClient, error) {
-		return multiuser.ConnectClient(connectCtx, options, log)
+	connector := func(connectCtx context.Context) (managedParasiteClient, error) {
+		return ConnectClient(connectCtx, options, log)
 	}
 	initial, err := connector(managerCtx)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, nil, err
 	}
-	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", readBuffer, cfg.Dialer, log)
+	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", cfg.ReadBuffer, cfg.Dialer, log)
 	relay.MarkReady()
-	manager := newMultiUserBridgeManager(managerCtx, cancel, relay, connector, initial, log)
-	return &Bridge{relay: relay, closer: manager}, nil
+	manager := newParasiteBridgeManager(managerCtx, cancel, relay, connector, initial, log)
+	return relay, manager, nil
 }
 
-func newMultiUserBridgeManager(
+func newParasiteBridgeManager(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	relay *tunnel.RelayBridge,
-	connector multiUserConnector,
-	initial managedMultiUserClient,
+	connector parasiteConnector,
+	initial managedParasiteClient,
 	log logger.ContextLogger,
-) *multiUserBridgeManager {
-	manager := &multiUserBridgeManager{
+) *parasiteBridgeManager {
+	manager := &parasiteBridgeManager{
 		ctx:     ctx,
 		cancel:  cancel,
 		relay:   relay,
@@ -98,7 +113,7 @@ func newMultiUserBridgeManager(
 	return manager
 }
 
-func (m *multiUserBridgeManager) run(initial managedMultiUserClient) {
+func (m *parasiteBridgeManager) run(initial managedParasiteClient) {
 	defer close(m.done)
 	current := initial
 	for {
@@ -128,7 +143,7 @@ func (m *multiUserBridgeManager) run(initial managedMultiUserClient) {
 	}
 }
 
-func (m *multiUserBridgeManager) reconnect() managedMultiUserClient {
+func (m *parasiteBridgeManager) reconnect() managedParasiteClient {
 	backoff := time.Second
 	for {
 		if m.ctx.Err() != nil {
@@ -136,10 +151,10 @@ func (m *multiUserBridgeManager) reconnect() managedMultiUserClient {
 		}
 		client, err := m.connect(m.ctx)
 		if err == nil {
-			m.logger.Info("call multi_user: native session reconnected")
+			m.logger.Info("call vk_parasite: native session reconnected")
 			return client
 		}
-		m.logger.Warn("call multi_user: reconnect failed, retrying: ", callcommon.MaskError(err))
+		m.logger.Warn("call vk_parasite: reconnect failed, retrying: ", callcommon.MaskError(err))
 		timer := time.NewTimer(backoff)
 		select {
 		case <-timer.C:
@@ -147,16 +162,16 @@ func (m *multiUserBridgeManager) reconnect() managedMultiUserClient {
 			timer.Stop()
 			return nil
 		}
-		if backoff < multiUserReconnectMaxBackoff {
+		if backoff < parasiteReconnectMaxBackoff {
 			backoff *= 2
-			if backoff > multiUserReconnectMaxBackoff {
-				backoff = multiUserReconnectMaxBackoff
+			if backoff > parasiteReconnectMaxBackoff {
+				backoff = parasiteReconnectMaxBackoff
 			}
 		}
 	}
 }
 
-func (m *multiUserBridgeManager) RebindNetwork() {
+func (m *parasiteBridgeManager) RebindNetwork() {
 	m.clientMu.Lock()
 	current := m.client
 	m.clientMu.Unlock()
@@ -165,7 +180,7 @@ func (m *multiUserBridgeManager) RebindNetwork() {
 	}
 }
 
-func (m *multiUserBridgeManager) Close() error {
+func (m *parasiteBridgeManager) Close() error {
 	var closeErr error
 	m.closeOnce.Do(func() {
 		m.cancel()

@@ -57,9 +57,9 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if options.Platform == "" {
 		return nil, E.New("missing platform")
 	}
-	if options.Mode == "multi_user" {
+	if options.Mode == "vk_parasite" {
 		if options.Platform != "vk" {
-			return nil, E.New("call multi_user is only supported for vk")
+			return nil, E.New("call vk_parasite is only supported for vk")
 		}
 		if !options.ServerOptions.Build().IsValid() || options.ServerPort == 0 {
 			return nil, E.New("missing server or server_port")
@@ -97,7 +97,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			UserPassword:         options.Password,
 			ObfsPassword:         options.ObfsPassword,
 			Workers:              options.Workers,
-			MultipathProfile:     options.MultipathProfile,
 			WorkerConnectTimeout: time.Duration(options.WorkerConnectTimeout),
 			CookieString:         options.Cookies.Header(),
 			ReadBuffer:           options.ReadBuffer,
@@ -125,10 +124,10 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 }
 
 // InterfaceUpdated participates in sing-box's standard ResetNetwork lifecycle.
-// Multi-user Calls preserves its logical bridge and replaces only TURN/DTLS
-// workers, so existing proxied flows can survive a mobile handover.
+// VK parasite Calls preserves its logical bridge and replaces only TURN/DTLS
+// lanes, so existing proxied flows can survive a mobile handover.
 func (o *Outbound) InterfaceUpdated() {
-	if o.options.Mode != "multi_user" || o.closed.Load() {
+	if o.options.Mode != "vk_parasite" || o.closed.Load() {
 		return
 	}
 	select {

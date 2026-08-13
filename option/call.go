@@ -61,7 +61,6 @@ type CallCommonOptions struct {
 	ReadBuffer        int    `json:"read_buffer,omitempty"`
 	MaxBufferedAmount int    `json:"max_buffered_amount,omitempty"`
 	MemoryLimit       int64  `json:"memory_limit,omitempty"`
-	MultipathProfile  string `json:"multipath_profile,omitempty"`
 }
 
 type CallInboundOptions struct {

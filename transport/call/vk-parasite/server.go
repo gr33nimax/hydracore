@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	HardMaxWorkers           = 108
+	HardMaxWorkers           = LaneCount
 	HardMaxSessions          = 4096
 	HardMaxUsers             = 4096
 	HardMaxPendingHandshakes = 4096
@@ -52,7 +52,7 @@ type SessionInfo struct {
 	User string
 }
 
-type SessionHandler func(info SessionInfo, tunnel *PooledTunnel) error
+type SessionHandler func(info SessionInfo, tunnel *ParasiteTunnel) error
 
 type ServerOptions struct {
 	ObfsPassword             string
@@ -67,7 +67,6 @@ type ServerOptions struct {
 	IngressWorkers           int
 	IngressQueuePackets      int
 	PeerReadQueuePackets     int
-	MultipathProfile         MultipathProfile
 	SessionHandler           SessionHandler
 	TelemetryStateDirectory string
 	TelemetryOutputPath     string
@@ -84,7 +83,7 @@ type serverSession struct {
 	user            string
 	conv            uint32
 	expected        uint16
-	tunnel          *PooledTunnel
+	tunnel          *ParasiteTunnel
 	ready           chan struct{}
 	setupErr        error
 	generation      uint64
@@ -135,7 +134,7 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 	}
 	certificate, err := selfsign.GenerateSelfSigned()
 	if err != nil {
-		return nil, fmt.Errorf("call multi_user: generate DTLS certificate: %w", err)
+		return nil, fmt.Errorf("call vk_parasite: generate DTLS certificate: %w", err)
 	}
 	ctx, cancel := context.WithCancel(parent)
 	server := &Server{
@@ -162,49 +161,44 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 }
 
 func validateServerOptions(options ServerOptions) (ServerOptions, map[string]serverUser, error) {
-	profile, err := normalizeMultipathProfile(options.MultipathProfile)
-	if err != nil {
-		return options, nil, err
-	}
-	options.MultipathProfile = profile
 	if options.SessionHandler == nil {
-		return options, nil, errors.New("call multi_user: missing session handler")
+		return options, nil, errors.New("call vk_parasite: missing session handler")
 	}
 	if len(options.ObfsPassword) == 0 || len(options.ObfsPassword) > maximumPasswordLen {
-		return options, nil, errors.New("call multi_user: invalid obfs_password length")
+		return options, nil, errors.New("call vk_parasite: invalid obfs_password length")
 	}
 	if len(options.Users) == 0 || len(options.Users) > HardMaxUsers {
-		return options, nil, errors.New("call multi_user: users must contain between 1 and 4096 entries")
+		return options, nil, errors.New("call vk_parasite: users must contain between 1 and 4096 entries")
 	}
 	if options.MaxSessions == 0 {
 		options.MaxSessions = len(options.Users)
 	}
 	if options.MaxSessions < 1 || options.MaxSessions > HardMaxSessions {
-		return options, nil, errors.New("call multi_user: max_sessions outside hard bounds")
+		return options, nil, errors.New("call vk_parasite: max_sessions outside hard bounds")
 	}
 	if options.MaxWorkersPerSession == 0 {
 		options.MaxWorkersPerSession = defaultMaxWorkers
 	}
-	if options.MaxWorkersPerSession < 1 || options.MaxWorkersPerSession > HardMaxWorkers {
-		return options, nil, errors.New("call multi_user: max_workers_per_session outside hard bounds")
+	if options.MaxWorkersPerSession != LaneCount {
+		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be four")
 	}
 	if options.MaxPendingHandshakes == 0 {
 		options.MaxPendingHandshakes = defaultMaxPendingHandshakes
 	}
 	if options.MaxPendingHandshakes < 1 || options.MaxPendingHandshakes > HardMaxPendingHandshakes {
-		return options, nil, errors.New("call multi_user: max_pending_handshakes outside hard bounds")
+		return options, nil, errors.New("call vk_parasite: max_pending_handshakes outside hard bounds")
 	}
 	if options.HandshakeTimeout == 0 {
 		options.HandshakeTimeout = defaultHandshakeTimeout
 	}
 	if options.HandshakeTimeout < time.Second || options.HandshakeTimeout > time.Minute {
-		return options, nil, errors.New("call multi_user: handshake_timeout must be between 1s and 1m")
+		return options, nil, errors.New("call vk_parasite: handshake_timeout must be between 1s and 1m")
 	}
 	if options.SessionIdleTimeout == 0 {
 		options.SessionIdleTimeout = defaultSessionIdleTimeout
 	}
 	if options.SessionIdleTimeout < 30*time.Second || options.SessionIdleTimeout > 24*time.Hour {
-		return options, nil, errors.New("call multi_user: session_idle_timeout must be between 30s and 24h")
+		return options, nil, errors.New("call vk_parasite: session_idle_timeout must be between 30s and 24h")
 	}
 	if options.UDPReceiveBufferBytes == 0 {
 		options.UDPReceiveBufferBytes = defaultUDPReceiveBufferBytes
@@ -214,25 +208,25 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	}
 	if options.UDPReceiveBufferBytes < 256*1024 || options.UDPReceiveBufferBytes > 64*1024*1024 ||
 		options.UDPSendBufferBytes < 256*1024 || options.UDPSendBufferBytes > 64*1024*1024 {
-		return options, nil, errors.New("call multi_user: UDP socket buffers must be between 256 KiB and 64 MiB")
+		return options, nil, errors.New("call vk_parasite: UDP socket buffers must be between 256 KiB and 64 MiB")
 	}
 	if options.IngressWorkers == 0 {
 		options.IngressWorkers = min(4, max(1, runtime.GOMAXPROCS(0)))
 	}
 	if options.IngressWorkers < 1 || options.IngressWorkers > HardMaxIngressWorkers {
-		return options, nil, errors.New("call multi_user: ingress_workers outside hard bounds")
+		return options, nil, errors.New("call vk_parasite: ingress_workers outside hard bounds")
 	}
 	if options.IngressQueuePackets == 0 {
 		options.IngressQueuePackets = defaultIngressQueuePackets
 	}
 	if options.IngressQueuePackets < options.IngressWorkers || options.IngressQueuePackets > HardMaxIngressQueuePackets {
-		return options, nil, errors.New("call multi_user: ingress_queue_packets outside hard bounds")
+		return options, nil, errors.New("call vk_parasite: ingress_queue_packets outside hard bounds")
 	}
 	if options.PeerReadQueuePackets == 0 {
 		options.PeerReadQueuePackets = defaultPeerReadQueuePackets
 	}
 	if options.PeerReadQueuePackets < 16 || options.PeerReadQueuePackets > HardMaxPeerReadQueuePackets {
-		return options, nil, errors.New("call multi_user: peer_read_queue_packets outside hard bounds")
+		return options, nil, errors.New("call vk_parasite: peer_read_queue_packets outside hard bounds")
 	}
 	users := make(map[string]serverUser, len(options.Users))
 	for _, user := range options.Users {
@@ -240,14 +234,14 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 			return options, nil, err
 		}
 		if _, exists := users[user.Name]; exists {
-			return options, nil, errors.New("call multi_user: duplicate user name")
+			return options, nil, errors.New("call vk_parasite: duplicate user name")
 		}
 		maxSessions := user.MaxSessions
 		if maxSessions == 0 {
 			maxSessions = 1
 		}
 		if maxSessions < 1 || maxSessions > options.MaxSessions {
-			return options, nil, errors.New("call multi_user: user max_sessions outside global bounds")
+			return options, nil, errors.New("call vk_parasite: user max_sessions outside global bounds")
 		}
 		users[user.Name] = serverUser{passwordHash: sha256.Sum256([]byte(user.Password)), maxSessions: maxSessions}
 	}
@@ -256,12 +250,12 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 
 func (s *Server) Start(packetConn net.PacketConn) error {
 	if packetConn == nil {
-		return errors.New("call multi_user: missing UDP listener")
+		return errors.New("call vk_parasite: missing UDP listener")
 	}
 	s.peersMu.Lock()
 	if s.packetConn != nil {
 		s.peersMu.Unlock()
-		return errors.New("call multi_user: server already started")
+		return errors.New("call vk_parasite: server already started")
 	}
 	s.packetConn = packetConn
 	decoders := make([]*rtpCodec, s.options.IngressWorkers)
@@ -307,7 +301,7 @@ func (s *Server) readLoop(packetConn net.PacketConn, decoders []*rtpCodec) {
 			case <-s.ctx.Done():
 				return
 			default:
-				s.logger.Warn("call multi_user: UDP listener stopped: ", err)
+				s.logger.Warn("call vk_parasite: UDP listener stopped: ", err)
 				return
 			}
 		}
@@ -526,7 +520,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	if session := s.sessions[request.SessionID]; session != nil {
 		if session.user != request.User || session.conv != request.Conv || session.expected != request.WorkerTotal {
 			s.sessionsMu.Unlock()
-			return nil, false, errors.New("call multi_user: session identity mismatch")
+			return nil, false, errors.New("call vk_parasite: session identity mismatch")
 		}
 		ready := session.ready
 		s.sessionsMu.Unlock()
@@ -535,7 +529,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 			s.sessionsMu.Lock()
 			if s.sessions[request.SessionID] != session {
 				s.sessionsMu.Unlock()
-				return nil, false, errors.New("call multi_user: session was replaced")
+				return nil, false, errors.New("call vk_parasite: session was replaced")
 			}
 			if session.setupErr != nil {
 				sessionsErr := session.setupErr
@@ -557,14 +551,14 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	if len(s.sessions) >= s.options.MaxSessions {
 		s.sessionsMu.Unlock()
 		closeServerSessions(evicted)
-		return nil, false, errors.New("call multi_user: global session limit reached")
+		return nil, false, errors.New("call vk_parasite: global session limit reached")
 	}
 	if s.userSessions[request.User] >= record.maxSessions {
 		s.sessionsMu.Unlock()
 		closeServerSessions(evicted)
-		return nil, false, errors.New("call multi_user: user session limit reached")
+		return nil, false, errors.New("call vk_parasite: user session limit reached")
 	}
-	tunnel, err := NewPooledTunnelWithProfile(request.Conv, s.options.MaxWorkersPerSession, s.options.MultipathProfile, s.logger)
+	tunnel, err := NewParasiteTunnel(request.Conv, s.logger)
 	if err != nil {
 		s.sessionsMu.Unlock()
 		closeServerSessions(evicted)

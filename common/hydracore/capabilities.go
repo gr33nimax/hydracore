@@ -31,11 +31,11 @@ type FeatureSet struct {
 	VLESSEncryption              bool `json:"vless_encryption"`
 	Rmux                         bool `json:"rmux"`
 	Call                         bool `json:"call"`
-	CallVKMultiUser              bool `json:"call_vk_multi_user"`
-	CallVKMultiUserClient        bool `json:"call_vk_multi_user_client"`
-	CallVKMultiUserServer        bool `json:"call_vk_multi_user_server"`
+	CallVKParasite               bool `json:"call_vk_parasite"`
+	CallVKParasiteClient         bool `json:"call_vk_parasite_client"`
+	CallVKParasiteServer         bool `json:"call_vk_parasite_server"`
 	CallVKTelemetry              bool `json:"call_vk_telemetry"`
-	CallVKAdaptiveMultipath      bool `json:"call_vk_adaptive_multipath"`
+	CallVKFourLaneKCP            bool `json:"call_vk_four_lane_kcp"`
 	AmneziaVersion               int  `json:"amnezia_version"`
 }
 
@@ -45,7 +45,7 @@ type ProtocolSet struct {
 	Endpoints           []string          `json:"endpoints"`
 	CallPlatforms       []string          `json:"call_platforms"`
 	CallModes           []string          `json:"call_modes"`
-	CallVKMultiUserWire WireCompatibility `json:"call_vk_multi_user_wire"`
+	CallVKParasiteWire  WireCompatibility `json:"call_vk_parasite_wire"`
 }
 
 type WireCompatibility struct {
@@ -124,11 +124,11 @@ func Capabilities() CapabilitySet {
 			VLESSEncryption:              true,
 			Rmux:                         true,
 			Call:                         callEnabled,
-			CallVKMultiUser:              callEnabled,
-			CallVKMultiUserClient:        callClientEnabled,
-			CallVKMultiUserServer:        callServerEnabled,
+			CallVKParasite:               callEnabled,
+			CallVKParasiteClient:         callClientEnabled,
+			CallVKParasiteServer:         callServerEnabled,
 			CallVKTelemetry:              callEnabled,
-			CallVKAdaptiveMultipath:      callEnabled,
+			CallVKFourLaneKCP:            callEnabled,
 			AmneziaVersion:               3,
 		},
 		Protocols: ProtocolSet{
@@ -137,7 +137,7 @@ func Capabilities() CapabilitySet {
 			Endpoints:           []string{"wireguard"},
 			CallPlatforms:       append([]string(nil), callPlatforms...),
 			CallModes:           append([]string(nil), callModes...),
-			CallVKMultiUserWire: WireCompatibility{Min: callWireMin, Max: callWireMax},
+			CallVKParasiteWire:  WireCompatibility{Min: callWireMin, Max: callWireMax},
 		},
 		TUNStacks:              []string{"system", "gvisor", "mixed"},
 		XHTTPModes:             []string{"packet-up", "stream-up", "stream-one"},
@@ -166,7 +166,7 @@ func Capabilities() CapabilitySet {
 }
 
 func SupportsCallMode(mode string) bool {
-	if mode != "multi_user" {
+	if mode != "vk_parasite" {
 		mode = "p2p"
 	}
 	for _, supportedMode := range callModes {

@@ -1,6 +1,6 @@
 //go:build !linux
 
-package multiuser
+package vkparasite
 
 import "net"
 

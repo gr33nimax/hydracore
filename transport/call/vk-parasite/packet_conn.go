@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"errors"
@@ -11,7 +11,7 @@ import (
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 )
 
-var errPacketConnClosed = errors.New("call multi_user: packet connection closed")
+var errPacketConnClosed = errors.New("call vk_parasite: packet connection closed")
 
 type receivedPacket struct {
 	payload []byte
@@ -204,7 +204,7 @@ func (c *obfsPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 
 func (c *obfsPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	if !samePacketAddress(addr, c.remote) {
-		return 0, errors.New("call multi_user: unexpected DTLS destination")
+		return 0, errors.New("call vk_parasite: unexpected DTLS destination")
 	}
 	wire, err := c.codec.wrap(payload)
 	if err != nil {

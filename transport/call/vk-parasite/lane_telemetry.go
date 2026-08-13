@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"encoding/binary"
@@ -14,30 +14,30 @@ const (
 	kcpHeaderSize  = 24
 )
 
-func (t *PooledTunnel) observeKCPOutput(packet []byte) {
-	if !t.metrics.CollectionActive() {
+func (l *kcpLane) observeKCPOutput(packet []byte) {
+	if !l.metrics.CollectionActive() {
 		return
 	}
 	now := time.Now()
 	forEachKCPSegment(packet, func(command byte, sequence uint32, size int) {
-		t.metrics.AddHot(telemetry.KCPOutSegmentsTotal, 1)
-		t.metrics.AddHot(telemetry.KCPOutBytesTotal, uint64(size))
+		l.metrics.AddHot(telemetry.KCPOutSegmentsTotal, 1)
+		l.metrics.AddHot(telemetry.KCPOutBytesTotal, uint64(size))
 		if command != kcpCommandPush {
 			return
 		}
-		if previous, exists := t.kcpSent[sequence]; exists {
+		if previous, exists := l.kcpSent[sequence]; exists {
 			previous.retransmitted = true
-			t.kcpSent[sequence] = previous
-			t.metrics.AddHot(telemetry.KCPRetransSegmentsTotal, 1)
-			t.metrics.AddHot(telemetry.KCPRetransBytesTotal, uint64(size))
+			l.kcpSent[sequence] = previous
+			l.metrics.AddHot(telemetry.KCPRetransSegmentsTotal, 1)
+			l.metrics.AddHot(telemetry.KCPRetransBytesTotal, uint64(size))
 			return
 		}
-		t.kcpSent[sequence] = kcpSentSegment{sentAt: now}
+		l.kcpSent[sequence] = kcpSentSegment{sentAt: now}
 	})
 }
 
-func (t *PooledTunnel) observeKCPInput(packet []byte) {
-	if !t.metrics.CollectionActive() {
+func (l *kcpLane) observeKCPInput(packet []byte) {
+	if !l.metrics.CollectionActive() {
 		return
 	}
 	now := time.Now()
@@ -55,11 +55,11 @@ func (t *PooledTunnel) observeKCPInput(packet []byte) {
 		acknowledgements = append(acknowledgements, sequence)
 	})
 	for _, sequence := range acknowledgements {
-		sent, exists := t.kcpSent[sequence]
+		sent, exists := l.kcpSent[sequence]
 		if !exists {
 			continue
 		}
-		delete(t.kcpSent, sequence)
+		delete(l.kcpSent, sequence)
 		if sent.retransmitted {
 			continue
 		}
@@ -67,48 +67,48 @@ func (t *PooledTunnel) observeKCPInput(packet []byte) {
 		if rtt < 0 {
 			continue
 		}
-		if t.kcpSRTTMS == 0 {
-			t.kcpSRTTMS = rtt
-			t.kcpRTTVARMS = rtt / 2
+		if l.kcpSRTTMS == 0 {
+			l.kcpSRTTMS = rtt
+			l.kcpRTTVARMS = rtt / 2
 			continue
 		}
-		delta := rtt - t.kcpSRTTMS
-		t.kcpSRTTMS += delta / 8
+		delta := rtt - l.kcpSRTTMS
+		l.kcpSRTTMS += delta / 8
 		if delta < 0 {
 			delta = -delta
 		}
-		t.kcpRTTVARMS += (delta - t.kcpRTTVARMS) / 4
+		l.kcpRTTVARMS += (delta - l.kcpRTTVARMS) / 4
 	}
 	if hasCumulativeACK {
-		t.pruneKCPSentBefore(cumulativeACK)
+		l.pruneKCPSentBefore(cumulativeACK)
 	}
 }
 
-func (t *PooledTunnel) pruneKCPSentBefore(una uint32) {
-	if !t.kcpHasUNA {
-		t.pruneKCPSentFallback(una)
-		t.kcpLastUNA = una
-		t.kcpHasUNA = true
+func (l *kcpLane) pruneKCPSentBefore(una uint32) {
+	if !l.kcpHasUNA {
+		l.pruneKCPSentFallback(una)
+		l.kcpLastUNA = una
+		l.kcpHasUNA = true
 		return
 	}
-	distance := uint32(una - t.kcpLastUNA)
-	if distance == 0 || !kcpSequenceAfter(una, t.kcpLastUNA) {
+	distance := uint32(una - l.kcpLastUNA)
+	if distance == 0 || !kcpSequenceAfter(una, l.kcpLastUNA) {
 		return
 	}
-	if distance > pooledKCPMaxPending*2 {
-		t.pruneKCPSentFallback(una)
+	if distance > laneKCPMaxPending*2 {
+		l.pruneKCPSentFallback(una)
 	} else {
-		for sequence := t.kcpLastUNA; sequence != una; sequence++ {
-			delete(t.kcpSent, sequence)
+		for sequence := l.kcpLastUNA; sequence != una; sequence++ {
+			delete(l.kcpSent, sequence)
 		}
 	}
-	t.kcpLastUNA = una
+	l.kcpLastUNA = una
 }
 
-func (t *PooledTunnel) pruneKCPSentFallback(una uint32) {
-	for sequence := range t.kcpSent {
+func (l *kcpLane) pruneKCPSentFallback(una uint32) {
+	for sequence := range l.kcpSent {
 		if kcpSequenceBefore(sequence, una) {
-			delete(t.kcpSent, sequence)
+			delete(l.kcpSent, sequence)
 		}
 	}
 }
@@ -144,7 +144,7 @@ func kcpSequenceAfter(sequence, reference uint32) bool {
 	return int32(sequence-reference) > 0
 }
 
-func (t *PooledTunnel) handleTelemetryMessage(message []byte) bool {
+func (t *ParasiteTunnel) handleTelemetryMessage(message []byte) bool {
 	if len(message) < 9 {
 		return false
 	}
@@ -182,7 +182,7 @@ func (t *PooledTunnel) handleTelemetryMessage(message []byte) bool {
 	}
 }
 
-func (t *PooledTunnel) RequestClientTelemetry(lease time.Duration) bool {
+func (t *ParasiteTunnel) RequestClientTelemetry(lease time.Duration) bool {
 	seconds := int(lease / time.Second)
 	if seconds < 2 {
 		seconds = 2
@@ -195,34 +195,34 @@ func (t *PooledTunnel) RequestClientTelemetry(lease time.Duration) bool {
 	return t.trySendControlData(calltunnel.EncodeFrame(calltunnel.ControlConnID, calltunnel.MsgTelemetryControl, payload))
 }
 
-func (t *PooledTunnel) SendClientTelemetry(record []byte) bool {
+func (t *ParasiteTunnel) SendClientTelemetry(record []byte) bool {
 	if len(record) == 0 || len(record) > telemetry.MaximumRecordLen {
 		return false
 	}
 	return t.trySendData(calltunnel.EncodeFrame(calltunnel.ControlConnID, calltunnel.MsgTelemetryRecord, record))
 }
 
-func (t *PooledTunnel) RelaySetActive(tcp, udp int) {
+func (t *ParasiteTunnel) RelaySetActive(tcp, udp int) {
 	t.metrics.Set(telemetry.RelayTCPActive, float64(tcp))
 	t.metrics.Set(telemetry.RelayUDPActive, float64(udp))
 }
 
-func (t *PooledTunnel) RelayAddBytes(bytes uint64) {
+func (t *ParasiteTunnel) RelayAddBytes(bytes uint64) {
 	t.metrics.AddHot(telemetry.RelayBytesTotal, bytes)
 }
 
-func (t *PooledTunnel) RelayQueueDelta(bytes int) {
+func (t *ParasiteTunnel) RelayQueueDelta(bytes int) {
 	t.metrics.AddHotGauge(telemetry.RelayQueueDepth, float64(bytes))
 }
 
-func (t *PooledTunnel) RelayResetQueue() {
+func (t *ParasiteTunnel) RelayResetQueue() {
 	t.metrics.Set(telemetry.RelayQueueDepth, 0)
 }
 
-func (t *PooledTunnel) RelayQueueDrop() {
+func (t *ParasiteTunnel) RelayQueueDrop() {
 	t.metrics.Add(telemetry.RelayQueueDropsTotal, 1)
 }
 
-func (t *PooledTunnel) RelayConnectFailure() {
+func (t *ParasiteTunnel) RelayConnectFailure() {
 	t.metrics.Add(telemetry.RelayConnectFailureTotal, 1)
 }

@@ -382,8 +382,8 @@ func validateHydraSubscriptionRequirements(requirements hydraSubscriptionRequire
 	}
 	if hydraCoreCallEnabled {
 		supportedFeatures["call"] = true
-		supportedFeatures["call_vk_multi_user"] = true
-		supportedFeatures["call_vk_adaptive_multipath"] = true
+		supportedFeatures["call_vk_parasite"] = true
+		supportedFeatures["call_vk_four_lane_kcp"] = true
 	}
 	seen := make(map[string]bool)
 	for index, feature := range requirements.Core.Features {

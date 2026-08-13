@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHydraSubscriptionJWEAcceptsVKMultiUserRequiredFeature(t *testing.T) {
+func TestHydraSubscriptionJWEAcceptsVKParasiteRequiredFeature(t *testing.T) {
 	content := strings.Replace(validHydraSubscriptionJSON(),
 		`"features":["rmux"]`,
-		`"features":["rmux","call","call_vk_multi_user","call_vk_adaptive_multipath"]`,
+		`"features":["rmux","call","call_vk_parasite","call_vk_four_lane_kcp"]`,
 		1,
 	)
 	key := make([]byte, 32)

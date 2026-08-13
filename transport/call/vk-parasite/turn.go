@@ -1,4 +1,4 @@
-package multiuser
+package vkparasite
 
 import (
 	"context"
@@ -59,7 +59,7 @@ func allocateTURN(
 	started := time.Now()
 	if credentials.Username == "" || credentials.Credential == "" {
 		recordTURNFailure(ctx, metrics, started, workerID, "credentials")
-		return nil, errors.New("call multi_user: VK returned incomplete TURN credentials")
+		return nil, errors.New("call vk_parasite: VK returned incomplete TURN credentials")
 	}
 	destinations := make([]M.Socksaddr, 0, len(credentials.URLs))
 	for _, rawURL := range credentials.URLs {
@@ -72,7 +72,7 @@ func allocateTURN(
 		metrics.Set(telemetry.TURNEndpointCount, 0)
 		metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
 		recordTURNFailure(ctx, metrics, started, workerID, "no_endpoint")
-		return nil, errors.New("call multi_user: no usable UDP TURN URL")
+		return nil, errors.New("call vk_parasite: no usable UDP TURN URL")
 	}
 	var lastErr error
 	metrics.Set(telemetry.TURNEndpointCount, float64(len(destinations)))
@@ -91,7 +91,7 @@ func allocateTURN(
 		lastErr = err
 	}
 	recordTURNFailure(ctx, metrics, started, workerID, "all_endpoints")
-	return nil, fmt.Errorf("call multi_user: all VK TURN endpoints failed: %w", lastErr)
+	return nil, fmt.Errorf("call vk_parasite: all VK TURN endpoints failed: %w", lastErr)
 }
 
 func recordTURNFailure(ctx context.Context, metrics *telemetry.Accumulator, started time.Time, workerID uint16, reason string) {
@@ -191,16 +191,16 @@ func resolveUDPAddress(
 	requireIPv4 bool,
 ) (*net.UDPAddr, error) {
 	if destination.Port == 0 || !destination.IsValid() {
-		return nil, errors.New("call multi_user: invalid UDP destination")
+		return nil, errors.New("call vk_parasite: invalid UDP destination")
 	}
 	if destination.IsIP() {
 		if requireIPv4 && !destination.Addr.Unmap().Is4() {
-			return nil, errors.New("call multi_user: TURN requires an IPv4 address")
+			return nil, errors.New("call vk_parasite: TURN requires an IPv4 address")
 		}
 		return destination.Unwrap().UDPAddr(), nil
 	}
 	if dnsRouter == nil {
-		return nil, errors.New("call multi_user: DNS router unavailable")
+		return nil, errors.New("call vk_parasite: DNS router unavailable")
 	}
 	queryOptions := adapter.DNSQueryOptions{}
 	if resolveDialer, ok := dialer.(D.ResolveDialer); ok {
@@ -217,5 +217,5 @@ func resolveUDPAddress(
 		}
 		return M.SocksaddrFrom(address, destination.Port).UDPAddr(), nil
 	}
-	return nil, errors.New("call multi_user: no usable address returned by DNS")
+	return nil, errors.New("call vk_parasite: no usable address returned by DNS")
 }

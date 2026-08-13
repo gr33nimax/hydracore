@@ -7,7 +7,7 @@ identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Release baseline
 
-Debug release `v1.13.16-extended-hydracore.10-debug.8` is based on the exact
+Debug release `v1.13.16-extended-hydracore.10-debug.10` is based on the exact
 `sing-box-extended` commit
 `545424b86bc4513f90580ebeab2e2d1514089718` (descriptive upstream tag
 `v1.13.16-extended-2.6.2`). The full commit, rather than a movable tag, is the
@@ -27,9 +27,9 @@ binds the same values and every artifact digest into `provenance.json`.
   configuration (`local`) or untrusted remote configuration (`remote_v2`).
 - `sing-box hydra capabilities --json` exposes the same manifest to VPS
   orchestration. Release builds are role-specific: Android reports
-  `identity.role="client"`, `call_vk_multi_user_client=true`, and wire v2;
+  `identity.role="client"`, `call_vk_multi_user_client=true`, and wire v3;
   Linux reports `identity.role="vps"`, `call_vk_multi_user_server=true`, and
-  accepts wire v1 through v2 during the transition. Both roles expose only
+  wire v3. Older wire revisions are intentionally rejected. Both roles expose only
   `mode: "multi_user"` and report `call_vk_telemetry=true` plus
   `call_vk_adaptive_multipath=true`.
 

@@ -8,13 +8,16 @@
   pending backpressure now follow the bounded aggregate path window, preventing
   all four Calls workers from filling a shared 2048-segment standing queue.
   Added delivery-rate, window, in-flight and backoff telemetry per worker.
-- Added a wire-compatible adaptive VK multipath scheduler with bounded path
+- Added the paired wire-v3 adaptive VK multipath scheduler with bounded path
   affinity, alternate-path retransmission, ACK/control priority, per-worker
   feedback and explicit legacy A/B fallback. The scheduler uses bounded KCP
   local/remote windows without a single dynamic congestion window spanning all
   TURN paths and without a post-KCP pacer. Added exact per-path attempt/retry
   counters and the `call_vk_adaptive_multipath` capability gate; raw mode is
   unchanged.
+- Made same-path physical feedback mandatory for adaptive traffic and removed
+  transitional worker-auth compatibility. Mixed old/new APK and VPS cores now
+  fail at the v3 handshake instead of silently accepting incompatible data.
 - Established a separately versioned `debug` release channel. A push to the
   `debug` branch publishes verified Android and VPS artifacts as a GitHub
   prerelease only after all test and build jobs pass.

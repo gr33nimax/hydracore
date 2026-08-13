@@ -49,8 +49,8 @@ func TestHydraCoreCapabilities(t *testing.T) {
 		require.False(t, capabilities.Features.CallVKMultiUserServer)
 		require.Equal(t, []string{"vk"}, capabilities.Protocols.CallPlatforms)
 		require.Equal(t, []string{"multi_user"}, capabilities.Protocols.CallModes)
-		require.Equal(t, 2, capabilities.Protocols.CallVKMultiUserWire.Min)
-		require.Equal(t, 2, capabilities.Protocols.CallVKMultiUserWire.Max)
+		require.Equal(t, 3, capabilities.Protocols.CallVKMultiUserWire.Min)
+		require.Equal(t, 3, capabilities.Protocols.CallVKMultiUserWire.Max)
 	case "vps":
 		require.Contains(t, capabilities.Protocols.Inbounds, "call")
 		require.NotContains(t, capabilities.Protocols.Outbounds, "call")
@@ -58,8 +58,8 @@ func TestHydraCoreCapabilities(t *testing.T) {
 		require.True(t, capabilities.Features.CallVKMultiUserServer)
 		require.Equal(t, []string{"vk"}, capabilities.Protocols.CallPlatforms)
 		require.Equal(t, []string{"multi_user"}, capabilities.Protocols.CallModes)
-		require.Equal(t, 1, capabilities.Protocols.CallVKMultiUserWire.Min)
-		require.Equal(t, 2, capabilities.Protocols.CallVKMultiUserWire.Max)
+		require.Equal(t, 3, capabilities.Protocols.CallVKMultiUserWire.Min)
+		require.Equal(t, 3, capabilities.Protocols.CallVKMultiUserWire.Max)
 	case "combined":
 		require.Contains(t, capabilities.Protocols.Inbounds, "call")
 		require.Contains(t, capabilities.Protocols.Outbounds, "call")

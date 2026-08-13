@@ -192,10 +192,10 @@ artifacts, and the exact `sing-box-extended` 2.6.2 baseline
 - Users, sessions, per-user sessions, workers, pending handshakes, frame
   lengths, duplicate active workers, handshakes, reconnects, and idle state
   all have explicit hard bounds.
-- Wire v2 gives every reconnecting worker a monotonic epoch. Network changes
+- Wire v3 gives every reconnecting worker a monotonic epoch and requires the
+  adaptive physical-feedback envelope. Network changes
   immediately replace stale TURN/DTLS transports while keeping the logical KCP
-  session and RelayBridge alive. The VPS accepts wire v1 and v2 for one
-  transition release; the client emits v2.
+  session and RelayBridge alive. Older wire versions are rejected by both roles.
 - Obfuscation reads reuse a bounded buffer instead of allocating the maximum
   packet size for every UDP datagram.
 
@@ -205,8 +205,8 @@ The exact runtime probe is:
 sing-box hydra capabilities --json
 ```
 
-The client reports role `client`, the client feature, wire v2, and only
-`multi_user`; the VPS reports role `vps`, the server feature, wire v1..2, and
+The client reports role `client`, the client feature, wire v3, and only
+`multi_user`; the VPS reports role `vps`, the server feature, wire v3, and
 only `multi_user`. The legacy combined build is not a release artifact.
 
 ## Role-specific artifacts

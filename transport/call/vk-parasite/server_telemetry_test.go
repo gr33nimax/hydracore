@@ -52,7 +52,7 @@ func TestServerTelemetryWritesUltimateCompatibleSnapshot(t *testing.T) {
 	clientPayload, err := telemetry.Marshal(clientRecord)
 	require.NoError(t, err)
 	server.telemetry.clientRecord(session, clientPayload)
-	invalidWorkerID := uint16(2)
+	invalidWorkerID := uint16(LaneCount)
 	clientEvent := telemetry.EventRecord("client", "", "", telemetry.Event{
 		Timestamp: 1,
 		Event:     "worker_reconnect",

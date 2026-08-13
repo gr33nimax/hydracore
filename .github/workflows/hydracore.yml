@@ -285,7 +285,7 @@ jobs:
                .features.call_vk_telemetry == true and
                .features.call_vk_adaptive_multipath == true and
                .protocols.call_modes == ["multi_user"] and
-               .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' \
+               .protocols.call_vk_multi_user_wire == {"min": 3, "max": 3}' \
               capabilities.json >/dev/null
           fi
           tar \
@@ -424,7 +424,7 @@ jobs:
              .features.call_vk_telemetry == true and
              .features.call_vk_adaptive_multipath == true and
              .protocols.call_modes == ["multi_user"] and
-             .protocols.call_vk_multi_user_wire == {"min": 1, "max": 2}' >/dev/null
+             .protocols.call_vk_multi_user_wire == {"min": 3, "max": 3}' >/dev/null
           jq -n \
             --arg version "$hydracore_version" \
             --arg commit "$GITHUB_SHA" \

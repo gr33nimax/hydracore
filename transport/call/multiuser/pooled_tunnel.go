@@ -145,6 +145,12 @@ func newPooledTunnelWithProfile(conv uint32, maxWorkers int, profile MultipathPr
 	return tunnel, nil
 }
 
+func (t *PooledTunnel) applyAdaptiveKCPWindowLocked() {
+	if t.scheduler.adaptive() {
+		t.kcp.WndSize(t.scheduler.sendWindow(), pooledKCPWindow)
+	}
+}
+
 func (t *PooledTunnel) SendData(frame []byte) {
 	if len(frame) == 0 {
 		return
@@ -157,8 +163,9 @@ func (t *PooledTunnel) SendData(frame []byte) {
 		default:
 		}
 		t.kcpMu.Lock()
-		if t.kcp.WaitSnd() < pooledKCPMaxPending {
+		if t.kcp.WaitSnd() < t.scheduler.pendingLimit() {
 			t.kcp.Send(frame)
+			t.applyAdaptiveKCPWindowLocked()
 			t.kcp.Update()
 			t.kcpMu.Unlock()
 			if !blockedAt.IsZero() {
@@ -194,12 +201,13 @@ func (t *PooledTunnel) trySendDataWithActivity(frame []byte, activity bool) bool
 	}
 	t.kcpMu.Lock()
 	defer t.kcpMu.Unlock()
-	if t.kcp.WaitSnd() >= pooledKCPMaxPending {
+	if t.kcp.WaitSnd() >= t.scheduler.pendingLimit() {
 		return false
 	}
 	if t.kcp.Send(frame) < 0 {
 		return false
 	}
+	t.applyAdaptiveKCPWindowLocked()
 	t.kcp.Update()
 	if activity {
 		t.touch()
@@ -423,6 +431,7 @@ func (w *pooledWorker) writeQueuedSegment(segment queuedSegment) bool {
 	}
 	delay := writeStartedAt.Sub(segment.enqueuedAt)
 	if delay >= 0 {
+		w.parent.scheduler.observeQueueDelay(w, segment.payload, delay, writeStartedAt)
 		w.metrics.Set(telemetry.WorkerOutputQueueDelayMS, float64(delay)/float64(time.Millisecond))
 		if delay >= 2*pooledKCPUpdateInterval {
 			w.metrics.AddHot(telemetry.WorkerOutputQueueLateTotal, 1)
@@ -522,6 +531,7 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 func (t *PooledTunnel) inputSegment(segment []byte) {
 	t.kcpMu.Lock()
 	t.scheduler.observeInput(segment, time.Now())
+	t.applyAdaptiveKCPWindowLocked()
 	t.observeKCPInput(segment)
 	t.kcp.Input(segment, kcp.IKCP_PACKET_REGULAR, true)
 	messages := make([][]byte, 0, 2)
@@ -589,9 +599,9 @@ func (t *PooledTunnel) ActiveWorkers() int {
 
 func (t *PooledTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.KCPMTUBytes, pooledKCPMTU)
-	t.metrics.Set(telemetry.KCPSendWindowSegments, pooledKCPWindow)
+	t.metrics.Set(telemetry.KCPSendWindowSegments, float64(t.scheduler.sendWindow()))
 	t.metrics.Set(telemetry.KCPReceiveWindowSegments, pooledKCPWindow)
-	t.metrics.Set(telemetry.KCPMaxPendingSegments, pooledKCPMaxPending)
+	t.metrics.Set(telemetry.KCPMaxPendingSegments, float64(t.scheduler.pendingLimit()))
 	t.metrics.Set(telemetry.KCPUpdateIntervalMS, float64(pooledKCPUpdateInterval/time.Millisecond))
 	t.metrics.Set(telemetry.KCPFastResend, float64(t.multipath.fastResend))
 	t.metrics.Set(telemetry.KCPCongestionControl, float64(1-t.multipath.noCongestionWindow))
@@ -701,6 +711,7 @@ func (t *PooledTunnel) updateLoop() {
 		select {
 		case <-ticker.C:
 			t.kcpMu.Lock()
+			t.applyAdaptiveKCPWindowLocked()
 			t.kcp.Update()
 			t.kcpMu.Unlock()
 		case <-t.closed:

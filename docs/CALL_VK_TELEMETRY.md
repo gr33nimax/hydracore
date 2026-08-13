@@ -99,6 +99,11 @@ compatibility alias for the EWMA; operators must use `network_loss_ratio` for
 authenticated outer-path loss.
 `worker_path_rtt_ms` starts at the worker socket write attempt, so local
 output-queue residence is no longer folded into TURN-path RTT.
+`worker_path_delivery_rate_bps`, `worker_path_window_segments` and
+`worker_path_inflight_segments` expose the adaptive controller's delivered
+rate, current per-path admission window and occupancy. The cumulative
+`worker_path_backoff_total` counter records actual window reductions; it does
+not increment for retry samples suppressed by the RTT-bounded backoff interval.
 
 A client must complete at least one TURN/DTLS/inner-auth worker before it can
 receive a lease or deliver buffered setup events to the VPS. A client that

@@ -65,7 +65,7 @@ type queuedSegment struct {
 }
 
 type multipathSentSegment struct {
-	workerID      uint16
+	worker        *pooledWorker
 	assignedAt    time.Time
 	sentAt        time.Time
 	size          int
@@ -78,6 +78,13 @@ type multipathPathState struct {
 	rttMS         float64
 	retryPressure float64
 	lastChunk     uint64
+	window        float64
+	inflight      int
+	lastBackoff   time.Time
+	deliveryBPS   float64
+	deliverySince time.Time
+	deliveryBytes int
+	lastAck       time.Time
 }
 
 type multipathScheduler struct {
@@ -115,6 +122,7 @@ func (s *multipathScheduler) registerWorker(worker *pooledWorker) {
 	state := &multipathPathState{
 		worker:  worker,
 		metrics: worker.metrics,
+		window:  adaptiveInitialPathWindow,
 	}
 	s.paths[worker.id] = state
 	s.mu.Unlock()
@@ -127,9 +135,10 @@ func (s *multipathScheduler) removeWorker(worker *pooledWorker) {
 	s.mu.Lock()
 	if state := s.paths[worker.id]; state != nil && state.worker == worker {
 		state.worker = nil
+		state.inflight = 0
 	}
 	for sequence, sent := range s.sent {
-		if sent.workerID == worker.id {
+		if sent.worker == worker {
 			sent.retransmitted = true
 			s.sent[sequence] = sent
 		}
@@ -152,7 +161,7 @@ func (s *multipathScheduler) rankWorkers(workers []*pooledWorker, packet []byte,
 	var hasPrevious bool
 	for _, sequence := range pushSequences {
 		if previous, exists := s.sent[sequence]; exists {
-			previousWorker = previous.workerID
+			previousWorker = previous.worker.id
 			hasPrevious = true
 			break
 		}
@@ -161,7 +170,8 @@ func (s *multipathScheduler) rankWorkers(workers []*pooledWorker, packet []byte,
 	preferred := uint16(0)
 	hasPreferred := false
 	if len(pushSequences) > 0 && !hasPrevious && s.chunkSet &&
-		s.chunkRemaining > 0 && now.Before(s.chunkUntil) && workerPresent(workers, s.chunkWorker) {
+		s.chunkRemaining > 0 && now.Before(s.chunkUntil) && workerPresent(workers, s.chunkWorker) &&
+		s.pathHasHeadroomLocked(s.paths[s.chunkWorker]) {
 		preferred = s.chunkWorker
 		hasPreferred = true
 		s.chunkRemaining--
@@ -177,6 +187,11 @@ func (s *multipathScheduler) rankWorkers(workers []*pooledWorker, packet []byte,
 				if leftPrevious != rightPrevious {
 					return !leftPrevious
 				}
+			}
+			leftHeadroom := s.pathHasHeadroomLocked(left)
+			rightHeadroom := s.pathHasHeadroomLocked(right)
+			if leftHeadroom != rightHeadroom {
+				return leftHeadroom
 			}
 			leftScore := multipathPathScore(left, ranked[i])
 			rightScore := multipathPathScore(right, ranked[j])
@@ -257,14 +272,18 @@ func (s *multipathScheduler) assignOutputLocked(
 		worker.metrics.AddHot(telemetry.WorkerPathAttemptSegmentsTotal, 1)
 		segmentSize := kcpSequenceSize(packet, sequence)
 		if previous, exists := s.sent[sequence]; exists {
-			if state := s.paths[previous.workerID]; state != nil {
+			if state := s.paths[previous.worker.id]; state != nil && state.worker == previous.worker {
+				s.releaseInflightLocked(state)
 				state.retryPressure = state.retryPressure*0.9375 + 0.0625
 				state.metrics.AddHot(telemetry.WorkerPathRetransSegmentsTotal, 1)
+				if state.retryPressure >= adaptiveRetryBackoffThreshold {
+					s.backoffPathLocked(state, now)
+				}
 			}
-			if previous.workerID != worker.id {
+			if previous.worker != worker {
 				worker.metrics.AddHot(telemetry.WorkerPathSwitchesTotal, 1)
 			}
-			previous.workerID = worker.id
+			previous.worker = worker
 			previous.assignedAt = now
 			previous.sentAt = time.Time{}
 			previous.retransmitted = true
@@ -272,18 +291,27 @@ func (s *multipathScheduler) assignOutputLocked(
 				previous.size = segmentSize
 			}
 			s.sent[sequence] = previous
+			if state := s.paths[worker.id]; state != nil && state.worker == worker {
+				state.inflight++
+			}
 			continue
 		}
 		s.sent[sequence] = multipathSentSegment{
-			workerID:   worker.id,
+			worker:     worker,
 			assignedAt: now,
 			size:       segmentSize,
+		}
+		if state := s.paths[worker.id]; state != nil && state.worker == worker {
+			state.inflight++
 		}
 	}
 	if s.lastPrune.IsZero() || now.Sub(s.lastPrune) >= time.Minute {
 		cutoff := now.Add(-adaptiveSentRetention)
 		for sequence, sent := range s.sent {
 			if sent.assignedAt.Before(cutoff) {
+				if state := s.paths[sent.worker.id]; state != nil && state.worker == sent.worker {
+					s.releaseInflightLocked(state)
+				}
 				delete(s.sent, sequence)
 			}
 		}
@@ -302,7 +330,7 @@ func (s *multipathScheduler) commitWrite(packet []byte, worker *pooledWorker, no
 	s.mu.Lock()
 	for _, sequence := range sequences {
 		sent, exists := s.sent[sequence]
-		if !exists || sent.workerID != worker.id || !sent.sentAt.IsZero() {
+		if !exists || sent.worker != worker || !sent.sentAt.IsZero() {
 			continue
 		}
 		sent.sentAt = now
@@ -326,16 +354,18 @@ func (s *multipathScheduler) observeInput(packet []byte, now time.Time) {
 			return
 		}
 		delete(s.sent, sequence)
-		state := s.paths[sent.workerID]
-		if state == nil {
+		state := s.paths[sent.worker.id]
+		if state == nil || state.worker != sent.worker {
 			return
 		}
+		s.releaseInflightLocked(state)
 		state.retryPressure *= 0.9375
+		if sent.size > 0 {
+			state.worker.metrics.AddHot(telemetry.WorkerPathAckedBytesTotal, uint64(sent.size))
+			s.observeDeliveryLocked(state, sent.size, now)
+		}
 		if sent.retransmitted || sent.sentAt.IsZero() {
 			return
-		}
-		if state.worker != nil && sent.size > 0 {
-			state.worker.metrics.AddHot(telemetry.WorkerPathAckedBytesTotal, uint64(sent.size))
 		}
 		rttMS := float64(now.Sub(sent.sentAt)) / float64(time.Millisecond)
 		if rttMS < 0 {
@@ -345,6 +375,9 @@ func (s *multipathScheduler) observeInput(packet []byte, now time.Time) {
 			state.rttMS = rttMS
 		} else {
 			state.rttMS += (rttMS - state.rttMS) / 8
+		}
+		if state.retryPressure <= adaptiveRetryHealthyThreshold && state.window < adaptiveMaxPathWindow {
+			state.window = min(adaptiveMaxPathWindow, state.window+1/state.window)
 		}
 	})
 }
@@ -358,6 +391,9 @@ func (s *multipathScheduler) publishWorkerMetrics(worker *pooledWorker) {
 	if state != nil {
 		worker.metrics.Set(telemetry.WorkerPathRTTMS, state.rttMS)
 		worker.metrics.Set(telemetry.WorkerPathRetryRatio, state.retryPressure)
+		worker.metrics.Set(telemetry.WorkerPathDeliveryRateBPS, state.deliveryBPS)
+		worker.metrics.Set(telemetry.WorkerPathWindowSegments, state.window)
+		worker.metrics.Set(telemetry.WorkerPathInflightSegments, float64(state.inflight))
 		// Compatibility alias for the first adaptive telemetry schema. This is
 		// KCP retry pressure, not an estimate of physical TURN packet loss.
 		worker.metrics.Set(telemetry.WorkerPathLossRatio, state.retryPressure)
@@ -370,7 +406,8 @@ func multipathPathScore(state *multipathPathState, worker *pooledWorker) float64
 	if state == nil {
 		return queue * 20
 	}
-	return queue*20 + state.retryPressure*250 + state.rttMS/10
+	utilization := float64(state.inflight) / max(1, state.window)
+	return queue*20 + utilization*200 + state.retryPressure*250 + state.rttMS/10
 }
 
 func workerPresent(workers []*pooledWorker, id uint16) bool {

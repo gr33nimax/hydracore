@@ -1,23 +1,30 @@
-# HydraCore v1.13.16-extended-hydracore.10-debug.6
+# HydraCore v1.13.16-extended-hydracore.10-debug.7
 
 This is the verified `debug` channel build. It is published automatically only
 after the full Go, Android and Linux workflow succeeds and is intended for
 HYDRA ULTIMATE installations that explicitly select the Hydracore `debug`
 channel. It is not promoted to the stable `latest` release.
 
-This revision fixes the remaining adaptive VK throughput bottleneck found by a
-full 1440p field run. Debug.5 removed the post-KCP worker pacer, but still
-enabled the standard dynamic KCP congestion window. One logical KCP stream is
-carried by four independent TURN paths, so ordinary cross-path reordering or a
-loss on one path repeatedly reduced the aggregate congestion window and filled
-`WaitSnd` even while VPS CPU, UDP ingress and socket buffers were idle.
+This revision addresses the remaining adaptive VK overload found by the v3
+1440p field run. Debug.6 removed the inappropriate single KCP congestion window
+and raised loaded throughput, but KCP could still admit up to 512 segments and
+queue 2048 more before the four independent TURN paths supplied any absolute
+capacity feedback. In the captured downstream run that produced a standing
+`WaitSnd` queue, excessive retransmission traffic and poor wire efficiency.
 
-Adaptive now uses KCP's bounded local and advertised remote windows without a
-single dynamic congestion window spanning every TURN path. It retains the
-adaptive-only 16-packet/16-ms chunk affinity, control priority, fast-resend=4,
-actual socket-write RTT, and retransmission path switching. No packet is paced
-after KCP starts its timer. This does not turn adaptive into packet-striped
-legacy: the exact legacy scheduler and raw mode are unchanged.
+Adaptive now maintains an independent delivery window for every live VK/TURN
+worker. Clean acknowledgements grow only that path; sustained retry pressure or
+a late local output queue backs off only that path. The KCP send window is the
+bounded sum of live path windows, and its pending limit follows the same sum.
+Four paths start at 160 in-flight and 640 pending segments, can grow toward the
+existing 512-segment ceiling when healthy, and no longer begin every loaded run
+with the 2048-segment standing queue. This is designed around the measured
+50-60 ms RTT and a 20 Mbit/s target, not a guarantee imposed on VK TURN.
+
+The controller runs before KCP emits a segment. It retains 16-packet/16-ms
+chunk affinity, control priority, fast-resend=4, socket-write RTT and
+alternate-path retransmission, with no post-KCP pacer. The exact legacy
+scheduler, wire format and raw mode are unchanged.
 
 Native telemetry distinguishes authenticated outer network loss from KCP retry
 pressure and records output-queue delay/late writes. It now also publishes an
@@ -25,8 +32,10 @@ exact per-worker attempt counter so analysis can report cumulative failed-path
 attempts instead of treating a short-lived retry EWMA as a loss ratio. Path RTT
 begins at the socket write attempt rather than scheduler enqueue. The old
 `worker_path_loss_ratio` is retained only as a compatibility alias for retry
-pressure. `features.call_vk_adaptive_multipath=true` remains the explicit
-client/VPS/subscription compatibility gate.
+pressure. Per-worker delivery rate, adaptive window, in-flight occupancy and
+window-backoff totals make the new control loop directly observable.
+`features.call_vk_adaptive_multipath=true` remains the explicit client/VPS/
+subscription compatibility gate.
 
 This revision makes the telemetry dataset safe for multi-tester protocol
 analysis: process, authenticated session, and individual worker snapshots are

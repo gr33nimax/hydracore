@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added independent delivery windows for adaptive VK/TURN workers. Clean paths
+  grow from a 40-segment starting window, while sustained KCP retry or local
+  output-queue pressure backs off only the affected path. KCP admission and
+  pending backpressure now follow the bounded aggregate path window, preventing
+  all four Calls workers from filling a shared 2048-segment standing queue.
+  Added delivery-rate, window, in-flight and backoff telemetry per worker.
 - Added a wire-compatible adaptive VK multipath scheduler with bounded path
   affinity, alternate-path retransmission, ACK/control priority, per-worker
   feedback and explicit legacy A/B fallback. The scheduler uses bounded KCP

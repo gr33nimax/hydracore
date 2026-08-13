@@ -7,7 +7,7 @@ identifiers are documented separately in [CREDITS.md](CREDITS.md).
 
 ## Release baseline
 
-Debug release `v1.13.16-extended-hydracore.10-debug.6` is based on the exact
+Debug release `v1.13.16-extended-hydracore.10-debug.7` is based on the exact
 `sing-box-extended` commit
 `545424b86bc4513f90580ebeab2e2d1514089718` (descriptive upstream tag
 `v1.13.16-extended-2.6.2`). The full commit, rather than a movable tag, is the
@@ -103,10 +103,12 @@ performs one bounded user attach inside DTLS; the server uses a username map and
 constant-time password-hash comparison. Passwords are not carried in data
 packets. The default adaptive profile assigns bounded KCP chunks to individual
 TURN paths, moves retransmissions away from the path used by the first copy,
-and prioritizes ACK/control records. It uses KCP's bounded local and remote
-windows without applying a single dynamic congestion window to all independent
-TURN paths, and never delays an already emitted KCP segment in an external rate
-limiter.
+and prioritizes ACK/control records. Every live path has an independent
+delivery window which grows on clean acknowledgements and backs off under
+sustained retry or output-queue pressure. KCP's effective send window is the
+bounded sum of those path windows, and the adaptive pending queue follows that
+sum instead of remaining fixed at 2048 segments. No already-emitted KCP segment
+is delayed by an external rate limiter.
 `multipath_profile: "legacy"` retains the former
 packet-striped scheduler for A/B comparison. Both profiles keep one logical
 KCP session, so losing one allocation does not reset application streams.
@@ -116,12 +118,16 @@ the persistent relay while closing affected streams cleanly. Hard limits cover
 users, sessions, workers, pending handshakes, frame lengths, duplicate active
 workers, and timeouts.
 
-The current 512-segment KCP window represents about 512 KiB of data in flight:
-the theoretical ceiling is roughly 41 Mbit/s at 100 ms RTT or 20 Mbit/s at
-200 ms RTT before TURN, DTLS, obfuscation, and retransmission overhead. Real
-throughput is workload- and VK-dependent. The self-signed DTLS identity is
-protected by the shared `obfs_password`; treat it as a trusted group secret and
-rotate it when membership changes.
+Legacy retains its fixed 512-segment KCP window. Adaptive starts each live path
+at 40 segments, permits clean paths to grow independently up to 128, and caps
+the aggregate at 512. Four healthy paths therefore start with 160 segments in
+flight and a 640-segment pending limit. This is intended to admit roughly the
+bandwidth-delay product needed for a 20 Mbit/s client around the measured
+50-60 ms RTT while avoiding the 2048-segment standing queue seen in field
+telemetry. It is a control target, not a VK throughput guarantee. Real
+throughput remains workload-, TURN- and network-dependent. The self-signed DTLS
+identity is protected by the shared `obfs_password`; treat it as a trusted
+group secret and rotate it when membership changes.
 
 Instrumented client and VPS roles report `features.call_vk_telemetry=true`.
 Hydra Ultimate controls an arbitrarily long recording session; Hydracore has

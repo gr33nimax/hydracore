@@ -100,6 +100,8 @@ type multipathScheduler struct {
 	chunkSet       bool
 	chunkOrdinal   uint64
 	lastPrune      time.Time
+	lastUNA        uint32
+	hasUNA         bool
 }
 
 func newMultipathScheduler(config multipathConfig) *multipathScheduler {

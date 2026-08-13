@@ -80,10 +80,35 @@ func (t *PooledTunnel) observeKCPInput(packet []byte) {
 		t.kcpRTTVARMS += (delta - t.kcpRTTVARMS) / 4
 	}
 	if hasCumulativeACK {
-		for sequence := range t.kcpSent {
-			if kcpSequenceBefore(sequence, cumulativeACK) {
-				delete(t.kcpSent, sequence)
-			}
+		t.pruneKCPSentBefore(cumulativeACK)
+	}
+}
+
+func (t *PooledTunnel) pruneKCPSentBefore(una uint32) {
+	if !t.kcpHasUNA {
+		t.pruneKCPSentFallback(una)
+		t.kcpLastUNA = una
+		t.kcpHasUNA = true
+		return
+	}
+	distance := uint32(una - t.kcpLastUNA)
+	if distance == 0 || !kcpSequenceAfter(una, t.kcpLastUNA) {
+		return
+	}
+	if distance > pooledKCPMaxPending*2 {
+		t.pruneKCPSentFallback(una)
+	} else {
+		for sequence := t.kcpLastUNA; sequence != una; sequence++ {
+			delete(t.kcpSent, sequence)
+		}
+	}
+	t.kcpLastUNA = una
+}
+
+func (t *PooledTunnel) pruneKCPSentFallback(una uint32) {
+	for sequence := range t.kcpSent {
+		if kcpSequenceBefore(sequence, una) {
+			delete(t.kcpSent, sequence)
 		}
 	}
 }

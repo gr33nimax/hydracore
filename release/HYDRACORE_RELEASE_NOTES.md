@@ -17,7 +17,9 @@ The scheduler and its native telemetry tracker now mirror both KCP acknowledgeme
 forms with wrap-safe sequence comparison. Cumulative acknowledgements release
 the original path's flight, delivery bytes and retry pressure; exact clean ACKs
 continue to provide the path RTT sample. Regression coverage includes a peer
-PUSH that advances UNA without carrying the missing exact ACKs. Wire format,
+PUSH that advances UNA without carrying the missing exact ACKs. UNA processing
+is incremental and bounded, including sequence wrap and anomalous jumps, so it
+does not add a per-packet scan of the flight map. Wire format,
 subscription schema, legacy mode and raw mode remain unchanged.
 
 This revision addresses the remaining adaptive VK overload found by the v3

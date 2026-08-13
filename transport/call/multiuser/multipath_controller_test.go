@@ -139,6 +139,32 @@ func TestKCPTelemetryCumulativeACKPrunesSentTracking(t *testing.T) {
 	require.Contains(t, tunnel.kcpSent, uint32(12))
 }
 
+func TestAdaptiveCumulativeACKAdvancesIncrementallyAndBoundsLargeJumps(t *testing.T) {
+	t.Parallel()
+	config, err := multipathConfigFor(MultipathProfileAdaptive)
+	require.NoError(t, err)
+	scheduler := newMultipathScheduler(config)
+	worker := newSchedulerTestWorker(0)
+	scheduler.registerWorker(worker)
+	started := time.Unix(100, 0)
+
+	for _, sequence := range []uint32{100, 101, 102, 1 << 20} {
+		scheduler.assignOutput(testKCPPushPacket(sequence, 1), worker, started)
+	}
+	scheduler.observeInput(testKCPPushPacketWithUNA(1, 101, 1), started)
+	require.NotContains(t, scheduler.sent, uint32(100))
+	require.Contains(t, scheduler.sent, uint32(101))
+
+	scheduler.observeInput(testKCPPushPacketWithUNA(2, 103, 1), started)
+	require.NotContains(t, scheduler.sent, uint32(101))
+	require.NotContains(t, scheduler.sent, uint32(102))
+
+	// A corrupt or mid-session UNA jump must scan only the bounded tracked map,
+	// not iterate across every missing sequence number.
+	scheduler.observeInput(testKCPPushPacketWithUNA(3, (1<<20)+1, 1), started)
+	require.Empty(t, scheduler.sent)
+}
+
 func TestAdaptiveChunkMovesWhenPreferredPathWindowIsFull(t *testing.T) {
 	t.Parallel()
 	config, err := multipathConfigFor(MultipathProfileAdaptive)

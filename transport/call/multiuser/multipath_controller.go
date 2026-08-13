@@ -90,6 +90,27 @@ func (s *multipathScheduler) acknowledgeLocked(sequence uint32, now time.Time, e
 }
 
 func (s *multipathScheduler) acknowledgeBeforeLocked(una uint32, now time.Time) {
+	if !s.hasUNA {
+		s.releaseCumulativeACKFallbackLocked(una, now)
+		s.lastUNA = una
+		s.hasUNA = true
+		return
+	}
+	distance := uint32(una - s.lastUNA)
+	if distance == 0 || !kcpSequenceAfter(una, s.lastUNA) {
+		return
+	}
+	if distance > pooledKCPMaxPending*2 {
+		s.releaseCumulativeACKFallbackLocked(una, now)
+	} else {
+		for sequence := s.lastUNA; sequence != una; sequence++ {
+			s.acknowledgeLocked(sequence, now, false)
+		}
+	}
+	s.lastUNA = una
+}
+
+func (s *multipathScheduler) releaseCumulativeACKFallbackLocked(una uint32, now time.Time) {
 	for sequence := range s.sent {
 		if kcpSequenceBefore(sequence, una) {
 			s.acknowledgeLocked(sequence, now, false)

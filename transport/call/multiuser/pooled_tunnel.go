@@ -76,6 +76,8 @@ type PooledTunnel struct {
 	kcpSent      map[uint32]kcpSentSegment
 	kcpSRTTMS    float64
 	kcpRTTVARMS  float64
+	kcpLastUNA   uint32
+	kcpHasUNA    bool
 
 	telemetryMu             sync.RWMutex
 	onTelemetryControl      func(time.Duration)
@@ -241,6 +243,8 @@ func (t *PooledTunnel) SetTelemetryCollectionActive(active bool) {
 		t.kcpSent = make(map[uint32]kcpSentSegment)
 		t.kcpSRTTMS = 0
 		t.kcpRTTVARMS = 0
+		t.kcpLastUNA = 0
+		t.kcpHasUNA = false
 		t.kcpMu.Unlock()
 	}
 	t.workersMu.RLock()

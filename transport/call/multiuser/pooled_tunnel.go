@@ -20,6 +20,7 @@ const (
 	pooledKCPUpdateInterval = 10 * time.Millisecond
 	pooledKCPReceiveBuffer  = 32 * 1024
 	pooledKCPMaxPending     = pooledKCPWindow * 4
+	pooledKCPControlReserve = 64
 	workerSendQueueDepth    = 512
 	workerControlQueueDepth = 64
 	workerHeartbeatInterval = 15 * time.Second
@@ -141,7 +142,7 @@ func newPooledTunnelWithProfile(conv uint32, maxWorkers int, profile MultipathPr
 		tunnel.dispatchSegment(buffer[:size])
 	})
 	tunnel.kcp.NoDelay(1, 10, multipath.fastResend, multipath.noCongestionWindow)
-	tunnel.kcp.WndSize(pooledKCPWindow, pooledKCPWindow)
+	tunnel.kcp.WndSize(tunnel.scheduler.sendWindow(), pooledKCPWindow)
 	tunnel.kcp.SetMtu(pooledKCPMTU)
 	go tunnel.updateLoop()
 	return tunnel, nil
@@ -203,7 +204,11 @@ func (t *PooledTunnel) trySendDataWithActivity(frame []byte, activity bool) bool
 	}
 	t.kcpMu.Lock()
 	defer t.kcpMu.Unlock()
-	if t.kcp.WaitSnd() >= t.scheduler.pendingLimit() {
+	limit := t.scheduler.pendingLimit()
+	if !activity {
+		limit = min(pooledKCPMaxPending, limit+pooledKCPControlReserve)
+	}
+	if t.kcp.WaitSnd() >= limit {
 		return false
 	}
 	if t.kcp.Send(frame) < 0 {
@@ -384,17 +389,40 @@ func (w *pooledWorker) readLoop() {
 		if n == 0 {
 			continue
 		}
-		w.lastInbound.Store(time.Now().UnixNano())
 		if bytes.Equal(buffer[:n], workerHeartbeat[:]) {
+			w.lastInbound.Store(time.Now().UnixNano())
 			continue
 		}
-		w.parent.inputSegment(buffer[:n])
+		if w.parent.scheduler.adaptive() {
+			now := time.Now()
+			if packet, probeSequence, valid := decodeMultipathData(buffer[:n], w.id); valid {
+				w.lastInbound.Store(now.UnixNano())
+				w.parent.inputSegmentFromWorker(w, packet, probeSequence)
+				continue
+			}
+			if w.parent.scheduler.consumeControlFrame(w, buffer[:n], now) {
+				w.lastInbound.Store(now.UnixNano())
+			}
+			continue
+		}
+		w.lastInbound.Store(time.Now().UnixNano())
+		w.parent.inputSegmentFromWorker(w, buffer[:n], 0)
 	}
 }
 
 func (w *pooledWorker) writeLoop() {
 	ticker := time.NewTicker(w.parent.heartbeatInterval)
 	defer ticker.Stop()
+	var feedbackTicker *time.Ticker
+	var feedback <-chan time.Time
+	if w.parent.scheduler.adaptive() {
+		feedbackTicker = time.NewTicker(multipathFeedbackInterval)
+		feedback = feedbackTicker.C
+		defer feedbackTicker.Stop()
+		if frame := w.parent.scheduler.nextControlFrame(w, time.Now()); len(frame) > 0 && !w.writeMultipathControl(frame) {
+			return
+		}
+	}
 	for {
 		select {
 		case segment := <-w.controlQueue:
@@ -417,6 +445,10 @@ func (w *pooledWorker) writeLoop() {
 			if !w.writeHeartbeat() {
 				return
 			}
+		case now := <-feedback:
+			if frame := w.parent.scheduler.nextControlFrame(w, now); len(frame) > 0 && !w.writeMultipathControl(frame) {
+				return
+			}
 		case <-w.done:
 			return
 		case <-w.parent.closed:
@@ -428,8 +460,12 @@ func (w *pooledWorker) writeLoop() {
 
 func (w *pooledWorker) writeQueuedSegment(segment queuedSegment) bool {
 	writeStartedAt := time.Now()
-	w.parent.scheduler.commitWrite(segment.payload, w, writeStartedAt)
-	if _, err := w.conn.Write(segment.payload); err != nil {
+	probeSequence := w.parent.scheduler.commitWrite(segment.payload, w, writeStartedAt)
+	payload := segment.payload
+	if w.parent.scheduler.adaptive() {
+		payload = encodeMultipathData(w.id, probeSequence, segment.payload)
+	}
+	if _, err := w.conn.Write(payload); err != nil {
 		w.parent.removeWorker(w)
 		return false
 	}
@@ -447,6 +483,14 @@ func (w *pooledWorker) writeQueuedSegment(segment queuedSegment) bool {
 
 func (w *pooledWorker) writeHeartbeat() bool {
 	if _, err := w.conn.Write(workerHeartbeat[:]); err != nil {
+		w.parent.removeWorker(w)
+		return false
+	}
+	return true
+}
+
+func (w *pooledWorker) writeMultipathControl(frame []byte) bool {
+	if _, err := w.conn.Write(frame); err != nil {
 		w.parent.removeWorker(w)
 		return false
 	}
@@ -476,12 +520,27 @@ func (w *pooledWorker) watchdogLoop() {
 }
 
 func (t *PooledTunnel) dispatchSegment(segment []byte) {
+	if t.scheduler.adaptive() {
+		push, controls, valid := t.scheduler.partitionOutput(segment)
+		if valid {
+			if len(push) > 0 {
+				t.dispatchDataSegment(push)
+			}
+			for _, control := range controls {
+				t.dispatchControlSegment(control)
+			}
+			return
+		}
+	}
+	t.dispatchDataSegment(segment)
+}
+
+func (t *PooledTunnel) availableWorkers() []*pooledWorker {
 	t.workersMu.RLock()
 	workerCount := len(t.workerIDs)
 	if workerCount == 0 {
 		t.workersMu.RUnlock()
-		t.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
-		return
+		return nil
 	}
 	start := int((t.nextWorker.Add(1) - 1) % uint32(workerCount))
 	workers := make([]*pooledWorker, 0, workerCount)
@@ -492,6 +551,15 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 		}
 	}
 	t.workersMu.RUnlock()
+	return workers
+}
+
+func (t *PooledTunnel) dispatchDataSegment(segment []byte) {
+	workers := t.availableWorkers()
+	if len(workers) == 0 {
+		t.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
+		return
+	}
 	if t.scheduler.adaptive() {
 		workers = t.scheduler.rankWorkers(workers, segment, time.Now())
 	}
@@ -532,8 +600,46 @@ func (t *PooledTunnel) dispatchSegment(segment []byte) {
 	t.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
 }
 
+func (t *PooledTunnel) dispatchControlSegment(control multipathControlPart) {
+	workers := t.availableWorkers()
+	if len(workers) == 0 {
+		t.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
+		return
+	}
+	workers = t.scheduler.rankControlWorkers(
+		workers,
+		control.preferred,
+		control.hasPreferred,
+		time.Now(),
+	)
+	queued := queuedSegment{payload: append([]byte(nil), control.payload...), enqueuedAt: time.Now()}
+	copies := min(adaptiveControlCopies, len(workers))
+	queuedCopies := 0
+	for _, worker := range workers {
+		select {
+		case worker.controlQueue <- queued:
+			worker.metrics.AddHot(telemetry.WorkerPathControlCopiesTotal, 1)
+			queuedCopies++
+			if queuedCopies >= copies {
+				return
+			}
+		case <-worker.done:
+		default:
+		}
+	}
+	if queuedCopies == 0 {
+		workers[0].metrics.AddHot(telemetry.WorkerSendQueueDropsTotal, 1)
+		t.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
+	}
+}
+
 func (t *PooledTunnel) inputSegment(segment []byte) {
+	t.inputSegmentFromWorker(nil, segment, 0)
+}
+
+func (t *PooledTunnel) inputSegmentFromWorker(worker *pooledWorker, segment []byte, probeSequence uint32) {
 	t.kcpMu.Lock()
+	t.scheduler.observeInboundPath(worker, segment, probeSequence, time.Now())
 	t.scheduler.observeInput(segment, time.Now())
 	t.applyAdaptiveKCPWindowLocked()
 	t.observeKCPInput(segment)

@@ -17,8 +17,8 @@ const (
 )
 
 const (
-	adaptiveChunkPackets  = 16
-	adaptiveChunkDwell    = 16 * time.Millisecond
+	adaptiveChunkPackets  = 4
+	adaptiveChunkDwell    = 4 * time.Millisecond
 	adaptiveSentRetention = 2 * time.Minute
 )
 
@@ -77,6 +77,10 @@ type multipathPathState struct {
 	metrics       *telemetry.Accumulator
 	rttMS         float64
 	retryPressure float64
+	feedbackLoss  float64
+	lossSeen      bool
+	feedbackSeen  bool
+	feedbackAt    time.Time
 	lastChunk     uint64
 	window        float64
 	inflight      int
@@ -85,6 +89,24 @@ type multipathPathState struct {
 	deliverySince time.Time
 	deliveryBytes int
 	lastAck       time.Time
+	lastFeedback  time.Time
+	receiveHas    bool
+	receiveLatest uint32
+	receiveMask   uint64
+	receiveDirty  bool
+	nextProbe     uint32
+	lastProbePrune time.Time
+	probes        map[uint32]multipathPathProbe
+}
+
+type multipathPathProbe struct {
+	sentAt time.Time
+	size   int
+}
+
+type multipathReceivedOwner struct {
+	workerID uint16
+	seenAt   time.Time
 }
 
 type multipathScheduler struct {
@@ -93,6 +115,7 @@ type multipathScheduler struct {
 	config multipathConfig
 	paths  map[uint16]*multipathPathState
 	sent   map[uint32]multipathSentSegment
+	receivedOwners map[uint32]multipathReceivedOwner
 
 	chunkWorker    uint16
 	chunkRemaining int
@@ -100,6 +123,7 @@ type multipathScheduler struct {
 	chunkSet       bool
 	chunkOrdinal   uint64
 	lastPrune      time.Time
+	lastOwnerPrune time.Time
 	lastUNA        uint32
 	hasUNA         bool
 }
@@ -109,6 +133,7 @@ func newMultipathScheduler(config multipathConfig) *multipathScheduler {
 		config: config,
 		paths:  make(map[uint16]*multipathPathState),
 		sent:   make(map[uint32]multipathSentSegment),
+		receivedOwners: make(map[uint32]multipathReceivedOwner),
 	}
 }
 
@@ -125,7 +150,9 @@ func (s *multipathScheduler) registerWorker(worker *pooledWorker) {
 		worker:  worker,
 		metrics: worker.metrics,
 		window:  adaptiveInitialPathWindow,
+		probes:  make(map[uint32]multipathPathProbe),
 	}
+	worker.metrics.Set(telemetry.WorkerPathFeedbackCapable, 1)
 	s.paths[worker.id] = state
 	s.mu.Unlock()
 }
@@ -158,6 +185,11 @@ func (s *multipathScheduler) rankWorkers(workers []*pooledWorker, packet []byte,
 	pushSequences := kcpPushSequences(packet)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, worker := range workers {
+		if state := s.paths[worker.id]; state != nil && state.worker == worker {
+			s.expirePathProbesLocked(state, now)
+		}
+	}
 
 	var previousWorker uint16
 	var hasPrevious bool
@@ -198,7 +230,7 @@ func (s *multipathScheduler) rankWorkers(workers []*pooledWorker, packet []byte,
 			leftScore := multipathPathScore(left, ranked[i])
 			rightScore := multipathPathScore(right, ranked[j])
 			if len(pushSequences) > 0 && !hasPrevious && left != nil && right != nil &&
-				left.retryPressure < 0.12 && right.retryPressure < 0.12 && left.lastChunk != right.lastChunk {
+				left.feedbackLoss < 0.08 && right.feedbackLoss < 0.08 && left.lastChunk != right.lastChunk {
 				return left.lastChunk < right.lastChunk
 			}
 			return leftScore < rightScore
@@ -278,9 +310,6 @@ func (s *multipathScheduler) assignOutputLocked(
 				s.releaseInflightLocked(state)
 				state.retryPressure = state.retryPressure*0.9375 + 0.0625
 				state.metrics.AddHot(telemetry.WorkerPathRetransSegmentsTotal, 1)
-				if state.retryPressure >= adaptiveRetryBackoffThreshold {
-					s.backoffPathLocked(state, now)
-				}
 			}
 			if previous.worker != worker {
 				worker.metrics.AddHot(telemetry.WorkerPathSwitchesTotal, 1)
@@ -321,15 +350,16 @@ func (s *multipathScheduler) assignOutputLocked(
 	}
 }
 
-func (s *multipathScheduler) commitWrite(packet []byte, worker *pooledWorker, now time.Time) {
+func (s *multipathScheduler) commitWrite(packet []byte, worker *pooledWorker, now time.Time) uint32 {
 	if !s.adaptive() || worker == nil {
-		return
+		return 0
 	}
 	sequences := kcpPushSequences(packet)
 	if len(sequences) == 0 {
-		return
+		return 0
 	}
 	s.mu.Lock()
+	committed := false
 	for _, sequence := range sequences {
 		sent, exists := s.sent[sequence]
 		if !exists || sent.worker != worker || !sent.sentAt.IsZero() {
@@ -337,8 +367,20 @@ func (s *multipathScheduler) commitWrite(packet []byte, worker *pooledWorker, no
 		}
 		sent.sentAt = now
 		s.sent[sequence] = sent
+		committed = true
+	}
+	probeSequence := uint32(0)
+	if state := s.paths[worker.id]; committed && state != nil && state.worker == worker {
+		s.expirePathProbesLocked(state, now)
+		state.nextProbe++
+		if state.nextProbe == 0 {
+			state.nextProbe++
+		}
+		probeSequence = state.nextProbe
+		state.probes[probeSequence] = multipathPathProbe{sentAt: now, size: len(packet)}
 	}
 	s.mu.Unlock()
+	return probeSequence
 }
 
 func (s *multipathScheduler) observeInput(packet []byte, now time.Time) {
@@ -380,9 +422,12 @@ func (s *multipathScheduler) publishWorkerMetrics(worker *pooledWorker) {
 		worker.metrics.Set(telemetry.WorkerPathDeliveryRateBPS, state.deliveryBPS)
 		worker.metrics.Set(telemetry.WorkerPathWindowSegments, state.window)
 		worker.metrics.Set(telemetry.WorkerPathInflightSegments, float64(state.inflight))
-		// Compatibility alias for the first adaptive telemetry schema. This is
-		// KCP retry pressure, not an estimate of physical TURN packet loss.
-		worker.metrics.Set(telemetry.WorkerPathLossRatio, state.retryPressure)
+		worker.metrics.Set(telemetry.WorkerPathLossRatio, state.feedbackLoss)
+		if state.feedbackSeen {
+			worker.metrics.Set(telemetry.WorkerPathFeedbackAgeMS, float64(time.Since(state.feedbackAt))/float64(time.Millisecond))
+		} else {
+			worker.metrics.Set(telemetry.WorkerPathFeedbackAgeMS, 0)
+		}
 	}
 	s.mu.Unlock()
 }
@@ -390,10 +435,11 @@ func (s *multipathScheduler) publishWorkerMetrics(worker *pooledWorker) {
 func multipathPathScore(state *multipathPathState, worker *pooledWorker) float64 {
 	queue := float64(len(worker.sendQueue) + 4*len(worker.controlQueue))
 	if state == nil {
-		return queue * 20
+		return queue * 40
 	}
 	utilization := float64(state.inflight) / max(1, state.window)
-	return queue*20 + utilization*200 + state.retryPressure*250 + state.rttMS/10
+	deliveryBonus := min(80, state.deliveryBPS/100_000)
+	return queue*40 + utilization*160 + state.feedbackLoss*600 + state.rttMS/5 - deliveryBonus
 }
 
 func workerPresent(workers []*pooledWorker, id uint16) bool {

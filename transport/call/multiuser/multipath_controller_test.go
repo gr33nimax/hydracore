@@ -23,15 +23,15 @@ func TestAdaptiveSendWindowAggregatesLivePathWindows(t *testing.T) {
 	for _, worker := range workers {
 		scheduler.registerWorker(worker)
 	}
-	require.Equal(t, 160, scheduler.sendWindow())
-	require.Equal(t, 640, scheduler.pendingLimit())
+	require.Equal(t, 192, scheduler.sendWindow())
+	require.Equal(t, 384, scheduler.pendingLimit())
 
 	scheduler.removeWorker(workers[3])
-	require.Equal(t, 120, scheduler.sendWindow())
-	require.Equal(t, 480, scheduler.pendingLimit())
+	require.Equal(t, 144, scheduler.sendWindow())
+	require.Equal(t, 288, scheduler.pendingLimit())
 }
 
-func TestAdaptivePathWindowBacksOffOnlyUnderSustainedRetryPressure(t *testing.T) {
+func TestAdaptivePathWindowDoesNotTreatKCPRetryAsPhysicalPathLoss(t *testing.T) {
 	t.Parallel()
 	config, err := multipathConfigFor(MultipathProfileAdaptive)
 	require.NoError(t, err)
@@ -48,17 +48,17 @@ func TestAdaptivePathWindowBacksOffOnlyUnderSustainedRetryPressure(t *testing.T)
 	require.Equal(t, adaptiveInitialPathWindow, scheduler.paths[worker.id].window)
 
 	scheduler.assignOutput(packet, worker, started.Add(30*time.Millisecond))
-	require.Equal(t, adaptiveInitialPathWindow*adaptiveWindowBackoffFactor, scheduler.paths[worker.id].window)
-	require.Equal(t, float64(1), worker.metrics.Value(telemetry.WorkerPathBackoffTotal))
+	require.Equal(t, adaptiveInitialPathWindow, scheduler.paths[worker.id].window)
+	require.Zero(t, worker.metrics.Value(telemetry.WorkerPathBackoffTotal))
 
 	scheduler.assignOutput(packet, worker, started.Add(40*time.Millisecond))
-	require.Equal(t, adaptiveInitialPathWindow*adaptiveWindowBackoffFactor, scheduler.paths[worker.id].window)
+	require.Equal(t, adaptiveInitialPathWindow, scheduler.paths[worker.id].window)
 	scheduler.assignOutput(packet, worker, started.Add(140*time.Millisecond))
-	require.Less(t, scheduler.paths[worker.id].window, adaptiveInitialPathWindow*adaptiveWindowBackoffFactor)
-	require.Equal(t, float64(2), worker.metrics.Value(telemetry.WorkerPathBackoffTotal))
+	require.Equal(t, adaptiveInitialPathWindow, scheduler.paths[worker.id].window)
+	require.Zero(t, worker.metrics.Value(telemetry.WorkerPathBackoffTotal))
 }
 
-func TestAdaptiveACKReleasesFlightAndGrowsHealthyPath(t *testing.T) {
+func TestAdaptiveKCPACKOnlyReleasesFlightWhilePathFeedbackGrowsWindow(t *testing.T) {
 	t.Parallel()
 	config, err := multipathConfigFor(MultipathProfileAdaptive)
 	require.NoError(t, err)
@@ -74,12 +74,23 @@ func TestAdaptiveACKReleasesFlightAndGrowsHealthyPath(t *testing.T) {
 	require.Equal(t, 1, scheduler.paths[worker.id].inflight)
 	scheduler.observeInput(testKCPAckPacket(1), started.Add(50*time.Millisecond))
 	require.Zero(t, scheduler.paths[worker.id].inflight)
+	require.Equal(t, adaptiveInitialPathWindow, scheduler.paths[worker.id].window)
+	require.True(t, scheduler.consumeControlFrame(
+		worker,
+		encodeMultipathFeedback(worker.id, 1, 1),
+		started.Add(50*time.Millisecond),
+	))
 	require.Greater(t, scheduler.paths[worker.id].window, adaptiveInitialPathWindow)
 
 	second := testKCPPushPacket(2, 100)
 	scheduler.assignOutput(second, worker, started.Add(60*time.Millisecond))
 	scheduler.commitWrite(second, worker, started.Add(60*time.Millisecond))
 	scheduler.observeInput(testKCPAckPacket(2), started.Add(160*time.Millisecond))
+	require.True(t, scheduler.consumeControlFrame(
+		worker,
+		encodeMultipathFeedback(worker.id, 2, 0x3),
+		started.Add(160*time.Millisecond),
+	))
 	scheduler.publishWorkerMetrics(worker)
 	require.Positive(t, worker.metrics.Value(telemetry.WorkerPathDeliveryRateBPS))
 	require.Zero(t, worker.metrics.Value(telemetry.WorkerPathInflightSegments))
@@ -111,7 +122,7 @@ func TestAdaptiveCumulativeACKReleasesFlightWithoutExactACKs(t *testing.T) {
 	require.NotContains(t, scheduler.sent, uint32(10))
 	require.NotContains(t, scheduler.sent, uint32(11))
 	require.Contains(t, scheduler.sent, uint32(12))
-	require.Equal(t, float64(2*(kcpHeaderSize+100)), worker.metrics.Value(telemetry.WorkerPathAckedBytesTotal))
+	require.Zero(t, worker.metrics.Value(telemetry.WorkerPathAckedBytesTotal))
 
 	scheduler.observeInput(testKCPPushPacketWithUNA(100, 13, 1), started.Add(60*time.Millisecond))
 	require.Zero(t, scheduler.paths[worker.id].inflight)
@@ -198,4 +209,72 @@ func TestAdaptiveQueueDelayBacksOffPathWindow(t *testing.T) {
 	scheduler.observeQueueDelay(worker, testKCPPushPacket(1, 100), adaptiveQueueBackoffDelay, time.Unix(100, 0))
 	require.Equal(t, adaptiveInitialPathWindow*adaptiveWindowBackoffFactor, scheduler.paths[worker.id].window)
 	require.Equal(t, float64(1), worker.metrics.Value(telemetry.WorkerPathBackoffTotal))
+}
+
+func TestAdaptiveFeedbackMeasuresDeliveryAndPhysicalLossPerWorker(t *testing.T) {
+	t.Parallel()
+	config, err := multipathConfigFor(MultipathProfileAdaptive)
+	require.NoError(t, err)
+	scheduler := newMultipathScheduler(config)
+	worker := newSchedulerTestWorker(0)
+	worker.metrics.SetCollectionActive(true)
+	scheduler.registerWorker(worker)
+	started := time.Unix(100, 0)
+
+	for sequence := uint32(1); sequence <= 9; sequence++ {
+		packet := testKCPPushPacket(sequence, 100)
+		scheduler.assignOutput(packet, worker, started)
+		scheduler.commitWrite(packet, worker, started)
+	}
+	require.True(t, scheduler.consumeControlFrame(
+		worker,
+		encodeMultipathFeedback(worker.id, 9, 0xff),
+		started.Add(50*time.Millisecond),
+	))
+	scheduler.publishWorkerMetrics(worker)
+
+	require.Equal(t, float64(1), worker.metrics.Value(telemetry.WorkerPathFeedbackCapable))
+	require.Equal(t, float64(8), worker.metrics.Value(telemetry.WorkerPathFeedbackAckedPacketsTotal))
+	require.Equal(t, float64(1), worker.metrics.Value(telemetry.WorkerPathFeedbackLostPacketsTotal))
+	require.InDelta(t, 1.0/9.0, worker.metrics.Value(telemetry.WorkerPathLossRatio), 0.0001)
+	require.InDelta(t, 50, worker.metrics.Value(telemetry.WorkerPathRTTMS), 0.001)
+	require.Less(t, scheduler.paths[worker.id].window, adaptiveInitialPathWindow)
+}
+
+func TestAdaptiveDataFrameCarriesWorkerAndPhysicalPacketSequence(t *testing.T) {
+	t.Parallel()
+	payload := testKCPPushPacket(42, 100)
+	frame := encodeMultipathData(3, 77, payload)
+
+	decoded, probeSequence, valid := decodeMultipathData(frame, 3)
+	require.True(t, valid)
+	require.Equal(t, uint32(77), probeSequence)
+	require.Equal(t, payload, decoded)
+	_, _, valid = decodeMultipathData(frame, 2)
+	require.False(t, valid)
+	require.False(t, newMultipathScheduler(multipathConfig{profile: MultipathProfileAdaptive}).consumeControlFrame(
+		newSchedulerTestWorker(3), frame, time.Now(),
+	))
+}
+
+func TestAdaptiveACKOutputKeepsPathAffinityAndSeparatesPushData(t *testing.T) {
+	t.Parallel()
+	config, err := multipathConfigFor(MultipathProfileAdaptive)
+	require.NoError(t, err)
+	scheduler := newMultipathScheduler(config)
+	workers := []*pooledWorker{newSchedulerTestWorker(0), newSchedulerTestWorker(1)}
+	for _, worker := range workers {
+		scheduler.registerWorker(worker)
+	}
+	now := time.Unix(100, 0)
+	scheduler.observeInboundPath(workers[1], testKCPPushPacket(42, 10), 1, now)
+	mixed := append(testKCPAckPacket(42), testKCPPushPacket(99, 10)...)
+	push, controls, valid := scheduler.partitionOutput(mixed)
+
+	require.True(t, valid)
+	require.Equal(t, []uint32{99}, kcpPushSequences(push))
+	require.Len(t, controls, 1)
+	require.True(t, controls[0].hasPreferred)
+	require.Equal(t, uint16(1), controls[0].preferred)
+	require.Empty(t, kcpPushSequences(controls[0].payload))
 }

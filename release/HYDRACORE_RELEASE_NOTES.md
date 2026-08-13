@@ -1,4 +1,51 @@
-# HydraCore v1.13.16-extended-hydracore.10-debug.8
+# HydraCore v1.13.16-extended-hydracore.10-debug.9
+
+This is the verified paired client/VPS `debug` build for the four-call adaptive
+VK tunnel. Adaptive mode now has an explicit per-worker transport envelope and
+mandatory physical-path feedback; a debug.9 adaptive endpoint must be deployed
+on both the client and VPS. The legacy profile remains available and retains
+its existing KCP wire behavior.
+
+The previous controller inferred the health of a VK/TURN call from ACKs and
+retransmissions belonging to one KCP conversation striped across all four
+calls. That attribution was fundamentally ambiguous: an ACK could return over
+a different call, and a retransmission could be charged to the path that did
+not lose the packet. In the field this produced the observed inverse feedback,
+collapsed healthy path windows, and held aggregate goodput near 3-6 Mbit/s even
+when the four physical calls carried materially more wire traffic.
+
+Debug.9 gives every adaptive data datagram a per-call physical packet sequence.
+The receiver returns a 64-packet selective delivery map through that same
+worker every 10 ms while traffic is active. Only this direct signal can now
+change per-path RTT, loss, delivered rate, or congestion window; shared KCP
+ACKs only release the common flight map. This cleanly separates physical TURN
+loss from end-to-end KCP retries, including repeated attempts of the same KCP
+segment.
+
+KCP ACK/control segments are separated from PUSH data before dispatch. ACKs
+retain affinity to the worker that actually delivered the corresponding PUSH
+and are copied to one additional best live path, while data packets are never
+duplicated. Control traffic has a reserved 64-segment admission margin. The
+scheduler uses 4-packet/4-ms affinity chunks to reduce the 16-ms microbursts
+seen in debug.8, incorporates directly measured delivery and physical loss,
+and keeps all four configured calls active.
+
+Each of the four paths starts with a 48-segment window, has a 24-segment
+minimum, and may grow independently to 192; the shared KCP window remains
+bounded at 512 and the pending cap follows twice the current aggregate window.
+Backoff is path-local, loss-driven, RTT-limited, and cannot shrink below the
+already in-flight data plus a safety margin. This removes the self-imposed
+five-megabit ceiling without claiming that VK/TURN capacity or the tester's
+access network can always supply a particular bitrate.
+
+Native telemetry now publishes physical feedback age, delivery/loss counters,
+control-copy counts, and separate KCP retry pressure for every worker. The
+default server peer-read queue is raised to 512 packets. Relay queue gauges
+discard buffered bytes atomically on close, and authenticated network jitter
+resets after an idle gap, preventing historical queue and idle artifacts from
+being reported as current bottlenecks.
+
+## Previous debug.8 changes
 
 This is the verified `debug` channel build. It is published automatically only
 after the full Go, Android and Linux workflow succeeds and is intended for

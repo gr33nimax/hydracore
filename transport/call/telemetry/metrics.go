@@ -133,6 +133,12 @@ const (
 	WorkerPathRetransSegmentsTotal
 	WorkerPathSwitchesTotal
 	WorkerPathBackoffTotal
+	WorkerPathFeedbackCapable
+	WorkerPathFeedbackAgeMS
+	WorkerPathFeedbackRecordsTotal
+	WorkerPathFeedbackAckedPacketsTotal
+	WorkerPathFeedbackLostPacketsTotal
+	WorkerPathControlCopiesTotal
 	WorkerOutputQueueDelayMS
 	WorkerOutputQueueLateTotal
 	metricCount
@@ -266,6 +272,12 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "worker_path_retrans_segments_total", counter: true},
 	{name: "worker_path_switches_total", counter: true},
 	{name: "worker_path_backoff_total", counter: true},
+	{name: "worker_path_feedback_capable"},
+	{name: "worker_path_feedback_age_ms"},
+	{name: "worker_path_feedback_records_total", counter: true},
+	{name: "worker_path_feedback_acked_packets_total", counter: true},
+	{name: "worker_path_feedback_lost_packets_total", counter: true},
+	{name: "worker_path_control_copies_total", counter: true},
 	{name: "worker_output_queue_delay_ms"},
 	{name: "worker_output_queue_late_total", counter: true},
 }
@@ -293,6 +305,8 @@ var ServerRequired = []Metric{
 	WorkerPathRTTMS, WorkerPathDeliveryRateBPS, WorkerPathWindowSegments, WorkerPathInflightSegments,
 	WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal, WorkerPathAttemptSegmentsTotal,
 	WorkerPathRetransSegmentsTotal, WorkerPathSwitchesTotal, WorkerPathBackoffTotal,
+	WorkerPathFeedbackCapable, WorkerPathFeedbackAgeMS, WorkerPathFeedbackRecordsTotal,
+	WorkerPathFeedbackAckedPacketsTotal, WorkerPathFeedbackLostPacketsTotal, WorkerPathControlCopiesTotal,
 	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
 	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
 }
@@ -313,6 +327,8 @@ var ClientRequired = []Metric{
 	WorkerPathRTTMS, WorkerPathDeliveryRateBPS, WorkerPathWindowSegments, WorkerPathInflightSegments,
 	WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal, WorkerPathAttemptSegmentsTotal,
 	WorkerPathRetransSegmentsTotal, WorkerPathSwitchesTotal, WorkerPathBackoffTotal,
+	WorkerPathFeedbackCapable, WorkerPathFeedbackAgeMS, WorkerPathFeedbackRecordsTotal,
+	WorkerPathFeedbackAckedPacketsTotal, WorkerPathFeedbackLostPacketsTotal, WorkerPathControlCopiesTotal,
 	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
@@ -337,6 +353,8 @@ var TunnelMetrics = []Metric{
 	WorkerPathRTTMS, WorkerPathDeliveryRateBPS, WorkerPathWindowSegments, WorkerPathInflightSegments,
 	WorkerPathLossRatio, WorkerPathRetryRatio, WorkerPathAckedBytesTotal, WorkerPathAttemptSegmentsTotal,
 	WorkerPathRetransSegmentsTotal, WorkerPathSwitchesTotal, WorkerPathBackoffTotal,
+	WorkerPathFeedbackCapable, WorkerPathFeedbackAgeMS, WorkerPathFeedbackRecordsTotal,
+	WorkerPathFeedbackAckedPacketsTotal, WorkerPathFeedbackLostPacketsTotal, WorkerPathControlCopiesTotal,
 	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
 }
 

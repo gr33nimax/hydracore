@@ -32,6 +32,8 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"worker_path_rtt_ms", "worker_path_delivery_rate_bps", "worker_path_window_segments", "worker_path_inflight_segments",
 		"worker_path_loss_ratio", "worker_path_retry_ratio", "worker_path_acked_bytes_total", "worker_path_attempt_segments_total",
 		"worker_path_retrans_segments_total", "worker_path_switches_total", "worker_path_backoff_total",
+		"worker_path_feedback_capable", "worker_path_feedback_age_ms", "worker_path_feedback_records_total",
+		"worker_path_feedback_acked_packets_total", "worker_path_feedback_lost_packets_total", "worker_path_control_copies_total",
 		"worker_output_queue_delay_ms", "worker_output_queue_late_total",
 		"telemetry_sequence", "telemetry_control_drops_total", "telemetry_record_drops_total", "telemetry_sink_rotations_total",
 	}
@@ -51,6 +53,8 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"worker_path_rtt_ms", "worker_path_delivery_rate_bps", "worker_path_window_segments", "worker_path_inflight_segments",
 		"worker_path_loss_ratio", "worker_path_retry_ratio", "worker_path_acked_bytes_total", "worker_path_attempt_segments_total",
 		"worker_path_retrans_segments_total", "worker_path_switches_total", "worker_path_backoff_total",
+		"worker_path_feedback_capable", "worker_path_feedback_age_ms", "worker_path_feedback_records_total",
+		"worker_path_feedback_acked_packets_total", "worker_path_feedback_lost_packets_total", "worker_path_control_copies_total",
 		"worker_output_queue_delay_ms", "worker_output_queue_late_total",
 		"kcp_wait_snd", "kcp_out_segments_total", "kcp_retrans_segments_total", "kcp_out_bytes_total", "kcp_retrans_bytes_total", "kcp_rtt_ms", "kcp_rto_ms", "kcp_send_blocked_seconds_total",
 		"kcp_mtu_bytes", "kcp_send_window_segments", "kcp_receive_window_segments", "kcp_max_pending_segments",

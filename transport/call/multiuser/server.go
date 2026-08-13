@@ -37,7 +37,7 @@ const (
 	defaultUDPReceiveBufferBytes = 4 * 1024 * 1024
 	defaultUDPSendBufferBytes    = 4 * 1024 * 1024
 	defaultIngressQueuePackets   = 4096
-	defaultPeerReadQueuePackets  = 128
+	defaultPeerReadQueuePackets  = 512
 	sessionTakeoverGrace        = workerStaleReplacement
 )
 

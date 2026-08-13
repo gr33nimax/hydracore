@@ -21,6 +21,7 @@ type udpClient struct {
 	pending   chan []byte
 	closed    atomic.Bool
 	addr      string
+	rb        *RelayBridge
 }
 
 func (c *udpClient) deliver(payload []byte) bool {
@@ -31,21 +32,31 @@ func (c *udpClient) deliver(payload []byte) bool {
 	}
 	select {
 	case c.pending <- payload:
+		if c.rb != nil {
+			c.rb.relayQueueDelta(len(payload))
+		}
 		return true
 	default:
 		return false
 	}
 }
 
-func (c *udpClient) closePending() bool {
+func (c *udpClient) closePending() (bool, int) {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
 	if c.closed.Load() {
-		return false
+		return false, 0
 	}
 	c.closed.Store(true)
 	close(c.pending)
-	return true
+	discarded := 0
+	for payload := range c.pending {
+		discarded += len(payload)
+	}
+	if c.rb != nil {
+		c.rb.relayQueueDelta(-discarded)
+	}
+	return true, discarded
 }
 
 type RelayBridge struct {
@@ -156,7 +167,7 @@ func (rb *RelayBridge) ListenPacket(ctx context.Context, destination string) (ne
 		return nil, ctx.Err()
 	}
 	id := rb.nextID.Add(1)
-	uc := &udpClient{pending: make(chan []byte, 64), addr: destination}
+	uc := &udpClient{pending: make(chan []byte, 64), addr: destination, rb: rb}
 	rb.udpClients.Store(id, uc)
 	rb.updateRelayActive()
 	return &tunnelPacketConn{id: id, rb: rb, uc: uc, destStr: destination}, nil
@@ -350,7 +361,6 @@ func (rb *RelayBridge) handleJoinerMessage(connID uint32, msgType byte, payload 
 		cp := make([]byte, len(payload))
 		copy(cp, payload)
 		if uc.deliver(cp) {
-			rb.relayQueueDelta(len(cp))
 		} else {
 			rb.relayQueueDrop()
 		}
@@ -604,10 +614,10 @@ func newTunnelConn(id uint32, rb *RelayBridge) *tunnelConn {
 func (tc *tunnelConn) Read(b []byte) (int, error) {
 	for {
 		tc.readMu.Lock()
-		if tc.readBuf.Len() > 0 {
-			n, _ := tc.readBuf.Read(b)
-			tc.readMu.Unlock()
-			tc.rb.relayQueueDelta(-n)
+	if tc.readBuf.Len() > 0 {
+		n, _ := tc.readBuf.Read(b)
+		tc.rb.relayQueueDelta(-n)
+		tc.readMu.Unlock()
 			return n, nil
 		}
 		tc.readMu.Unlock()
@@ -616,8 +626,8 @@ func (tc *tunnelConn) Read(b []byte) (int, error) {
 			tc.readMu.Lock()
 			if tc.readBuf.Len() > 0 {
 				n, _ := tc.readBuf.Read(b)
-				tc.readMu.Unlock()
 				tc.rb.relayQueueDelta(-n)
+				tc.readMu.Unlock()
 				return n, nil
 			}
 			tc.readMu.Unlock()
@@ -646,6 +656,7 @@ func (tc *tunnelConn) Close() error {
 		tc.rb.conns.Delete(tc.id)
 		tc.rb.updateRelayActive()
 	}
+	tc.discardBuffered()
 	return nil
 }
 
@@ -657,13 +668,25 @@ func (tc *tunnelConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (tc *tunnelConn) deliver(payload []byte) {
 	tc.readMu.Lock()
+	if tc.closed.Load() {
+		tc.readMu.Unlock()
+		return
+	}
 	tc.readBuf.Write(payload)
-	tc.readMu.Unlock()
 	tc.rb.relayQueueDelta(len(payload))
+	tc.readMu.Unlock()
 	select {
 	case tc.readCond <- struct{}{}:
 	default:
 	}
+}
+
+func (tc *tunnelConn) discardBuffered() {
+	tc.readMu.Lock()
+	discarded := tc.readBuf.Len()
+	tc.readBuf.Reset()
+	tc.rb.relayQueueDelta(-discarded)
+	tc.readMu.Unlock()
 }
 
 func (tc *tunnelConn) remoteClosed() {
@@ -706,7 +729,7 @@ func (pc *tunnelPacketConn) Write(b []byte) (int, error) {
 }
 
 func (pc *tunnelPacketConn) Close() error {
-	if pc.uc.closePending() {
+	if closed, _ := pc.uc.closePending(); closed {
 		pc.rb.udpClients.Delete(pc.id)
 		pc.rb.updateRelayActive()
 		pc.rb.send(pc.id, MsgClose, nil)
@@ -746,13 +769,21 @@ func (uc *creatorUDPConn) Read(b []byte) (int, error) {
 		uc.readMu.Lock()
 		if uc.readBuf.Len() > 0 {
 			n, _ := uc.readBuf.Read(b)
-			uc.readMu.Unlock()
 			uc.rb.relayQueueDelta(-n)
+			uc.readMu.Unlock()
 			return n, nil
 		}
 		uc.readMu.Unlock()
 		select {
 		case <-uc.closeCh:
+			uc.readMu.Lock()
+			if uc.readBuf.Len() > 0 {
+				n, _ := uc.readBuf.Read(b)
+				uc.rb.relayQueueDelta(-n)
+				uc.readMu.Unlock()
+				return n, nil
+			}
+			uc.readMu.Unlock()
 			return 0, io.EOF
 		case <-uc.readCond:
 		}
@@ -774,6 +805,7 @@ func (uc *creatorUDPConn) Close() error {
 		uc.rb.udpClients.Delete(uc.id)
 		uc.rb.updateRelayActive()
 	}
+	uc.discardBuffered()
 	return nil
 }
 
@@ -785,13 +817,25 @@ func (uc *creatorUDPConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (uc *creatorUDPConn) deliver(payload []byte) {
 	uc.readMu.Lock()
+	if uc.closed.Load() {
+		uc.readMu.Unlock()
+		return
+	}
 	uc.readBuf.Write(payload)
-	uc.readMu.Unlock()
 	uc.rb.relayQueueDelta(len(payload))
+	uc.readMu.Unlock()
 	select {
 	case uc.readCond <- struct{}{}:
 	default:
 	}
+}
+
+func (uc *creatorUDPConn) discardBuffered() {
+	uc.readMu.Lock()
+	discarded := uc.readBuf.Len()
+	uc.readBuf.Reset()
+	uc.rb.relayQueueDelta(-discarded)
+	uc.readMu.Unlock()
 }
 
 func (uc *creatorUDPConn) remoteClosed() {

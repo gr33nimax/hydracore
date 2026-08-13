@@ -17,6 +17,20 @@ type discardDataTunnel struct {
 	onClose func()
 }
 
+type telemetryDataTunnel struct {
+	discardDataTunnel
+	queue atomic.Int64
+}
+
+func (*telemetryDataTunnel) RelaySetActive(int, int) {}
+func (*telemetryDataTunnel) RelayAddBytes(uint64)    {}
+func (t *telemetryDataTunnel) RelayQueueDelta(bytes int) {
+	t.queue.Add(int64(bytes))
+}
+func (t *telemetryDataTunnel) RelayResetQueue() { t.queue.Store(0) }
+func (*telemetryDataTunnel) RelayQueueDrop()    {}
+func (*telemetryDataTunnel) RelayConnectFailure() {}
+
 func (*discardDataTunnel) SendData([]byte)             {}
 func (t *discardDataTunnel) SetOnData(fn func([]byte)) { t.onData = fn }
 func (t *discardDataTunnel) SetOnClose(fn func())      { t.onClose = fn }
@@ -104,11 +118,41 @@ func TestUDPClientCloseAndDeliverAreConcurrentSafe(t *testing.T) {
 		close(start)
 		workers.Wait()
 		require.True(t, client.closed.Load())
-		require.False(t, client.closePending())
+		closed, discarded := client.closePending()
+		require.False(t, closed)
+		require.Zero(t, discarded)
 		require.False(t, client.deliver([]byte("closed")))
 		for range client.pending {
 		}
 	}
+}
+
+func TestRelayQueueTelemetryReturnsToZeroWhenBufferedConnectionsClose(t *testing.T) {
+	t.Parallel()
+	dataTunnel := &telemetryDataTunnel{}
+	relay := NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+
+	tcp := newTunnelConn(1, relay)
+	relay.conns.Store(uint32(1), tcp)
+	tcp.deliver([]byte("buffered-tcp"))
+	require.Equal(t, int64(len("buffered-tcp")), dataTunnel.queue.Load())
+	require.NoError(t, tcp.Close())
+	require.Zero(t, dataTunnel.queue.Load())
+
+	relay.MarkReady()
+	packetConn, err := relay.ListenPacket(context.Background(), "1.1.1.1:53")
+	require.NoError(t, err)
+	udp := packetConn.(*tunnelPacketConn)
+	require.True(t, udp.uc.deliver([]byte("buffered-udp")))
+	require.Equal(t, int64(len("buffered-udp")), dataTunnel.queue.Load())
+	require.NoError(t, udp.Close())
+	require.Zero(t, dataTunnel.queue.Load())
+
+	creator := newCreatorUDPConn(3, relay, "1.1.1.1:53")
+	creator.deliver([]byte("creator-udp"))
+	require.Equal(t, int64(len("creator-udp")), dataTunnel.queue.Load())
+	require.NoError(t, creator.Close())
+	require.Zero(t, dataTunnel.queue.Load())
 }
 
 func TestRelayPayloadBytesExcludeFramingAndDestination(t *testing.T) {

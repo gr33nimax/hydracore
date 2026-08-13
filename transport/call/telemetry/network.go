@@ -8,7 +8,10 @@ import (
 
 const rtpHeaderSize = 12
 
-const maximumTrackedRTPStreams = 512
+const (
+	maximumTrackedRTPStreams = 512
+	networkJitterIdleReset    = time.Second
+)
 
 type sequenceState struct {
 	initialized bool
@@ -131,6 +134,11 @@ func (s *sequenceState) observeArrival(arrival time.Time) {
 	gapMS := float64(arrival.Sub(s.lastArrival)) / float64(time.Millisecond)
 	s.lastArrival = arrival
 	if gapMS < 0 {
+		return
+	}
+	if gapMS >= float64(networkJitterIdleReset)/float64(time.Millisecond) {
+		s.meanGapMS = 0
+		s.jitterMS = 0
 		return
 	}
 	if s.meanGapMS == 0 {

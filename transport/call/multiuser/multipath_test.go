@@ -86,6 +86,11 @@ func TestAdaptivePathRTTStartsAtSocketWrite(t *testing.T) {
 	require.True(t, scheduler.sent[42].sentAt.IsZero())
 	scheduler.commitWrite(packet, worker, writtenAt)
 	scheduler.observeInput(testKCPAckPacket(42), writtenAt.Add(50*time.Millisecond))
+	require.True(t, scheduler.consumeControlFrame(
+		worker,
+		encodeMultipathFeedback(worker.id, 1, 1),
+		writtenAt.Add(50*time.Millisecond),
+	))
 	scheduler.publishWorkerMetrics(worker)
 
 	require.InDelta(t, 50, worker.metrics.Value(telemetry.WorkerPathRTTMS), 0.001)

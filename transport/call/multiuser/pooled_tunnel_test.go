@@ -103,6 +103,44 @@ func TestPooledTunnelDistributesOneKCPConversationAcrossWorkers(t *testing.T) {
 	require.Positive(t, left1.writes.Load())
 }
 
+func TestAdaptivePooledTunnelExchangesFeedbackAndDuplicatesKCPControl(t *testing.T) {
+	t.Parallel()
+	client, err := NewPooledTunnelWithProfile(0x12233445, 2, MultipathProfileAdaptive, logger.NOP())
+	require.NoError(t, err)
+	server, err := NewPooledTunnelWithProfile(0x12233445, 2, MultipathProfileAdaptive, logger.NOP())
+	require.NoError(t, err)
+	client.SetTelemetryCollectionActive(true)
+	server.SetTelemetryCollectionActive(true)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+
+	for workerID := uint16(0); workerID < 2; workerID++ {
+		left, right := newTestDatagramPair()
+		_, err = client.AddWorker(workerID, left)
+		require.NoError(t, err)
+		_, err = server.AddWorker(workerID, right)
+		require.NoError(t, err)
+	}
+	received := make(chan []byte, 1)
+	server.SetOnData(func(payload []byte) { received <- append([]byte(nil), payload...) })
+	payload := bytes.Repeat([]byte("adaptive-feedback-"), 256)
+	client.SendData(payload)
+	select {
+	case actual := <-received:
+		require.Equal(t, payload, actual)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for adaptive KCP payload")
+	}
+	require.Eventually(t, func() bool {
+		return client.telemetryWorker(0).Value(telemetry.WorkerPathFeedbackAckedPacketsTotal)+
+			client.telemetryWorker(1).Value(telemetry.WorkerPathFeedbackAckedPacketsTotal) > 0 &&
+			server.telemetryWorker(0).Value(telemetry.WorkerPathControlCopiesTotal)+
+				server.telemetryWorker(1).Value(telemetry.WorkerPathControlCopiesTotal) >= 2
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
 func TestPooledTunnelHigherEpochImmediatelyReplacesWorker(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewPooledTunnel(0x22334455, 1, logger.NOP())

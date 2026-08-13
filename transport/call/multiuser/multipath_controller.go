@@ -8,14 +8,14 @@ import (
 )
 
 const (
-	adaptiveInitialPathWindow      = 40.0
-	adaptiveMinPathWindow          = 8.0
-	adaptiveMaxPathWindow          = 128.0
-	adaptiveRetryHealthyThreshold  = 0.08
-	adaptiveRetryBackoffThreshold  = 0.15
-	adaptiveWindowBackoffFactor    = 0.80
-	adaptiveMinBackoffInterval     = 100 * time.Millisecond
-	adaptiveQueueBackoffDelay      = 20 * time.Millisecond
+	adaptiveInitialPathWindow      = 48.0
+	adaptiveMinPathWindow          = 24.0
+	adaptiveMaxPathWindow          = 192.0
+	adaptiveFeedbackHealthyThreshold = 0.03
+	adaptiveFeedbackBackoffThreshold = 0.10
+	adaptiveWindowBackoffFactor    = 0.90
+	adaptiveMinBackoffInterval     = 250 * time.Millisecond
+	adaptiveQueueBackoffDelay      = 10 * time.Millisecond
 	adaptiveDeliverySampleInterval = 100 * time.Millisecond
 	adaptiveDeliveryStale          = 2 * time.Second
 )
@@ -42,7 +42,7 @@ func (s *multipathScheduler) pendingLimit() int {
 	if !s.adaptive() {
 		return pooledKCPMaxPending
 	}
-	return max(128, min(pooledKCPMaxPending, s.sendWindow()*4))
+	return max(256, min(pooledKCPMaxPending, s.sendWindow()*2))
 }
 
 func (s *multipathScheduler) pathHasHeadroomLocked(state *multipathPathState) bool {
@@ -55,7 +55,7 @@ func (s *multipathScheduler) releaseInflightLocked(state *multipathPathState) {
 	}
 }
 
-func (s *multipathScheduler) acknowledgeLocked(sequence uint32, now time.Time, exact bool) {
+func (s *multipathScheduler) acknowledgeLocked(sequence uint32, _ time.Time, _ bool) {
 	sent, exists := s.sent[sequence]
 	if !exists {
 		return
@@ -67,26 +67,10 @@ func (s *multipathScheduler) acknowledgeLocked(sequence uint32, now time.Time, e
 	}
 	s.releaseInflightLocked(state)
 	state.retryPressure *= 0.9375
-	if sent.size > 0 {
-		state.worker.metrics.AddHot(telemetry.WorkerPathAckedBytesTotal, uint64(sent.size))
-		s.observeDeliveryLocked(state, sent.size, now)
-	}
-	if sent.retransmitted || sent.sentAt.IsZero() {
-		return
-	}
-	if exact {
-		rttMS := float64(now.Sub(sent.sentAt)) / float64(time.Millisecond)
-		if rttMS >= 0 {
-			if state.rttMS == 0 {
-				state.rttMS = rttMS
-			} else {
-				state.rttMS += (rttMS - state.rttMS) / 8
-			}
-		}
-	}
-	if state.retryPressure <= adaptiveRetryHealthyThreshold && state.window < adaptiveMaxPathWindow {
-		state.window = min(adaptiveMaxPathWindow, state.window+1/state.window)
-	}
+	// A KCP ACK confirms delivery for the shared conversation, not for the
+	// physical worker that carried the original PUSH.  Only the mandatory
+	// per-worker feedback channel is allowed to update path RTT, delivery rate,
+	// loss, or congestion windows.
 }
 
 func (s *multipathScheduler) acknowledgeBeforeLocked(una uint32, now time.Time) {
@@ -163,7 +147,7 @@ func (s *multipathScheduler) backoffPathLocked(state *multipathPathState, now ti
 		return
 	}
 	state.lastBackoff = now
-	floor := adaptiveMinPathWindow
+	floor := max(adaptiveMinPathWindow, float64(state.inflight+4))
 	if state.deliveryBPS > 0 && !state.lastAck.IsZero() && now.Sub(state.lastAck) <= adaptiveDeliveryStale {
 		rtt := max(state.rttMS, float64(adaptiveMinBackoffInterval/time.Millisecond))
 		bdpSegments := state.deliveryBPS * (rtt / 1000) / 8 / float64(pooledKCPMTU-kcpHeaderSize)

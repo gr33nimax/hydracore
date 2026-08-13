@@ -24,6 +24,20 @@ func TestOuterSequenceWindowSeparatesLossReorderingAndDuplicates(t *testing.T) {
 	require.Equal(t, float64(1), metrics.Value(OuterReorderedPacketsTotal))
 }
 
+func TestOuterJitterResetsAcrossIdlePeriod(t *testing.T) {
+	t.Parallel()
+	metrics := NewAccumulator()
+	metrics.SetCollectionActive(true)
+	started := time.Now()
+	metrics.ObserveOuterPacket(testRTPPacket(20), started)
+	metrics.ObserveOuterPacket(testRTPPacket(21), started.Add(10*time.Millisecond))
+	metrics.ObserveOuterPacket(testRTPPacket(22), started.Add(30*time.Millisecond))
+	require.Positive(t, metrics.Value(NetworkJitterMS))
+
+	metrics.ObserveOuterPacket(testRTPPacket(23), started.Add(2*time.Second))
+	require.Zero(t, metrics.Value(NetworkJitterMS), "an idle gap is not active-path jitter")
+}
+
 func testRTPPacket(sequence uint16) []byte {
 	packet := make([]byte, 12)
 	packet[0] = 0x80

@@ -147,13 +147,13 @@ func TestServerTelemetrySeparatesProcessSessionAndWorkerSnapshots(t *testing.T) 
 	require.Empty(t, records[5].User)
 }
 
-func TestTelemetryControlDoesNotKeepAnUnattachedSessionAlive(t *testing.T) {
+func TestTelemetryControlIsNotQueuedWithoutAnAttachedLane(t *testing.T) {
 	tunnel, err := NewParasiteTunnel(1, logger.NOP())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tunnel.Close() })
 	before := tunnel.LastActivity()
 
-	require.True(t, tunnel.RequestClientTelemetry(30*time.Second))
+	require.False(t, tunnel.RequestClientTelemetry(30*time.Second))
 
 	require.Equal(t, before, tunnel.LastActivity())
 }

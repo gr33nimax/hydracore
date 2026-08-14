@@ -436,6 +436,7 @@ func TestServerRejectsTakeoverOfProgressingSession(t *testing.T) {
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword: "outer-secret",
 		Users:        []ServerUser{{Name: "alice", Password: "secret"}},
+		MaxSessions:  2,
 		SessionHandler: func(SessionInfo, *ParasiteTunnel) error { return nil },
 	}, logger.NOP())
 	require.NoError(t, err)

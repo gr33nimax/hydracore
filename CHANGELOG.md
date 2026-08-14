@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.12
+
+- Prevented one saturated wire-v4 KCP lane or logical flow from blocking every
+  relay flow and the native telemetry producer.
+- Re-evaluate all live lanes while a flow is backpressured, using prospective
+  KCP fragmentation and physical output-queue capacity for admission.
+- Close and reconnect a logical client session after a bounded send stall or
+  per-flow reorder gap instead of leaving a dead tunnel alive indefinitely.
+- Permit a newly authenticated client to replace an old session whose workers
+  are still attached but which has made no relay progress during the takeover
+  grace period.
+
 ## v1.13.16-extended-hydracore.11-debug.11
 
 - Replaced the shared VK KCP conversation with four independent wire-v4 lanes.

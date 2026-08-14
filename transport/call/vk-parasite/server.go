@@ -546,7 +546,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	record := s.users[request.User]
 	var evicted []*serverSession
 	if len(s.sessions) >= s.options.MaxSessions || s.userSessions[request.User] >= record.maxSessions {
-		evicted = s.evictDisconnectedUserSessionsLocked(request.User, time.Now())
+		evicted = s.evictTakeoverEligibleUserSessionsLocked(request.User, time.Now())
 	}
 	if len(s.sessions) >= s.options.MaxSessions {
 		s.sessionsMu.Unlock()
@@ -583,6 +583,16 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		generation: generation,
 		createdAt:  time.Now(),
 	}
+	tunnel.SetTelemetryEventHandler(func(event telemetry.Event) {
+		s.telemetry.event(
+			event.Event,
+			event.Stage,
+			event.Reason,
+			session.user,
+			session.id,
+			event.WorkerID,
+		)
+	})
 	tunnel.SetTelemetryClientRecordHandler(func(payload []byte) {
 		s.telemetry.clientRecord(session, payload)
 	})
@@ -615,8 +625,9 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	return session, true, nil
 }
 
-func (s *Server) evictDisconnectedUserSessionsLocked(user string, now time.Time) []*serverSession {
+func (s *Server) evictTakeoverEligibleUserSessionsLocked(user string, now time.Time) []*serverSession {
 	evicted := make([]*serverSession, 0, 1)
+	progressCutoff := now.Add(-sessionTakeoverGrace)
 	for id, session := range s.sessions {
 		if session.user != user || session.pendingAttaches != 0 || now.Sub(session.createdAt) < sessionTakeoverGrace {
 			continue
@@ -626,7 +637,7 @@ func (s *Server) evictDisconnectedUserSessionsLocked(user string, now time.Time)
 		default:
 			continue
 		}
-		if session.tunnel.ActiveWorkers() != 0 {
+		if session.tunnel.ActiveWorkers() != 0 && session.tunnel.LastProgress().After(progressCutoff) {
 			continue
 		}
 		delete(s.sessions, id)

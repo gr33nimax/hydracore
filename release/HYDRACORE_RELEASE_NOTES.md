@@ -1,4 +1,4 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.11
+# HydraCore v1.13.16-extended-hydracore.11-debug.12
 
 This is an intentionally incompatible paired client/VPS debug release of the
 VK parasite transport. Both endpoints must run this exact release.
@@ -27,6 +27,23 @@ VK mode is `vk_parasite`, it requires exactly four lanes, and capabilities now
 advertise `call_vk_parasite`, `call_vk_four_lane_kcp`, and
 `call_vk_parasite_wire={min:4,max:4}`.
 
-Telemetry reports aggregate and per-lane KCP WaitSnd, RTT/RTO, segment/byte
-retransmissions, output queue delay/drops, active state and flow count. This is
-the data needed to tune each lane independently in subsequent debug releases.
+This build fixes the dead-after-speedtest failure observed in debug.11. A
+blocked data send no longer owns the tunnel-wide send mutex: sequencing is
+serialized per logical TCP/UDP flow, telemetry remains non-blocking, and each
+retry re-evaluates every live lane. Admission accounts for the number of KCP
+segments the frame will create and for the selected worker's physical output
+queue, preventing a new frame from overshooting either bounded queue.
+
+If all four lanes remain unable to accept a frame for 15 seconds, or a
+per-flow reorder gap cannot recover in 15 seconds, the logical tunnel now
+closes deliberately. The Android client propagates that closure immediately
+so its manager creates a fresh VK session instead of presenting a connected
+but dead VPN. As a server-side fallback, an authenticated replacement session
+may evict an older session that still has workers but has made no relay
+progress during the takeover grace period. Recently progressing sessions are
+still protected by the per-user session limit.
+
+Telemetry continues to report aggregate and per-lane KCP WaitSnd, RTT/RTO,
+segment/byte retransmissions, output queue delay/drops, active state and flow
+count. It also records explicit `lane_send_stalled` and
+`lane_reorder_timeout` events when an automatic recovery is triggered.

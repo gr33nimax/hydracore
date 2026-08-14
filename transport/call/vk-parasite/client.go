@@ -434,6 +434,9 @@ func (c *Client) monitorConnectivity() {
 	case <-c.ready:
 	case <-c.ctx.Done():
 		return
+	case <-c.tunnel.Done():
+		_ = c.Close()
+		return
 	}
 	grace := c.options.WorkerConnectTimeout / 2
 	if grace < 15*time.Second {
@@ -461,6 +464,9 @@ func (c *Client) monitorConnectivity() {
 				return
 			}
 		case <-c.ctx.Done():
+			return
+		case <-c.tunnel.Done():
+			_ = c.Close()
 			return
 		}
 	}

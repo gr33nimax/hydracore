@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish this verified main-branch build as the stable release
+        description: Publish a verified main build or the HydraBox 1.0 debug prerelease
         required: true
         default: false
         type: boolean
@@ -395,7 +395,8 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        inputs.publish == true &&
-       github.ref == 'refs/heads/main') ||
+       (github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/codex/hydrabox-1.0')) ||
       (github.event_name == 'push' &&
        github.ref == 'refs/heads/debug')
     runs-on: ubuntu-latest
@@ -540,7 +541,8 @@ jobs:
           test -n "$version"
           title="HydraCore ${version} - verified client and VPS runtimes"
 
-          if [[ "$GITHUB_REF" == "refs/heads/debug" ]]; then
+          if [[ "$GITHUB_REF" == "refs/heads/debug" || \
+                "$GITHUB_REF" == "refs/heads/codex/hydrabox-1.0" ]]; then
             if [[ "$version" != *-debug.* ]]; then
               echo "Debug branch version must contain -debug.: ${version}" >&2
               exit 1

@@ -1,4 +1,12 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.13
+# HydraCore v1.13.16-extended-hydracore.11-debug.14
+
+This paired debug release adds the signed Android HydraCore bundle contract.
+The client AAR now routes generated gomobile loading through
+`HydraNativeLoader`, while the release also publishes detached per-ABI native
+artifacts, a capability digest, manifest, signature, provenance and checksums.
+HydraBox can therefore validate a candidate in an isolated process, activate
+it manually, and fall back to the previous or APK-embedded core after an
+unhealthy launch.
 
 This is an intentionally incompatible paired client/VPS debug release of the
 VK parasite transport. Both endpoints must run this exact release.

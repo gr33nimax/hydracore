@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.14
+
+- Added the signed, independently updateable Android bundle contract with
+  per-ABI native artifacts, capability digest, provenance and rollback slots.
+- Patched generated gomobile loading through HydraNativeLoader so a verified
+  read-only native bundle can be selected before the embedded APK fallback.
+- Isolated capability generation from the libbox role build and verified the
+  client protocol contract in GitHub Actions.
+
 ## v1.13.16-extended-hydracore.11-debug.13
 
 - Introduced incompatible VK parasite wire v5 with eight independent KCP

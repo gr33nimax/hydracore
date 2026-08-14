@@ -128,14 +128,14 @@ func TestServerTelemetrySeparatesProcessSessionAndWorkerSnapshots(t *testing.T) 
 	require.NoError(t, err)
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
-	records := make([]telemetry.Record, 0, 3)
+	records := make([]telemetry.Record, 0, 2+LaneCount)
 	for scanner.Scan() {
 		var record telemetry.Record
 		require.NoError(t, json.Unmarshal(scanner.Bytes(), &record))
 		records = append(records, record)
 	}
 	require.NoError(t, scanner.Err())
-	require.Len(t, records, 6)
+	require.Len(t, records, 2+LaneCount)
 	require.Equal(t, "alice", records[0].User)
 	require.Nil(t, records[0].WorkerID)
 	require.Equal(t, float64(1234), metricNumber(records[0].Metrics["outer_bytes_out_total"]))
@@ -143,8 +143,9 @@ func TestServerTelemetrySeparatesProcessSessionAndWorkerSnapshots(t *testing.T) 
 	require.NotNil(t, records[1].WorkerID)
 	require.Equal(t, uint16(0), *records[1].WorkerID)
 	require.Equal(t, float64(1234), metricNumber(records[1].Metrics["outer_bytes_out_total"]))
-	require.True(t, strings.HasPrefix(records[5].SessionID, "server-"))
-	require.Empty(t, records[5].User)
+	processRecord := records[len(records)-1]
+	require.True(t, strings.HasPrefix(processRecord.SessionID, "server-"))
+	require.Empty(t, processRecord.User)
 }
 
 func TestTelemetryControlIsNotQueuedWithoutAnAttachedLane(t *testing.T) {

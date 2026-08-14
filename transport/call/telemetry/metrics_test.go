@@ -28,6 +28,7 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"worker_active", "worker_attach_success_total", "worker_attach_failure_total", "worker_send_queue_depth",
 		"worker_send_queue_drops_total", "worker_no_available_drops_total", "worker_liveness_expired_total",
 		"lane_count", "lane_flow_count",
+		"lane_admission_bytes_per_second", "outer_rtp_payload_type",
 		"worker_output_queue_delay_ms", "worker_output_queue_late_total",
 		"telemetry_sequence", "telemetry_control_drops_total", "telemetry_record_drops_total", "telemetry_sink_rotations_total",
 	}
@@ -43,6 +44,7 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"worker_send_queue_depth", "worker_send_queue_drops_total", "worker_liveness_expired_total",
 		"worker_send_queue_capacity", "worker_heartbeat_interval_ms", "worker_liveness_timeout_ms",
 		"lane_count", "lane_flow_count",
+		"lane_admission_bytes_per_second", "outer_rtp_payload_type",
 		"worker_output_queue_delay_ms", "worker_output_queue_late_total",
 		"kcp_wait_snd", "kcp_out_segments_total", "kcp_retrans_segments_total", "kcp_out_bytes_total", "kcp_retrans_bytes_total", "kcp_rtt_ms", "kcp_rto_ms", "kcp_send_blocked_seconds_total",
 		"kcp_mtu_bytes", "kcp_send_window_segments", "kcp_receive_window_segments", "kcp_max_pending_segments",

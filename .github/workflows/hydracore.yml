@@ -244,8 +244,9 @@ jobs:
           key_id="${HYDRACORE_BUNDLE_KEY_ID:-hydracore-release-1}"
           published_at="$(git show -s --format=%cI HEAD)"
           client_build_tags="${LIBBOX_BUILD_TAGS//with_call/with_call_client}"
-          go run -tags "$client_build_tags" ./cmd/sing-box hydra capabilities --json \
+          go run -tags "$client_build_tags" ./cmd/internal/write_capabilities \
             > dist/hydracore-client-capabilities.json
+          jq --exit-status . dist/hydracore-client-capabilities.json >/dev/null
           go run ./cmd/internal/build_core_bundle \
             -aar libbox.aar \
             -capabilities dist/hydracore-client-capabilities.json \

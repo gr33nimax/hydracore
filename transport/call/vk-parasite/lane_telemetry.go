@@ -15,9 +15,6 @@ const (
 )
 
 func (l *kcpLane) observeKCPOutput(packet []byte) {
-	if !l.metrics.CollectionActive() {
-		return
-	}
 	now := time.Now()
 	forEachKCPSegment(packet, func(command byte, sequence uint32, size int) {
 		l.metrics.AddHot(telemetry.KCPOutSegmentsTotal, 1)
@@ -30,16 +27,15 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 			l.kcpSent[sequence] = previous
 			l.metrics.AddHot(telemetry.KCPRetransSegmentsTotal, 1)
 			l.metrics.AddHot(telemetry.KCPRetransBytesTotal, uint64(size))
+			l.admission.observeOutput(size, true)
 			return
 		}
 		l.kcpSent[sequence] = kcpSentSegment{sentAt: now}
+		l.admission.observeOutput(size, false)
 	})
 }
 
 func (l *kcpLane) observeKCPInput(packet []byte) {
-	if !l.metrics.CollectionActive() {
-		return
-	}
 	now := time.Now()
 	var cumulativeACK uint32
 	hasCumulativeACK := false

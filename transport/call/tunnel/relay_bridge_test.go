@@ -22,6 +22,16 @@ type telemetryDataTunnel struct {
 	queue atomic.Int64
 }
 
+type flowControlDataTunnel struct {
+	discardDataTunnel
+	frames chan []byte
+}
+
+func (*flowControlDataTunnel) FlowControlEnabled() bool { return true }
+func (t *flowControlDataTunnel) SendData(frame []byte) {
+	t.frames <- append([]byte(nil), frame...)
+}
+
 func (*telemetryDataTunnel) RelaySetActive(int, int) {}
 func (*telemetryDataTunnel) RelayAddBytes(uint64)    {}
 func (t *telemetryDataTunnel) RelayQueueDelta(bytes int) {
@@ -164,4 +174,67 @@ func TestRelayPayloadBytesExcludeFramingAndDestination(t *testing.T) {
 	require.Equal(t, 5, relayPayloadBytes(MsgUDP, udpPayload))
 	require.Zero(t, relayPayloadBytes(MsgConnect, []byte("1.1.1.1:80")))
 	require.Zero(t, relayPayloadBytes(MsgUDP, []byte{8, 'x'}))
+}
+
+func TestTunnelConnectionFlowCreditBoundsOutstandingData(t *testing.T) {
+	t.Parallel()
+	dataTunnel := &flowControlDataTunnel{frames: make(chan []byte, 32)}
+	relay := NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+	connection := newTunnelConn(1, relay)
+	relay.conns.Store(uint32(1), connection)
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := connection.Write(make([]byte, relayFlowWindowBytes+1))
+		result <- err
+	}()
+	for sent := 0; sent < relayFlowWindowBytes; {
+		frame := <-dataTunnel.frames
+		DecodeFrames(frame, func(connID uint32, msgType byte, payload []byte) {
+			require.Equal(t, uint32(1), connID)
+			require.Equal(t, MsgData, msgType)
+			sent += len(payload)
+		})
+	}
+	select {
+	case <-result:
+		t.Fatal("write exceeded its remote flow credit")
+	default:
+	}
+
+	var credit [4]byte
+	binary.BigEndian.PutUint32(credit[:], 1)
+	relay.handleTunnelData(EncodeFrame(1, MsgFlowCredit, credit[:]))
+	require.NoError(t, <-result)
+}
+
+func TestTunnelConnectionReadReturnsFlowCredit(t *testing.T) {
+	t.Parallel()
+	dataTunnel := &flowControlDataTunnel{frames: make(chan []byte, 1)}
+	relay := NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+	connection := newTunnelConn(7, relay)
+	connection.deliver([]byte("hello"))
+
+	buffer := make([]byte, 8)
+	n, err := connection.Read(buffer)
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(buffer[:n]))
+	frame := <-dataTunnel.frames
+	DecodeFrames(frame, func(connID uint32, msgType byte, payload []byte) {
+		require.Equal(t, uint32(7), connID)
+		require.Equal(t, MsgFlowCredit, msgType)
+		require.Equal(t, uint32(5), binary.BigEndian.Uint32(payload))
+	})
+}
+
+func TestTunnelConnectionRejectsFlowWindowOverflow(t *testing.T) {
+	t.Parallel()
+	dataTunnel := &flowControlDataTunnel{frames: make(chan []byte, 1)}
+	relay := NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+	connection := newTunnelConn(9, relay)
+	relay.conns.Store(uint32(9), connection)
+
+	connection.deliver(make([]byte, relayFlowWindowBytes+1))
+	require.True(t, connection.closed.Load())
+	require.Zero(t, connection.readBuf.Len())
 }

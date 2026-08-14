@@ -30,7 +30,7 @@ const (
 	HardMaxIngressQueuePackets = 65536
 	HardMaxPeerReadQueuePackets = 4096
 
-	defaultMaxWorkers           = 4
+	defaultMaxWorkers           = LaneCount
 	defaultMaxPendingHandshakes = 256
 	defaultHandshakeTimeout     = 15 * time.Second
 	defaultSessionIdleTimeout   = 5 * time.Minute
@@ -179,8 +179,14 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	if options.MaxWorkersPerSession == 0 {
 		options.MaxWorkersPerSession = defaultMaxWorkers
 	}
+	// Allow an already-running wire-v4 VPS configuration to pass the atomic
+	// binary switch. Wire v5 still authenticates exactly LaneCount workers and
+	// the next HYDRA configuration apply persists the canonical value.
+	if options.MaxWorkersPerSession == 4 {
+		options.MaxWorkersPerSession = LaneCount
+	}
 	if options.MaxWorkersPerSession != LaneCount {
-		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be four")
+		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be eight")
 	}
 	if options.MaxPendingHandshakes == 0 {
 		options.MaxPendingHandshakes = defaultMaxPendingHandshakes

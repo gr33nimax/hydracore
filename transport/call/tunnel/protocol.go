@@ -16,6 +16,8 @@ const (
 	// control frames.
 	MsgTelemetryControl byte = 0x0a
 	MsgTelemetryRecord  byte = 0x0b
+	// MsgFlowCredit returns bytes consumed by the relay reader to the sender.
+	MsgFlowCredit byte = 0x0c
 )
 
 const ControlConnID uint32 = 0
@@ -25,6 +27,10 @@ type DataTunnel interface {
 	SetOnData(fn func([]byte))
 	SetOnClose(fn func())
 	Reconfigure(fps, batch int)
+}
+
+type FlowControlledDataTunnel interface {
+	FlowControlEnabled() bool
 }
 
 type RelayTelemetry interface {

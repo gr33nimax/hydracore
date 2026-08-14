@@ -13,7 +13,7 @@ func TestAuthRequestRoundTrip(t *testing.T) {
 		SessionID:   [16]byte{1, 2, 3, 4},
 		Conv:        0x10203040,
 		WorkerID:    2,
-		WorkerTotal: 4,
+		WorkerTotal: LaneCount,
 		WorkerEpoch: 9,
 		User:        "alice",
 		Password:    "correct horse battery staple",
@@ -37,19 +37,19 @@ func TestAuthRequestRejectsPreviousWireVersion(t *testing.T) {
 		SessionID:   [16]byte{1, 2, 3, 4},
 		Conv:        0x10203040,
 		WorkerID:    1,
-		WorkerTotal: 4,
+		WorkerTotal: LaneCount,
 		WorkerEpoch: 7,
 		User:        "alice",
 		Password:    "secret",
 	}
 	frame, err := encodeAuthRequest(request)
 	require.NoError(t, err)
-	frame[4] = 3
+	frame[4] = 4
 	_, err = decodeAuthRequest(frame)
 	require.ErrorContains(t, err, "unsupported auth frame")
 
 	ack := encodeAuthAck(true, 42)
-	ack[4] = 3
+	ack[4] = 4
 	_, err = decodeAuthAck(ack)
 	require.ErrorContains(t, err, "invalid server auth response")
 }
@@ -89,6 +89,7 @@ func TestRTPWrapperRoundTripAndWrongKey(t *testing.T) {
 	wire, err := sender.wrap(payload)
 	require.NoError(t, err)
 	require.Equal(t, byte(2), wire[0]>>6)
+	require.Equal(t, byte(rtpPayloadTypeVideo), wire[1]&0x7f)
 	plain, err := receiver.unwrap(wire)
 	require.NoError(t, err)
 	require.Equal(t, payload, plain)

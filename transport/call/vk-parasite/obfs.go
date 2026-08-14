@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
@@ -26,7 +27,8 @@ const (
 	rtpExtendedHdrLen   = 24
 	defaultRTPPadding   = 24
 	maximumWirePacket   = 64 * 1024
-	rtpPayloadTypeAudio = 111
+	rtpPayloadTypeVideo       = 96
+	rtpPayloadTypeLegacyAudio = 111
 )
 
 func deriveWrapKey(password string) ([wrapKeyLength]byte, error) {
@@ -51,6 +53,7 @@ type rtpCodec struct {
 	ssrc       uint32
 	initialSeq uint16
 	initialTS  uint32
+	startedAt  time.Time
 	count      uint64
 	mu         sync.Mutex
 }
@@ -69,6 +72,7 @@ func newRTPCodec(key [wrapKeyLength]byte) (*rtpCodec, error) {
 		ssrc:       binary.BigEndian.Uint32(seed[0:4]),
 		initialSeq: binary.BigEndian.Uint16(seed[4:6]),
 		initialTS:  binary.BigEndian.Uint32(seed[6:10]),
+		startedAt:  time.Now(),
 	}, nil
 }
 
@@ -83,10 +87,10 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, error) {
 	c.mu.Lock()
 	packetIndex := c.count
 	c.count++
+	timestamp := c.initialTS + uint32(time.Since(c.startedAt).Seconds()*90_000)
 	c.mu.Unlock()
 
 	sequence := c.initialSeq + uint16(packetIndex)
-	timestamp := c.initialTS + uint32(packetIndex)*960 + uint32(packetIndex>>16)
 	nonce := buildRTPNonce(c.ssrc, sequence, timestamp)
 	var randomPadding [1]byte
 	if _, err := rand.Read(randomPadding[:]); err != nil {
@@ -95,7 +99,7 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, error) {
 	paddingLength := int(randomPadding[0])%defaultRTPPadding + 1
 	out := make([]byte, rtpHeaderLength+len(payload)+chacha20poly1305.Overhead+paddingLength)
 	out[0] = 0x80 | 0x20
-	out[1] = rtpPayloadTypeAudio
+	out[1] = rtpPayloadTypeVideo
 	binary.BigEndian.PutUint16(out[2:4], sequence)
 	binary.BigEndian.PutUint32(out[4:8], timestamp)
 	binary.BigEndian.PutUint32(out[8:12], c.ssrc)
@@ -118,7 +122,7 @@ func (c *rtpCodec) unwrap(wire []byte) ([]byte, error) {
 		return nil, errors.New("RTP wrapper: invalid version")
 	}
 	payloadType := wire[1] & 0x7f
-	if payloadType != rtpPayloadTypeAudio && payloadType != 96 {
+	if payloadType != rtpPayloadTypeVideo && payloadType != rtpPayloadTypeLegacyAudio {
 		return nil, errors.New("RTP wrapper: unexpected payload type")
 	}
 	headerLength := rtpHeaderLength

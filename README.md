@@ -32,9 +32,9 @@ HYDRA Ultimate  ->  encrypted subscription  ->  HydraBox  ->  HydraCore AAR
   ShadowTLS, XHTTP, OpenVPN, TrustTunnel, MASQUE, MTProxy, Snell, Naive, Call
   inbound/outbound (`dion`, `telemost`, `vk`, `wbstream`), and
   the inherited routing/DNS runtime enabled by the published build tags.
-- Native VK Calls `vk_parasite`: O(1) user authentication, exactly four
+- Native VK Calls `vk_parasite`: O(1) user authentication, exactly eight
   independent KCP lanes over VK/TURN/DTLS, and ordered relay-frame bonding
-  across all four calls.
+  across all eight calls, pre-KCP load control, and bounded relay flow credit.
 
 Other build targets present in the source tree are not HydraCore release
 targets unless a HydraCore release explicitly includes them.

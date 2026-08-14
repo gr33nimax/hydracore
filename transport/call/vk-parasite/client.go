@@ -210,7 +210,7 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 		options.Workers = LaneCount
 	}
 	if options.Workers != LaneCount {
-		return options, errors.New("call vk_parasite: exactly four VK lanes are required")
+		return options, errors.New("call vk_parasite: exactly eight VK lanes are required")
 	}
 	if options.WorkerConnectTimeout == 0 {
 		options.WorkerConnectTimeout = 30 * time.Second

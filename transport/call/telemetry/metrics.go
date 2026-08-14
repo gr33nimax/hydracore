@@ -120,6 +120,8 @@ const (
 	LaneFlowCount
 	WorkerOutputQueueDelayMS
 	WorkerOutputQueueLateTotal
+	LaneAdmissionRateBPS
+	OuterRTPPayloadType
 	metricCount
 )
 
@@ -238,6 +240,8 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "lane_flow_count"},
 	{name: "worker_output_queue_delay_ms"},
 	{name: "worker_output_queue_late_total", counter: true},
+	{name: "lane_admission_bytes_per_second"},
+	{name: "outer_rtp_payload_type"},
 }
 
 var ServerRequired = []Metric{
@@ -259,7 +263,7 @@ var ServerRequired = []Metric{
 	WorkerActive, WorkerAttachSuccessTotal, WorkerAttachFailureTotal, WorkerSendQueueDepth,
 	WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
 	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
+	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, LaneAdmissionRateBPS, OuterRTPPayloadType,
 	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
 }
 
@@ -275,7 +279,7 @@ var ClientRequired = []Metric{
 	WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerLivenessExpiredTotal,
 	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
+	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, LaneAdmissionRateBPS, OuterRTPPayloadType,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal, KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
 	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
@@ -295,7 +299,7 @@ var TunnelMetrics = []Metric{
 	WorkerActive, WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
 	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal,
+	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, LaneAdmissionRateBPS, OuterRTPPayloadType,
 }
 
 type Accumulator struct {

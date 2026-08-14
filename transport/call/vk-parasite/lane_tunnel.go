@@ -17,16 +17,16 @@ import (
 )
 
 const (
-	LaneCount                = 4
+	LaneCount                = 8
 	laneKCPMTU               = 1000
-	laneKCPSendWindow        = 128
+	laneKCPSendWindow        = 96
 	laneKCPReceiveWindow     = 128
-	laneKCPMaxPending        = 256
+	laneKCPMaxPending        = 192
 	laneKCPMaxFragments      = 255
 	laneKCPUpdateInterval    = 10 * time.Millisecond
 	laneKCPFastResend        = 2
 	laneKCPReceiveBuffer     = 32 * 1024
-	laneSendQueueDepth       = 256
+	laneSendQueueDepth       = 96
 	laneReorderFrameLimit    = 4096
 	laneSendRetryInterval    = 2 * time.Millisecond
 	laneSendStallTimeout     = 15 * time.Second
@@ -38,7 +38,7 @@ const (
 )
 
 var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 2, 0}
-var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 4, 0}
+var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 5, 0}
 
 type queuedSegment struct {
 	payload    []byte
@@ -54,6 +54,7 @@ type sendFlowState struct {
 	mu           sync.Mutex
 	nextSequence uint64
 	laneMask     uint8
+	closed       bool
 }
 
 type receiveFlowState struct {
@@ -99,6 +100,7 @@ type kcpLane struct {
 	kcpLastUNA uint32
 	kcpHasUNA  bool
 	flowCount  atomic.Int64
+	admission  *laneAdmission
 }
 
 type ParasiteTunnel struct {
@@ -165,6 +167,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 			recvBuf: make([]byte, laneKCPReceiveBuffer),
 			metrics: telemetry.NewAccumulator(),
 			kcpSent: make(map[uint32]kcpSentSegment),
+			admission: newLaneAdmission(),
 		}
 		lane.metrics.SetCounterParent(metrics)
 		laneID := lane.id
@@ -206,7 +209,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 		t.controlSendMu.Lock()
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
-		_, sent := t.sendEncoded(encoded, true)
+		_, sent := t.sendEncoded(encoded, true, true)
 		if sent {
 			t.controlSendSequence++
 			t.touch()
@@ -216,8 +219,11 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 	state := t.sendFlow(connID)
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if state.closed {
+		return
+	}
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
-	lane, sent := t.sendEncoded(encoded, true)
+	lane, sent := t.sendEncoded(encoded, true, relayMessagePriority(msgType))
 	if !sent {
 		return
 	}
@@ -250,7 +256,7 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		}
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
-		_, sent := t.sendEncoded(encoded, false)
+		_, sent := t.sendEncoded(encoded, false, true)
 		if !sent {
 			return false
 		}
@@ -265,8 +271,11 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		return false
 	}
 	defer state.mu.Unlock()
+	if state.closed {
+		return false
+	}
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
-	lane, sent := t.sendEncoded(encoded, false)
+	lane, sent := t.sendEncoded(encoded, false, relayMessagePriority(msgType))
 	if !sent {
 		return false
 	}
@@ -291,6 +300,8 @@ func (t *ParasiteTunnel) SetOnClose(callback func()) {
 }
 
 func (t *ParasiteTunnel) Reconfigure(_, _ int) {}
+
+func (t *ParasiteTunnel) FlowControlEnabled() bool { return true }
 
 func (t *ParasiteTunnel) SetTelemetryCounterParent(parent *telemetry.Accumulator) {
 	t.metrics.SetCounterParent(parent)
@@ -610,6 +621,7 @@ func (t *ParasiteTunnel) deliverFrameLocked(connID uint32, frame []byte) {
 	}
 	if connID != calltunnel.ControlConnID && terminalRelayMessage(msgType) {
 		delete(t.receiveFlows, connID)
+		t.releaseSendFlow(connID)
 	}
 }
 
@@ -641,15 +653,42 @@ func (t *ParasiteTunnel) commitFlowFrame(connID uint32, msgType byte, state *sen
 		lane.flowCount.Add(1)
 	}
 	if terminalRelayMessage(msgType) {
-		t.sendMu.Lock()
-		if t.sendFlows[connID] == state {
-			delete(t.sendFlows, connID)
-		}
-		t.sendMu.Unlock()
-		for laneID := uint16(0); laneID < LaneCount; laneID++ {
-			if state.laneMask&(1<<laneID) != 0 {
-				t.lanes[laneID].flowCount.Add(-1)
-			}
+		t.releaseSendFlowState(connID, state)
+	}
+}
+
+func (t *ParasiteTunnel) releaseSendFlow(connID uint32) {
+	t.sendMu.Lock()
+	state := t.sendFlows[connID]
+	if state != nil {
+		delete(t.sendFlows, connID)
+	}
+	t.sendMu.Unlock()
+	if state != nil {
+		state.mu.Lock()
+		state.closed = true
+		t.releaseFlowLanes(state)
+		state.mu.Unlock()
+	}
+}
+
+func (t *ParasiteTunnel) releaseSendFlowState(connID uint32, state *sendFlowState) {
+	t.sendMu.Lock()
+	owned := t.sendFlows[connID] == state
+	if owned {
+		delete(t.sendFlows, connID)
+	}
+	t.sendMu.Unlock()
+	if owned {
+		state.closed = true
+		t.releaseFlowLanes(state)
+	}
+}
+
+func (t *ParasiteTunnel) releaseFlowLanes(state *sendFlowState) {
+	for laneID := uint16(0); laneID < LaneCount; laneID++ {
+		if state.laneMask&(1<<laneID) != 0 {
+			t.lanes[laneID].flowCount.Add(-1)
 		}
 	}
 }
@@ -659,7 +698,7 @@ type laneCandidate struct {
 	score float64
 }
 
-func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool) (*kcpLane, bool) {
+func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait, priority bool) (*kcpLane, bool) {
 	select {
 	case <-t.closed:
 		return nil, false
@@ -673,7 +712,7 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool) (*kcpLane, bool)
 		}
 		return nil, false
 	}
-	if lane := t.trySendEncoded(encoded, required); lane != nil {
+	if lane := t.trySendEncoded(encoded, required, priority); lane != nil {
 		return lane, true
 	}
 	if !wait {
@@ -689,7 +728,7 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool) (*kcpLane, bool)
 		case <-t.closed:
 			return nil, false
 		case <-ticker.C:
-			if lane := t.trySendEncoded(encoded, required); lane != nil {
+			if lane := t.trySendEncoded(encoded, required, priority); lane != nil {
 				lane.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 				return lane, true
 			}
@@ -710,8 +749,9 @@ func kcpSegmentsForPayload(size int) int {
 	return (size + mss - 1) / mss
 }
 
-func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int) *kcpLane {
+func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, priority bool) *kcpLane {
 	start := int((t.nextLane.Add(1) - 1) % LaneCount)
+	now := time.Now()
 	candidates := make([]laneCandidate, 0, LaneCount)
 	for offset := 0; offset < LaneCount; offset++ {
 		lane := t.lanes[(start+offset)%LaneCount]
@@ -722,8 +762,9 @@ func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int) *kcpLane {
 		lane.mu.Lock()
 		waitSnd := lane.kcp.WaitSnd()
 		rtt := lane.kcpSRTTMS
+		paceReady := lane.admission.ready(now, len(encoded), priority)
 		lane.mu.Unlock()
-		if waitSnd+required > laneKCPMaxPending || queueDepth+required > laneSendQueueDepth {
+		if !paceReady || waitSnd+required > laneKCPMaxPending || queueDepth+required > laneSendQueueDepth {
 			continue
 		}
 		score := float64(waitSnd*4+queueDepth*2) + rtt/10 + float64(lane.flowCount.Load())
@@ -737,6 +778,7 @@ func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int) *kcpLane {
 		if active &&
 			queueDepth+required <= laneSendQueueDepth &&
 			lane.kcp.WaitSnd()+required <= laneKCPMaxPending &&
+			lane.admission.take(time.Now(), len(encoded), priority) &&
 			lane.kcp.Send(encoded) >= 0 {
 			lane.kcp.Update()
 			lane.mu.Unlock()
@@ -793,6 +835,10 @@ func terminalRelayMessage(msgType byte) bool {
 	return msgType == calltunnel.MsgClose || msgType == calltunnel.MsgConnectErr
 }
 
+func relayMessagePriority(msgType byte) bool {
+	return msgType != calltunnel.MsgData && msgType != calltunnel.MsgUDP && msgType != calltunnel.MsgUDPReply
+}
+
 func (t *ParasiteTunnel) removeWorker(worker *laneWorker) {
 	lane := worker.lane
 	lane.workerMu.Lock()
@@ -829,6 +875,7 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.WorkerSendQueueCapacity, LaneCount*laneSendQueueDepth)
 	t.metrics.Set(telemetry.WorkerHeartbeatIntervalMS, float64(workerHeartbeatInterval/time.Millisecond))
 	t.metrics.Set(telemetry.WorkerLivenessTimeoutMS, float64(workerLivenessTimeout/time.Millisecond))
+	t.metrics.Set(telemetry.OuterRTPPayloadType, rtpPayloadTypeVideo)
 	waitSnd := 0
 	maxRTT := 0.0
 	maxRTO := 200.0
@@ -850,6 +897,8 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 		lane.metrics.Set(telemetry.KCPMaxPendingSegments, laneKCPMaxPending)
 		lane.metrics.Set(telemetry.LaneCount, 1)
 		lane.metrics.Set(telemetry.LaneFlowCount, float64(lane.flowCount.Load()))
+		lane.metrics.Set(telemetry.LaneAdmissionRateBPS, lane.admission.rateBytesPerSecond())
+		lane.metrics.Set(telemetry.OuterRTPPayloadType, rtpPayloadTypeVideo)
 		lane.mu.Unlock()
 		maxRTT = max(maxRTT, rtt)
 		maxRTO = max(maxRTO, rto)
@@ -973,6 +1022,7 @@ func (t *ParasiteTunnel) updateLoop() {
 			for _, lane := range t.lanes {
 				lane.mu.Lock()
 				lane.kcp.Update()
+				lane.admission.tune(time.Now(), lane.kcp.WaitSnd())
 				lane.mu.Unlock()
 			}
 		case <-t.closed:

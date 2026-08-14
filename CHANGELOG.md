@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.13
+
+- Introduced incompatible VK parasite wire v5 with eight independent KCP
+  lanes, per-lane pre-KCP admission control and video-class RTP payload type
+  96. Raw mode remains unchanged.
+- Added end-to-end TCP relay byte credit and 16 KiB frame chunking, bounding
+  each receive backlog at 256 KiB and propagating slow consumers to the source.
+- Released send-flow lane accounting when the remote endpoint closes a flow;
+  telemetry now includes lane admission rate and RTP payload type.
+
 ## v1.13.16-extended-hydracore.11-debug.12
 
 - Prevented one saturated wire-v4 KCP lane or logical flow from blocking every

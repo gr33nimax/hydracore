@@ -47,7 +47,7 @@ func TestHydraSubscriptionV2AcceptsCallInboundAndOutbound(t *testing.T) {
 func TestHydraSubscriptionV2AcceptsVKParasiteCall(t *testing.T) {
 	content := strings.Replace(validHydraSubscriptionJSON(),
 		`"features":["rmux"]`,
-		`"features":["rmux","call","call_vk_parasite","call_vk_four_lane_kcp"]`,
+		`"features":["rmux","call","call_vk_parasite","call_vk_eight_lane_kcp","call_vk_pre_kcp_admission","call_vk_relay_flow_control"]`,
 		1,
 	)
 	content = strings.Replace(content,
@@ -59,7 +59,7 @@ func TestHydraSubscriptionV2AcceptsVKParasiteCall(t *testing.T) {
             "type":"call","tag":"call-vk-server","platform":"vk","mode":"vk_parasite",
             "listen":"0.0.0.0","listen_port":2443,"obfs_password":"shared-obfs-secret",
             "users":[{"name":"alice","password":"user-secret","max_sessions":1}],
-            "max_sessions":32,"max_workers_per_session":4,"max_pending_handshakes":128,
+            "max_sessions":32,"max_workers_per_session":8,"max_pending_handshakes":128,
             "handshake_timeout":"15s","session_idle_timeout":"5m"
           }],
           "outbounds":[{
@@ -67,7 +67,7 @@ func TestHydraSubscriptionV2AcceptsVKParasiteCall(t *testing.T) {
             "server":"vpn.example.invalid","server_port":2443,
             "join_links":["https://vk.com/call/join/room-a","https://vk.com/call/join/room-b"],
             "user":"alice","password":"user-secret","obfs_password":"shared-obfs-secret",
-            "workers":2,"worker_connect_timeout":"30s"
+            "workers":8,"worker_connect_timeout":"30s"
           }]
         }`,
 		1,

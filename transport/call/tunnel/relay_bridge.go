@@ -3,6 +3,7 @@ package tunnel
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,11 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+)
+
+const (
+	relayFlowWindowBytes = 256 * 1024
+	relayFlowChunkBytes  = 16 * 1024
 )
 
 type udpClient struct {
@@ -72,6 +78,7 @@ type RelayBridge struct {
 	once       sync.Once
 	closed     atomic.Bool
 	dialer     N.Dialer
+	flowControl bool
 
 	acceptHandlerMu sync.Mutex
 	acceptHandler   func(conn net.Conn, destination string)
@@ -84,6 +91,7 @@ type RelayBridge struct {
 }
 
 func NewRelayBridge(tunnel DataTunnel, mode string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) *RelayBridge {
+	flowController, _ := tunnel.(FlowControlledDataTunnel)
 	rb := &RelayBridge{
 		tunnel:  tunnel,
 		logger:  logger,
@@ -91,6 +99,7 @@ func NewRelayBridge(tunnel DataTunnel, mode string, readBuf int, dialer N.Dialer
 		readBuf: readBuf,
 		dialer:  dialer,
 		ready:   make(chan struct{}),
+		flowControl: flowController != nil && flowController.FlowControlEnabled(),
 	}
 	tunnel.SetOnData(rb.handleTunnelData)
 	tunnel.SetOnClose(rb.handleTunnelClose)
@@ -321,6 +330,10 @@ func (rb *RelayBridge) send(connID uint32, msgType byte, payload []byte) {
 func (rb *RelayBridge) handleTunnelData(data []byte) {
 	DecodeFrames(data, func(connID uint32, msgType byte, payload []byte) {
 		rb.addRelayBytes(relayPayloadBytes(msgType, payload))
+		if msgType == MsgFlowCredit {
+			rb.handleFlowCredit(connID, payload)
+			return
+		}
 		if connID == ControlConnID && msgType == MsgConfig {
 			fps, batch, trackCount, ok := DecodeVP8Config(payload)
 			if !ok {
@@ -349,6 +362,21 @@ func (rb *RelayBridge) handleTunnelData(data []byte) {
 			rb.handleCreatorMessage(connID, msgType, payload)
 		}
 	})
+}
+
+func (rb *RelayBridge) handleFlowCredit(connID uint32, payload []byte) {
+	if !rb.flowControl || connID == ControlConnID || len(payload) != 4 {
+		return
+	}
+	credit := int(binary.BigEndian.Uint32(payload))
+	if credit <= 0 || credit > relayFlowWindowBytes {
+		return
+	}
+	if value, ok := rb.conns.Load(connID); ok {
+		if connection, ok := value.(*tunnelConn); ok {
+			connection.addSendCredit(credit)
+		}
+	}
 }
 
 func (rb *RelayBridge) handleJoinerMessage(connID uint32, msgType byte, payload []byte) {
@@ -591,33 +619,47 @@ func (tunnelAddr) Network() string { return "call" }
 func (tunnelAddr) String() string  { return "call" }
 
 type tunnelConn struct {
-	id       uint32
-	rb       *RelayBridge
-	rdy      chan error
-	readBuf  bytes.Buffer
-	readMu   sync.Mutex
-	readCond chan struct{}
-	closed   atomic.Bool
-	closeCh  chan struct{}
+	id          uint32
+	rb          *RelayBridge
+	rdy         chan error
+	readBuf     bytes.Buffer
+	readMu      sync.Mutex
+	readCond    chan struct{}
+	closed      atomic.Bool
+	closeCh     chan struct{}
+	writeMu     sync.Mutex
+	creditMu    sync.Mutex
+	sendCredit  int
+	creditCh    chan struct{}
+	flowControl bool
 }
 
 func newTunnelConn(id uint32, rb *RelayBridge) *tunnelConn {
+	flowControl := rb != nil && rb.flowControl
+	credit := 0
+	if flowControl {
+		credit = relayFlowWindowBytes
+	}
 	return &tunnelConn{
-		id:       id,
-		rb:       rb,
-		rdy:      make(chan error, 1),
-		readCond: make(chan struct{}, 1),
-		closeCh:  make(chan struct{}),
+		id:          id,
+		rb:          rb,
+		rdy:         make(chan error, 1),
+		readCond:    make(chan struct{}, 1),
+		closeCh:     make(chan struct{}),
+		creditCh:    make(chan struct{}, 1),
+		sendCredit:  credit,
+		flowControl: flowControl,
 	}
 }
 
 func (tc *tunnelConn) Read(b []byte) (int, error) {
 	for {
 		tc.readMu.Lock()
-	if tc.readBuf.Len() > 0 {
-		n, _ := tc.readBuf.Read(b)
-		tc.rb.relayQueueDelta(-n)
-		tc.readMu.Unlock()
+		if tc.readBuf.Len() > 0 {
+			n, _ := tc.readBuf.Read(b)
+			tc.rb.relayQueueDelta(-n)
+			tc.readMu.Unlock()
+			tc.returnReadCredit(n)
 			return n, nil
 		}
 		tc.readMu.Unlock()
@@ -628,6 +670,7 @@ func (tc *tunnelConn) Read(b []byte) (int, error) {
 				n, _ := tc.readBuf.Read(b)
 				tc.rb.relayQueueDelta(-n)
 				tc.readMu.Unlock()
+				tc.returnReadCredit(n)
 				return n, nil
 			}
 			tc.readMu.Unlock()
@@ -641,8 +684,61 @@ func (tc *tunnelConn) Write(b []byte) (int, error) {
 	if tc.closed.Load() {
 		return 0, io.ErrClosedPipe
 	}
-	tc.rb.send(tc.id, MsgData, b)
-	return len(b), nil
+	if !tc.flowControl {
+		tc.rb.send(tc.id, MsgData, b)
+		return len(b), nil
+	}
+	tc.writeMu.Lock()
+	defer tc.writeMu.Unlock()
+	written := 0
+	for written < len(b) {
+		chunkSize := min(relayFlowChunkBytes, len(b)-written)
+		if err := tc.takeSendCredit(chunkSize); err != nil {
+			return written, err
+		}
+		tc.rb.send(tc.id, MsgData, b[written:written+chunkSize])
+		written += chunkSize
+	}
+	return written, nil
+}
+
+func (tc *tunnelConn) takeSendCredit(size int) error {
+	for {
+		tc.creditMu.Lock()
+		if tc.sendCredit >= size {
+			tc.sendCredit -= size
+			tc.creditMu.Unlock()
+			return nil
+		}
+		tc.creditMu.Unlock()
+		select {
+		case <-tc.creditCh:
+		case <-tc.closeCh:
+			return io.ErrClosedPipe
+		}
+	}
+}
+
+func (tc *tunnelConn) addSendCredit(credit int) {
+	if !tc.flowControl || credit <= 0 || tc.closed.Load() {
+		return
+	}
+	tc.creditMu.Lock()
+	tc.sendCredit = min(relayFlowWindowBytes, tc.sendCredit+credit)
+	tc.creditMu.Unlock()
+	select {
+	case tc.creditCh <- struct{}{}:
+	default:
+	}
+}
+
+func (tc *tunnelConn) returnReadCredit(credit int) {
+	if !tc.flowControl || credit <= 0 || tc.closed.Load() {
+		return
+	}
+	var payload [4]byte
+	binary.BigEndian.PutUint32(payload[:], uint32(credit))
+	tc.rb.send(tc.id, MsgFlowCredit, payload[:])
 }
 
 func (tc *tunnelConn) Close() error {
@@ -670,6 +766,12 @@ func (tc *tunnelConn) deliver(payload []byte) {
 	tc.readMu.Lock()
 	if tc.closed.Load() {
 		tc.readMu.Unlock()
+		return
+	}
+	if tc.flowControl && tc.readBuf.Len()+len(payload) > relayFlowWindowBytes {
+		tc.readMu.Unlock()
+		tc.rb.relayQueueDrop()
+		_ = tc.Close()
 		return
 	}
 	tc.readBuf.Write(payload)

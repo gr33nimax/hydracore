@@ -92,7 +92,7 @@ func TestLaneConversationsAreStableUniqueAndNonzero(t *testing.T) {
 	}
 }
 
-func TestParasiteTunnelUsesFourIndependentLanes(t *testing.T) {
+func TestParasiteTunnelUsesEightIndependentLanes(t *testing.T) {
 	t.Parallel()
 	client, err := NewParasiteTunnel(0x11223344, logger.NOP())
 	require.NoError(t, err)
@@ -161,8 +161,46 @@ func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {
 	client.sendMu.Lock()
 	require.Len(t, client.sendFlows, 1)
 	require.Equal(t, uint64(64), client.sendFlows[99].nextSequence)
-	require.Equal(t, uint8(0x0f), client.sendFlows[99].laneMask)
+	require.Equal(t, uint8(0xff), client.sendFlows[99].laneMask)
 	client.sendMu.Unlock()
+}
+
+func TestRemoteCloseReleasesLocalLaneFlowAccounting(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x23456789, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	state := &sendFlowState{laneMask: 0b00000101}
+	tunnel.sendMu.Lock()
+	tunnel.sendFlows[77] = state
+	tunnel.sendMu.Unlock()
+	tunnel.deliverMu.Lock()
+	tunnel.receiveFlows[77] = &receiveFlowState{pending: make(map[uint64][]byte)}
+	tunnel.lanes[0].flowCount.Store(1)
+	tunnel.lanes[2].flowCount.Store(1)
+	tunnel.deliverFrameLocked(77, calltunnel.EncodeFrame(77, calltunnel.MsgClose, nil))
+	tunnel.deliverMu.Unlock()
+
+	tunnel.sendMu.Lock()
+	require.NotContains(t, tunnel.sendFlows, uint32(77))
+	tunnel.sendMu.Unlock()
+	tunnel.deliverMu.Lock()
+	require.NotContains(t, tunnel.receiveFlows, uint32(77))
+	tunnel.deliverMu.Unlock()
+	require.Zero(t, tunnel.lanes[0].flowCount.Load())
+	require.Zero(t, tunnel.lanes[2].flowCount.Load())
+}
+
+func TestLaneAdmissionBacksOffBeforeKCPUnderRetryPressure(t *testing.T) {
+	t.Parallel()
+	admission := newLaneAdmission()
+	initialRate := admission.rateBytesPerSecond()
+	admission.observeOutput(100_000, false)
+	admission.observeOutput(20_000, true)
+	admission.tune(time.Now().Add(laneAdmissionTunePeriod), laneKCPSendWindow)
+	require.Less(t, admission.rateBytesPerSecond(), initialRate)
+	require.True(t, admission.ready(time.Now(), 1, true), "control traffic must bypass bulk admission")
 }
 
 func TestParasiteTunnelHigherEpochImmediatelyReplacesLane(t *testing.T) {
@@ -368,7 +406,7 @@ func TestClientClosesImmediatelyWithLogicalTunnel(t *testing.T) {
 	}
 }
 
-func TestServerRequiresExactlyFourLanes(t *testing.T) {
+func TestServerRequiresExactlyEightLanes(t *testing.T) {
 	t.Parallel()
 	base := ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -378,9 +416,13 @@ func TestServerRequiresExactlyFourLanes(t *testing.T) {
 	normalized, _, err := validateServerOptions(base)
 	require.NoError(t, err)
 	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
+	base.MaxWorkersPerSession = 4
+	normalized, _, err = validateServerOptions(base)
+	require.NoError(t, err)
+	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
 	base.MaxWorkersPerSession = LaneCount - 1
 	_, _, err = validateServerOptions(base)
-	require.ErrorContains(t, err, "must be four")
+	require.ErrorContains(t, err, "must be eight")
 
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword: "outer-secret",

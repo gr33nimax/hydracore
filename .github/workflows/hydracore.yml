@@ -121,12 +121,19 @@ jobs:
             echo "::error title=Invalid HydraCore version::Found '${version}'" >&2
             exit 1
           fi
-          if existing="$(git rev-parse -q --verify "refs/tags/${version}" 2>/dev/null)" && \
-             [ "$existing" != "$GITHUB_SHA" ]; then
+          build_tag="$version"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # A pull request is checked out at a synthetic merge commit. It must
+            # never attempt to move the immutable release tag stored in
+            # HYDRACORE_VERSION, but gomobile still needs a tag on HEAD for
+            # deterministic version metadata.
+            build_tag="${version}-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          elif existing="$(git rev-parse -q --verify "refs/tags/${version}" 2>/dev/null)" && \
+               [ "$existing" != "$GITHUB_SHA" ]; then
             echo "::error title=HydraCore tag collision::${version} points to ${existing}" >&2
             exit 1
           fi
-          git tag -f "$version" "$GITHUB_SHA"
+          git tag -f "$build_tag" "$GITHUB_SHA"
       - name: Install pinned gomobile
         run: make lib_install
       - name: Build libbox

@@ -160,6 +160,9 @@ func buildAndroidVariant(config AndroidBuildConfig, bindTarget string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err = patchAndroidLoader(config.OutputName); err != nil {
+		log.Fatal(err)
+	}
 
 	copyPath := filepath.Join("..", "sing-box-for-android", "app", "libs")
 	if rw.IsDir(copyPath) {

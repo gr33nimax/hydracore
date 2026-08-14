@@ -203,9 +203,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 	}
 	connID, msgType := frameIdentity(frame)
 	if connID == calltunnel.ControlConnID {
-		if !t.controlSendMu.TryLock() {
-			return false
-		}
+		t.controlSendMu.Lock()
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
 		_, sent := t.sendEncoded(encoded, true)
@@ -216,9 +214,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 		return
 	}
 	state := t.sendFlow(connID)
-	if !state.mu.TryLock() {
-		return false
-	}
+	state.mu.Lock()
 	defer state.mu.Unlock()
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
 	lane, sent := t.sendEncoded(encoded, true)
@@ -249,7 +245,9 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 	}
 	connID, msgType := frameIdentity(frame)
 	if connID == calltunnel.ControlConnID {
-		t.controlSendMu.Lock()
+		if !t.controlSendMu.TryLock() {
+			return false
+		}
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
 		_, sent := t.sendEncoded(encoded, false)
@@ -263,7 +261,9 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		return true
 	}
 	state := t.sendFlow(connID)
-	state.mu.Lock()
+	if !state.mu.TryLock() {
+		return false
+	}
 	defer state.mu.Unlock()
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
 	lane, sent := t.sendEncoded(encoded, false)

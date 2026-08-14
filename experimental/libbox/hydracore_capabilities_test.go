@@ -40,7 +40,9 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.Call)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKParasite)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKTelemetry)
-	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKFourLaneKCP)
+	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKEightLaneKCP)
+	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKPreKCPAdmission)
+	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKRelayFlowControl)
 	switch capabilities.Identity.Role {
 	case "client":
 		require.NotContains(t, capabilities.Protocols.Inbounds, "call")
@@ -49,8 +51,8 @@ func TestHydraCoreCapabilities(t *testing.T) {
 		require.False(t, capabilities.Features.CallVKParasiteServer)
 		require.Equal(t, []string{"vk"}, capabilities.Protocols.CallPlatforms)
 		require.Equal(t, []string{"vk_parasite"}, capabilities.Protocols.CallModes)
-		require.Equal(t, 4, capabilities.Protocols.CallVKParasiteWire.Min)
-		require.Equal(t, 4, capabilities.Protocols.CallVKParasiteWire.Max)
+		require.Equal(t, 5, capabilities.Protocols.CallVKParasiteWire.Min)
+		require.Equal(t, 5, capabilities.Protocols.CallVKParasiteWire.Max)
 	case "vps":
 		require.Contains(t, capabilities.Protocols.Inbounds, "call")
 		require.NotContains(t, capabilities.Protocols.Outbounds, "call")
@@ -58,8 +60,8 @@ func TestHydraCoreCapabilities(t *testing.T) {
 		require.True(t, capabilities.Features.CallVKParasiteServer)
 		require.Equal(t, []string{"vk"}, capabilities.Protocols.CallPlatforms)
 		require.Equal(t, []string{"vk_parasite"}, capabilities.Protocols.CallModes)
-		require.Equal(t, 4, capabilities.Protocols.CallVKParasiteWire.Min)
-		require.Equal(t, 4, capabilities.Protocols.CallVKParasiteWire.Max)
+		require.Equal(t, 5, capabilities.Protocols.CallVKParasiteWire.Min)
+		require.Equal(t, 5, capabilities.Protocols.CallVKParasiteWire.Max)
 	case "combined":
 		require.Contains(t, capabilities.Protocols.Inbounds, "call")
 		require.Contains(t, capabilities.Protocols.Outbounds, "call")

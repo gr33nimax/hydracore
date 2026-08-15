@@ -471,6 +471,52 @@ recovered:
 	_ = replacementPeer.Close()
 }
 
+func TestParasiteTunnelCoalescesConcurrentLaneRecovery(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x6677889d, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	peers := make([]net.Conn, 0, LaneCount)
+	for laneID := uint16(0); laneID < LaneCount; laneID++ {
+		workerConn, peerConn := newTestDatagramPair()
+		_, err = tunnel.reserveWorker(laneID, 1, workerConn)
+		require.NoError(t, err)
+		peers = append(peers, peerConn)
+	}
+	t.Cleanup(func() {
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	first := uint16(0)
+	workerID, result := tunnel.recoverStalledLane(&first)
+	require.Equal(t, laneRecoveryStarted, result)
+	require.Equal(t, uint16(0), workerID)
+	require.Equal(t, LaneCount-1, tunnel.ActiveWorkers())
+
+	second := uint16(1)
+	workerID, result = tunnel.recoverStalledLane(&second)
+	require.Equal(t, laneRecoveryInProgress, result)
+	require.Equal(t, uint16(0), workerID)
+	require.Equal(t, LaneCount-1, tunnel.ActiveWorkers(), "coalesced recovery must not recycle another lane")
+
+	replacement, replacementPeer := newTestDatagramPair()
+	peers = append(peers, replacementPeer)
+	_, err = tunnel.reserveWorker(0, 2, replacement)
+	require.NoError(t, err)
+	workerID, result = tunnel.recoverStalledLane(&second)
+	require.Equal(t, laneRecoveryStarted, result)
+	require.Equal(t, uint16(1), workerID)
+}
+
+func TestKCPRetransmissionReasonEstimate(t *testing.T) {
+	t.Parallel()
+	require.False(t, isEstimatedRTO(40*time.Millisecond, 100*time.Millisecond))
+	require.True(t, isEstimatedRTO(75*time.Millisecond, 100*time.Millisecond))
+}
+
 func TestRelayBridgeSendStallClosesWithoutReentrantDeadlock(t *testing.T) {
 	t.Parallel()
 	dataTunnel, err := NewParasiteTunnel(0x6677889b, logger.NOP())
@@ -642,6 +688,7 @@ func TestServerRequiresExactlyFourLanes(t *testing.T) {
 	normalized, _, err := validateServerOptions(base)
 	require.NoError(t, err)
 	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
+	require.Equal(t, minimumPeerReadQueuePackets, normalized.PeerReadQueuePackets)
 	base.MaxWorkersPerSession = 8
 	_, _, err = validateServerOptions(base)
 	require.ErrorContains(t, err, "must be four")

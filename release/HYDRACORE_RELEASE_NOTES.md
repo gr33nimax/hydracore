@@ -1,11 +1,26 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.20
+# HydraCore v1.13.16-extended-hydracore.11-debug.21
 
-This build keeps wire v6 and exactly four VK calls. It adds pressure spillover
-for an ordered flow when its preferred KCP lane is saturated, recycles only the
-affected TURN/DTLS worker on the first send stalls, and keeps physical output
-blocking out of RelayBridge's synchronous send path. Both roles remain wire-v6
-compatible, but updating the client and VPS together is recommended for the
-same recovery behavior in both directions.
+This build keeps wire v6 and exactly four VK calls. It closes the debug.20
+reconnect cascade by coordinating recovery across the complete logical
+session: only one affected TURN/DTLS worker is recycled at a time, and blocked
+flows coalesce behind that recovery instead of removing the remaining three
+workers. A bounded 1024-packet per-peer burst queue and ClientHello
+deduplication prevent a speed-test burst from exhausting ingress and stale DTLS
+handshake slots.
+
+Each of the four independent KCP lanes now enables its own congestion control
+and uses fast-resend 4. Loss on one VK/TURN path therefore reduces pressure on
+that path instead of feeding retransmissions back into the same bottleneck.
+Telemetry retains aggregate KCP retransmissions and adds explicitly estimated
+fast-resend versus RTO counters for the next tuning run. Both roles remain
+wire-v6 compatible, but client and VPS should use debug.21 together.
+
+## Previous debug.20 notes
+
+Debug.20 kept wire v6 and exactly four VK calls. It added pressure spillover
+for an ordered flow when its preferred KCP lane was saturated, recycled the
+affected TURN/DTLS worker on a send stall, and kept physical output blocking
+out of RelayBridge's synchronous send path.
 
 ## Previous debug.19 notes
 

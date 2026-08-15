@@ -25,13 +25,13 @@ const (
 	laneKCPPreferredPending  = laneKCPSendWindow / 2
 	laneKCPMaxFragments      = 255
 	laneKCPUpdateInterval    = 10 * time.Millisecond
-	laneKCPFastResend        = 2
+	laneKCPFastResend        = 4
+	laneKCPNoCongestion      = 0
 	laneKCPReceiveBuffer     = 32 * 1024
 	laneSendQueueDepth       = 96
 	laneReorderFrameLimit    = 4096
 	laneSendRetryInterval    = 2 * time.Millisecond
 	laneSendStallTimeout     = 8 * time.Second
-	laneSendRecoveryLimit    = 2
 	laneReorderGapTimeout    = 15 * time.Second
 	laneReorderCheckInterval = time.Second
 	workerHeartbeatInterval  = 15 * time.Second
@@ -50,8 +50,18 @@ type queuedSegment struct {
 
 type kcpSentSegment struct {
 	sentAt        time.Time
+	lastSentAt    time.Time
 	retransmitted bool
 }
+
+type laneRecoveryResult uint8
+
+const (
+	laneRecoveryUnavailable laneRecoveryResult = iota
+	laneRecoveryStarted
+	laneRecoveryInProgress
+	laneRecoveryTimedOut
+)
 
 type sendFlowState struct {
 	mu           sync.Mutex
@@ -134,6 +144,10 @@ type ParasiteTunnel struct {
 
 	sendStallTimeout  time.Duration
 	reorderGapTimeout time.Duration
+	recoveryMu        sync.Mutex
+	recoveryActive    bool
+	recoveryLane      uint16
+	recoveryDeadline  time.Time
 
 	telemetryMu             sync.RWMutex
 	onTelemetryControl      func(time.Duration)
@@ -184,7 +198,10 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 				lane.observeKCPOutput(buffer[:size])
 			}
 		})
-		lane.kcp.NoDelay(1, int(laneKCPUpdateInterval/time.Millisecond), laneKCPFastResend, 1)
+		// Let each independent KCP lane react to loss on its own VK/TURN path.
+		// Disabling KCP congestion control here caused the measured positive
+		// feedback loop: TURN loss -> retransmits -> more TURN loss.
+		lane.kcp.NoDelay(1, int(laneKCPUpdateInterval/time.Millisecond), laneKCPFastResend, laneKCPNoCongestion)
 		lane.kcp.WndSize(laneKCPSendWindow, laneKCPReceiveWindow)
 		lane.kcp.SetMtu(laneKCPMTU)
 		tunnel.lanes[index] = lane
@@ -424,6 +441,7 @@ func (t *ParasiteTunnel) reserveWorker(id uint16, epoch uint64, conn net.Conn) (
 	}
 	lane.worker = worker
 	lane.workerMu.Unlock()
+	t.completeLaneRecovery(id)
 	worker.metrics.Set(telemetry.WorkerActive, 1)
 	if replaced != nil {
 		replaced.close()
@@ -821,7 +839,6 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 		return nil, false
 	}
 	blockedAt := time.Now()
-	recoveryAttempts := 0
 	ticker := time.NewTicker(laneSendRetryInterval)
 	timer := time.NewTimer(t.sendStallTimeout)
 	defer ticker.Stop()
@@ -838,14 +855,19 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 		case <-timer.C:
 			t.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 			t.recordEvent("lane_send_stalled", "kcp", "pending_timeout", nil)
-			if recoveryAttempts < laneSendRecoveryLimit {
-				if workerID, recovered := t.recoverStalledLane(preferred); recovered {
-					recoveryAttempts++
-					t.recordEvent("lane_send_recovery", "lane", "worker_recycle", &workerID)
-					blockedAt = time.Now()
-					timer.Reset(t.sendStallTimeout)
-					continue
-				}
+			workerID, recovery := t.recoverStalledLane(preferred)
+			switch recovery {
+			case laneRecoveryStarted:
+				t.recordEvent("lane_send_recovery", "lane", "worker_recycle", &workerID)
+				blockedAt = time.Now()
+				timer.Reset(t.sendStallTimeout)
+				continue
+			case laneRecoveryInProgress:
+				// Other blocked relay flows join the same session-wide recovery.
+				// They must not recycle the remaining healthy lanes in parallel.
+				blockedAt = time.Now()
+				timer.Reset(t.sendStallTimeout)
+				continue
 			}
 			t.closeAsync()
 			return nil, false
@@ -917,21 +939,29 @@ func (t *ParasiteTunnel) trySendEncodedOnLane(lane *kcpLane, encoded []byte, req
 	return lane.kcp.Send(encoded) >= 0
 }
 
-func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, bool) {
-	if preferred != nil && int(*preferred) < LaneCount {
-		lane := t.lanes[*preferred]
-		lane.workerMu.RLock()
-		worker := lane.worker
-		lane.workerMu.RUnlock()
-		if worker != nil {
-			t.removeWorker(worker)
-			return lane.id, true
+func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneRecoveryResult) {
+	t.recoveryMu.Lock()
+	defer t.recoveryMu.Unlock()
+	if t.recoveryActive {
+		if time.Now().After(t.recoveryDeadline) {
+			return t.recoveryLane, laneRecoveryTimedOut
 		}
+		return t.recoveryLane, laneRecoveryInProgress
 	}
 
 	var selected *laneWorker
+	if preferred != nil && int(*preferred) < LaneCount {
+		lane := t.lanes[*preferred]
+		lane.workerMu.RLock()
+		selected = lane.worker
+		lane.workerMu.RUnlock()
+	}
+
 	selectedPressure := -1
 	for _, lane := range t.lanes {
+		if selected != nil {
+			break
+		}
 		lane.workerMu.RLock()
 		worker := lane.worker
 		queueDepth := 0
@@ -957,11 +987,27 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, bool) {
 		}
 	}
 	if selected == nil {
-		return 0, false
+		return 0, laneRecoveryUnavailable
 	}
 	workerID := selected.id
+	t.recoveryActive = true
+	t.recoveryLane = workerID
+	t.recoveryDeadline = time.Now().Add(3 * t.sendStallTimeout)
 	t.removeWorker(selected)
-	return workerID, true
+	return workerID, laneRecoveryStarted
+}
+
+func (t *ParasiteTunnel) completeLaneRecovery(laneID uint16) {
+	t.recoveryMu.Lock()
+	recovered := t.recoveryActive && t.recoveryLane == laneID
+	if recovered {
+		t.recoveryActive = false
+		t.recoveryDeadline = time.Time{}
+	}
+	t.recoveryMu.Unlock()
+	if recovered {
+		t.recordEvent("lane_send_recovered", "lane", "worker_attached", &laneID)
+	}
 }
 
 func (l *kcpLane) workerState() (bool, int) {
@@ -1059,7 +1105,7 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.KCPMaxPendingSegments, LaneCount*laneKCPMaxPending)
 	t.metrics.Set(telemetry.KCPUpdateIntervalMS, float64(laneKCPUpdateInterval/time.Millisecond))
 	t.metrics.Set(telemetry.KCPFastResend, laneKCPFastResend)
-	t.metrics.Set(telemetry.KCPCongestionControl, 0)
+	t.metrics.Set(telemetry.KCPCongestionControl, 1)
 	t.metrics.Set(telemetry.WorkerSendQueueCapacity, LaneCount*laneSendQueueDepth)
 	t.metrics.Set(telemetry.WorkerHeartbeatIntervalMS, float64(workerHeartbeatInterval/time.Millisecond))
 	t.metrics.Set(telemetry.WorkerLivenessTimeoutMS, float64(workerLivenessTimeout/time.Millisecond))

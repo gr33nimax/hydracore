@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.21
+
+- Coalesced simultaneous send stalls into one session-wide lane recovery, so
+  concurrent relay flows can no longer recycle all four VK workers in a
+  cascade and leave the tunnel permanently disconnected.
+- Enabled independent KCP congestion control on every VK/TURN line and raised
+  fast-resend to four, preventing retransmission pressure on one lossy call
+  from creating the measured loss-amplification loop across the tunnel.
+- Raised the effective, bounded per-peer DTLS ingress burst capacity to 1024
+  packets and deduplicated pending ClientHello state across TURN endpoint
+  changes, reducing internal queue drops and stale handshake-slot exhaustion.
+- Split KCP retransmission telemetry into estimated fast-resend and RTO segment
+  and byte counters, while retaining the aggregate counters.
+
 ## v1.13.16-extended-hydracore.11-debug.20
 
 - Kept ordered relay flows on their preferred KCP lane while it has headroom,

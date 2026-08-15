@@ -23,14 +23,40 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 			return
 		}
 		if previous, exists := l.kcpSent[sequence]; exists {
+			if isEstimatedRTO(now.Sub(previous.lastSentAt), l.estimatedKCPRTO()) {
+				l.metrics.AddHot(telemetry.KCPRTORetransEstimateSegmentsTotal, 1)
+				l.metrics.AddHot(telemetry.KCPRTORetransEstimateBytesTotal, uint64(size))
+			} else {
+				l.metrics.AddHot(telemetry.KCPFastRetransEstimateSegmentsTotal, 1)
+				l.metrics.AddHot(telemetry.KCPFastRetransEstimateBytesTotal, uint64(size))
+			}
 			previous.retransmitted = true
+			previous.lastSentAt = now
 			l.kcpSent[sequence] = previous
 			l.metrics.AddHot(telemetry.KCPRetransSegmentsTotal, 1)
 			l.metrics.AddHot(telemetry.KCPRetransBytesTotal, uint64(size))
 			return
 		}
-		l.kcpSent[sequence] = kcpSentSegment{sentAt: now}
+		l.kcpSent[sequence] = kcpSentSegment{sentAt: now, lastSentAt: now}
 	})
+}
+
+func (l *kcpLane) estimatedKCPRTO() time.Duration {
+	if l.kcpSRTTMS <= 0 {
+		return 200 * time.Millisecond
+	}
+	rtoMS := l.kcpSRTTMS + 4*l.kcpRTTVARMS
+	if rtoMS < 30 {
+		rtoMS = 30
+	}
+	return time.Duration(rtoMS * float64(time.Millisecond))
+}
+
+func isEstimatedRTO(elapsed, rto time.Duration) bool {
+	// kcp-go does not expose the internal retransmission reason. Classify the
+	// callback conservatively from the lane's measured RTO and keep the metric
+	// name explicit that this is an estimate.
+	return elapsed >= rto*3/4
 }
 
 func (l *kcpLane) observeKCPInput(packet []byte) {

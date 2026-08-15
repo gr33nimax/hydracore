@@ -38,6 +38,7 @@ const (
 	defaultUDPSendBufferBytes    = 4 * 1024 * 1024
 	defaultIngressQueuePackets   = 4096
 	defaultPeerReadQueuePackets  = 512
+	minimumPeerReadQueuePackets  = 1024
 )
 
 type ServerUser struct {
@@ -107,6 +108,7 @@ type Server struct {
 	decoder    *rtpCodec
 	peersMu    sync.Mutex
 	peers      map[string]*peerPacketConn
+	helloPeers map[[32]byte]*peerPacketConn
 	ingressQueues []chan receivedPacket
 	ingressDepth atomic.Int64
 
@@ -150,6 +152,7 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 			MTU:                  1100,
 		},
 		peers:        make(map[string]*peerPacketConn),
+		helloPeers:   make(map[[32]byte]*peerPacketConn),
 		sessions:     make(map[[16]byte]*serverSession),
 		userSessions: make(map[string]int),
 		pending:      make(chan struct{}, normalized.MaxPendingHandshakes),
@@ -226,6 +229,13 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	}
 	if options.PeerReadQueuePackets < 16 || options.PeerReadQueuePackets > HardMaxPeerReadQueuePackets {
 		return options, nil, errors.New("call vk_parasite: peer_read_queue_packets outside hard bounds")
+	}
+	// Preserve explicit configuration compatibility but guarantee enough
+	// bounded burst absorption for four KCP lanes. The old effective 512 packet
+	// queue was exhausted during a single speed-test burst and then amplified
+	// KCP retransmission pressure.
+	if options.PeerReadQueuePackets < minimumPeerReadQueuePackets {
+		options.PeerReadQueuePackets = minimumPeerReadQueuePackets
 	}
 	users := make(map[string]serverUser, len(options.Users))
 	for _, user := range options.Users {
@@ -354,6 +364,7 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 		metrics.ObserveOuterPacket(wire, time.Now())
 	}
 	var replacedPeer *peerPacketConn
+	var duplicateHelloPeer *peerPacketConn
 	rejectNewPeer := false
 	s.peersMu.Lock()
 	peer = s.peers[key]
@@ -367,6 +378,7 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 				peer = newPeerPacketConn(s.packetConn, remote, codec, s.telemetry.metrics, s.options.PeerReadQueuePackets)
 				peer.rememberClientHello(clientHello)
 				s.peers[key] = peer
+				duplicateHelloPeer = s.registerClientHelloLocked(key, clientHello, peer)
 				go s.handlePeer(key, peer)
 				s.telemetry.event("dtls_peer_replaced", "dtls", "client_hello", "", [16]byte{}, nil)
 			} else {
@@ -387,6 +399,7 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 				peer = newPeerPacketConn(s.packetConn, remote, codec, s.telemetry.metrics, s.options.PeerReadQueuePackets)
 				if isClientHello {
 					peer.rememberClientHello(clientHello)
+					duplicateHelloPeer = s.registerClientHelloLocked(key, clientHello, peer)
 				}
 				s.peers[key] = peer
 				go s.handlePeer(key, peer)
@@ -402,9 +415,29 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 	if replacedPeer != nil {
 		_ = replacedPeer.Close()
 	}
+	if duplicateHelloPeer != nil && duplicateHelloPeer != replacedPeer {
+		_ = duplicateHelloPeer.Close()
+	}
 	if peer != nil {
 		peer.enqueue(plain, remote)
 	}
+}
+
+// registerClientHelloLocked keeps one pending DTLS state machine per actual
+// ClientHello even when a TURN allocation changes the observable UDP endpoint.
+// Without this, stale copies occupied handshake slots until timeout and could
+// reject the replacement workers needed by lane recovery.
+func (s *Server) registerClientHelloLocked(key string, identity [32]byte, peer *peerPacketConn) *peerPacketConn {
+	previous := s.helloPeers[identity]
+	if previous != nil && previous != peer {
+		for previousKey, candidate := range s.peers {
+			if candidate == previous && previousKey != key {
+				delete(s.peers, previousKey)
+			}
+		}
+	}
+	s.helloPeers[identity] = peer
+	return previous
 }
 
 func isDTLSClientHello(packet []byte) bool {
@@ -469,6 +502,9 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		s.peersMu.Lock()
 		if s.peers[key] == peer {
 			delete(s.peers, key)
+		}
+		if identity := peer.clientHello.Load(); identity != nil && s.helloPeers[*identity] == peer {
+			delete(s.helloPeers, *identity)
 		}
 		s.peersMu.Unlock()
 		_ = peer.Close()

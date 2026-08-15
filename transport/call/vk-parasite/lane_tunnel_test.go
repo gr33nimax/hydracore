@@ -182,12 +182,24 @@ func TestParasiteTunnelAdmissionWindowHasNonCollapsingFloor(t *testing.T) {
 
 	// Admission is ACK-clocked, expressed in segments rather than a fixed byte
 	// rate, and must retain enough initial flight to avoid Reno's one-segment
-	// collapse while leaving room for control traffic.
+	// collapse while leaving room for control traffic. Exercise the admission
+	// policy while holding the lane lock: trySendEncoded is deliberately
+	// non-blocking and may lose a TryLock race with the 10 ms update loop under
+	// the race detector, which is unrelated to the window floor being tested.
 	payload := make([]byte, 800)
-	for frame := 0; frame < laneKCPInitialAdmission-laneKCPControlReserve; frame++ {
-		require.NotNil(t, tunnel.trySendEncoded(payload, 1, nil, false), "frame %d hit the initial admission floor", frame)
-	}
-	require.Equal(t, laneKCPInitialAdmission, tunnel.lanes[0].admissionWindow)
+	lane := tunnel.lanes[0]
+	func() {
+		lane.mu.Lock()
+		defer lane.mu.Unlock()
+		admissionLimit := lane.admissionLimitLocked(false)
+		require.Equal(t, laneKCPInitialAdmission-laneKCPControlReserve, admissionLimit)
+		for frame := 0; frame < admissionLimit; frame++ {
+			require.LessOrEqual(t, lane.kcp.WaitSnd()+1, admissionLimit, "frame %d hit the initial admission floor", frame)
+			require.GreaterOrEqual(t, lane.kcp.Send(payload), 0)
+		}
+		require.Equal(t, admissionLimit, lane.kcp.WaitSnd())
+		require.Equal(t, laneKCPInitialAdmission, lane.admissionWindow)
+	}()
 }
 
 func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {

@@ -1,4 +1,4 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.25
+# HydraCore v1.13.16-extended-hydracore.11-debug.26
 
 This build introduces incompatible VK parasite wire v7. Client and VPS must be
 updated together; wire v6 is rejected. TCP data is fragmented to at most four

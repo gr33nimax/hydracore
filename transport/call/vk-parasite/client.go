@@ -492,7 +492,7 @@ func (c *Client) waitWorkerReplacement(ctx context.Context, workerID uint16, pre
 	defer ticker.Stop()
 	defer timer.Stop()
 	for {
-		if epoch, active := c.tunnel.WorkerEpoch(workerID); active && epoch > previousEpoch {
+		if c.tunnel.workerReadyAfter(workerID, previousEpoch) {
 			return true
 		}
 		select {

@@ -773,16 +773,22 @@ func (t *ParasiteTunnel) broadcastLaneResetControl(kind byte, laneID uint16, gen
 		depth  int
 	}
 	candidates := make([]candidate, 0, LaneCount)
+	var targetFallback *laneWorker
 	for _, lane := range t.lanes {
 		lane.mu.Lock()
 		healthy := lane.state == laneStateActive || lane.state == laneStateProbing
 		lane.mu.Unlock()
 		lane.workerMu.RLock()
 		worker := lane.worker
-		if worker != nil && (healthy || lane.id == laneID) {
+		if worker != nil && healthy {
 			candidates = append(candidates, candidate{worker: worker, depth: len(worker.sendQueue)})
+		} else if worker != nil && lane.id == laneID {
+			targetFallback = worker
 		}
 		lane.workerMu.RUnlock()
+	}
+	if len(candidates) == 0 && targetFallback != nil {
+		candidates = append(candidates, candidate{worker: targetFallback, depth: len(targetFallback.sendQueue)})
 	}
 	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].depth < candidates[j].depth })
 	results := make(chan bool, len(candidates))
@@ -1452,6 +1458,16 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 	hasPreferred := preferred != nil && int(*preferred) < LaneCount
 	if hasPreferred {
 		selected = t.lanes[*preferred]
+		active, _ := selected.workerState()
+		if !active {
+			selected.mu.Lock()
+			state := selected.state
+			selected.mu.Unlock()
+			if state != laneStateActive {
+				return selected.id, laneRecoveryInProgress
+			}
+			return selected.id, laneRecoveryUnavailable
+		}
 	}
 
 	selectedPressure := -1
@@ -1927,6 +1943,24 @@ func (t *ParasiteTunnel) WorkerEpoch(id uint16) (uint64, bool) {
 		return 0, false
 	}
 	return lane.worker.epoch, true
+}
+
+func (t *ParasiteTunnel) workerReadyAfter(id uint16, previousEpoch uint64) bool {
+	if id >= LaneCount {
+		return false
+	}
+	lane := t.lanes[id]
+	lane.workerMu.RLock()
+	defer lane.workerMu.RUnlock()
+	worker := lane.worker
+	readyEpoch := worker != nil && worker.epoch > previousEpoch
+	if !readyEpoch {
+		return false
+	}
+	lane.mu.Lock()
+	active := lane.state == laneStateActive
+	lane.mu.Unlock()
+	return active
 }
 
 func (t *ParasiteTunnel) LaneGeneration(id uint16) uint64 {

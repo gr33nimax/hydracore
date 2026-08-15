@@ -876,6 +876,8 @@ func TestClientNetworkRebindReplacesOneWorkerAtATime(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x778899ac, logger.NOP())
 	require.NoError(t, err)
+	peerTunnel, err := NewParasiteTunnel(0x778899ac, logger.NOP())
+	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &Client{
 		ctx:     ctx,
@@ -887,19 +889,17 @@ func TestClientNetworkRebindReplacesOneWorkerAtATime(t *testing.T) {
 		workers: make([]clientWorkerControl, LaneCount),
 	}
 	oldDone := make([]<-chan struct{}, LaneCount)
-	peers := make([]net.Conn, 0, 2*LaneCount)
 	for workerID := 0; workerID < LaneCount; workerID++ {
 		client.workers[workerID] = newClientWorkerControl()
-		connection, peer := newTestDatagramPair()
-		peers = append(peers, peer)
+		connection, peerConnection := newTestDatagramPair()
 		oldDone[workerID], err = tunnel.AddWorkerEpoch(uint16(workerID), 1, connection)
+		require.NoError(t, err)
+		_, err = peerTunnel.AddWorkerEpoch(uint16(workerID), 1, peerConnection)
 		require.NoError(t, err)
 	}
 	t.Cleanup(func() {
 		_ = client.Close()
-		for _, peer := range peers {
-			_ = peer.Close()
-		}
+		_ = peerTunnel.Close()
 	})
 
 	client.RebindNetwork()
@@ -909,13 +909,26 @@ func TestClientNetworkRebindReplacesOneWorkerAtATime(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("worker %d was not selected for staged replacement", workerID)
 		}
+		require.Eventually(t, func() bool {
+			return tunnel.LaneGeneration(uint16(workerID)) == 2 &&
+				peerTunnel.LaneGeneration(uint16(workerID)) == 2 &&
+				tunnel.ActiveWorkers() == LaneCount-1 &&
+				peerTunnel.ActiveWorkers() == LaneCount-1
+		}, 3*time.Second, 10*time.Millisecond)
 		require.Equal(t, LaneCount-1, tunnel.ActiveWorkers(), "another lane was dropped before worker %d recovered", workerID)
-		connection, peer := newTestDatagramPair()
-		peers = append(peers, peer)
-		_, err = tunnel.AddWorkerEpoch(uint16(workerID), 2, connection)
+		connection, peerConnection := newTestDatagramPair()
+		_, err = tunnel.AddWorkerGenerationEpoch(uint16(workerID), 2, 2, connection)
 		require.NoError(t, err)
+		_, err = peerTunnel.AddWorkerGenerationEpoch(uint16(workerID), 2, 2, peerConnection)
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return tunnel.workerReadyAfter(uint16(workerID), 1) &&
+				peerTunnel.workerReadyAfter(uint16(workerID), 1)
+		}, 3*time.Second, 10*time.Millisecond)
 	}
-	require.Eventually(t, func() bool { return tunnel.ActiveWorkers() == LaneCount }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return tunnel.ActiveWorkers() == LaneCount && peerTunnel.ActiveWorkers() == LaneCount
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestClientClosesImmediatelyWithLogicalTunnel(t *testing.T) {

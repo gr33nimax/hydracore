@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.13.16-extended-hydracore.11-debug.25
+## v1.13.16-extended-hydracore.11-debug.26
 
 - Introduced incompatible VK parasite wire v7 with generation-scoped worker
   authentication, KCP conversations and lane frames; wire v6 is rejected.
@@ -14,6 +14,9 @@
   escalation and serialized TURN/DTLS reconnects while healthy lanes continue.
 - Added wire-v7 lane generation/state/pacing/reset/probe telemetry and a
   deterministic four-lane CI emulator for capacity, loss, delay and blackhole.
+- Route lane reset controls over healthy calls without waiting on a blocked
+  target writer, and require staged network rebind to finish generation probe
+  before the next TURN reconnect starts.
 
 ## v1.13.16-extended-hydracore.11-debug.24
 

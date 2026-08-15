@@ -24,6 +24,33 @@ type testDatagramConn struct {
 	writes   atomic.Int32
 }
 
+type blockingWriteConn struct {
+	net.Conn
+	started   chan struct{}
+	closed    chan struct{}
+	startOnce sync.Once
+	closeOnce sync.Once
+}
+
+func newBlockingWriteConn(conn net.Conn) *blockingWriteConn {
+	return &blockingWriteConn{
+		Conn:    conn,
+		started: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (c *blockingWriteConn) Write([]byte) (int, error) {
+	c.startOnce.Do(func() { close(c.started) })
+	<-c.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (c *blockingWriteConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
 func newTestDatagramPair() (*testDatagramConn, *testDatagramConn) {
 	left := &testDatagramConn{incoming: make(chan []byte, 256), closed: make(chan struct{})}
 	right := &testDatagramConn{incoming: make(chan []byte, 256), closed: make(chan struct{})}
@@ -603,6 +630,137 @@ func TestParasiteTunnelRecycleSignalDetachesPeerLane(t *testing.T) {
 		t.Fatal("lane recycle closed the right logical session")
 	default:
 	}
+}
+
+func TestParasiteTunnelRecycleUsesHealthyPeerLaneWhenTargetWriterIsBlocked(t *testing.T) {
+	t.Parallel()
+	left, err := NewParasiteTunnel(0x667788a1, logger.NOP())
+	require.NoError(t, err)
+	right, err := NewParasiteTunnel(0x667788a1, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+	})
+
+	leftTarget, rightTarget := newTestDatagramPair()
+	blockedTarget := newBlockingWriteConn(leftTarget)
+	_, err = left.AddWorkerEpoch(0, 1, blockedTarget)
+	require.NoError(t, err)
+	_, err = right.AddWorkerEpoch(0, 1, rightTarget)
+	require.NoError(t, err)
+	for laneID := uint16(1); laneID < LaneCount; laneID++ {
+		leftConn, rightConn := newTestDatagramPair()
+		_, err = left.AddWorkerEpoch(laneID, 1, leftConn)
+		require.NoError(t, err)
+		_, err = right.AddWorkerEpoch(laneID, 1, rightConn)
+		require.NoError(t, err)
+	}
+
+	left.lanes[0].workerMu.RLock()
+	worker := left.lanes[0].worker
+	left.lanes[0].workerMu.RUnlock()
+	worker.sendQueue <- queuedSegment{payload: []byte("block target writer"), enqueuedAt: time.Now()}
+	select {
+	case <-blockedTarget.started:
+	case <-time.After(time.Second):
+		t.Fatal("target writer did not block")
+	}
+
+	workerID := uint16(0)
+	recoveredID, result := left.recoverStalledLane(&workerID)
+	require.Equal(t, laneRecoveryStarted, result)
+	require.Equal(t, workerID, recoveredID)
+	require.Eventually(t, func() bool {
+		return left.ActiveWorkers() == LaneCount-1 && right.ActiveWorkers() == LaneCount-1
+	}, time.Second, 10*time.Millisecond)
+	for laneID := uint16(1); laneID < LaneCount; laneID++ {
+		_, leftActive := left.WorkerEpoch(laneID)
+		_, rightActive := right.WorkerEpoch(laneID)
+		require.True(t, leftActive, "left healthy lane %d was recycled", laneID)
+		require.True(t, rightActive, "right healthy lane %d was recycled", laneID)
+	}
+
+	leftReplacement, rightReplacement := newTestDatagramPair()
+	_, err = left.AddWorkerEpoch(0, 2, leftReplacement)
+	require.NoError(t, err)
+	_, err = right.AddWorkerEpoch(0, 2, rightReplacement)
+	require.NoError(t, err)
+	require.Equal(t, LaneCount, left.ActiveWorkers())
+	require.Equal(t, LaneCount, right.ActiveWorkers())
+}
+
+func TestParasiteTunnelRecycleControlCannotDropNewerWorkerEpoch(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788a2, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+	connection, peer := newTestDatagramPair()
+	done, err := tunnel.AddWorkerEpoch(0, 2, connection)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+
+	tunnel.recyclePeerWorker(0, 1)
+	require.Equal(t, 1, tunnel.ActiveWorkers())
+	select {
+	case <-done:
+		t.Fatal("stale recycle control removed a newer worker epoch")
+	default:
+	}
+}
+
+func TestParasiteTunnelRecoveryCooldownProtectsFreshWorker(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788a3, logger.NOP())
+	require.NoError(t, err)
+	tunnel.recoveryCooldown = 40 * time.Millisecond
+	t.Cleanup(func() { _ = tunnel.Close() })
+	peers := make([]net.Conn, 0, 3)
+	for laneID := uint16(0); laneID < 2; laneID++ {
+		connection, peer := newTestDatagramPair()
+		peers = append(peers, peer)
+		_, err = tunnel.AddWorkerEpoch(laneID, 1, connection)
+		require.NoError(t, err)
+	}
+	t.Cleanup(func() {
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	first := uint16(0)
+	_, result := tunnel.recoverStalledLane(&first)
+	require.Equal(t, laneRecoveryStarted, result)
+	replacement, peer := newTestDatagramPair()
+	peers = append(peers, peer)
+	_, err = tunnel.AddWorkerEpoch(first, 2, replacement)
+	require.NoError(t, err)
+
+	second := uint16(1)
+	_, result = tunnel.recoverStalledLane(&second)
+	require.Equal(t, laneRecoveryInProgress, result)
+	require.Equal(t, 2, tunnel.ActiveWorkers(), "fresh recovery immediately recycled another lane")
+	time.Sleep(60 * time.Millisecond)
+	workerID, result := tunnel.recoverStalledLane(&second)
+	require.Equal(t, laneRecoveryStarted, result)
+	require.Equal(t, second, workerID)
+}
+
+func TestLaneAckStallTimeoutTracksMeasuredRTO(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788a4, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+	lane := tunnel.lanes[0]
+	lane.mu.Lock()
+	require.Equal(t, laneAckStallTimeout, lane.ackStallTimeoutLocked())
+	lane.kcpSRTTMS = 600
+	lane.kcpRTTVARMS = 200
+	require.Equal(t, 11200*time.Millisecond, lane.ackStallTimeoutLocked())
+	lane.kcpSRTTMS = 2000
+	lane.kcpRTTVARMS = 1000
+	require.Equal(t, laneAckStallMaximum, lane.ackStallTimeoutLocked())
+	lane.mu.Unlock()
 }
 
 func TestParasiteTunnelUnavailableLaneAbortsOnlyItsFlows(t *testing.T) {

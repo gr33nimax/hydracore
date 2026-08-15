@@ -38,7 +38,8 @@ const (
 	laneDeliverySampleWindow = 500 * time.Millisecond
 	laneDeliveryWindowGain   = 3.0
 	laneSendStallTimeout     = 4 * time.Second
-	laneAckStallTimeout      = 2 * time.Second
+	laneAckStallTimeout       = 4 * time.Second
+	laneAckStallMaximum       = 12 * time.Second
 	defaultLaneRecoveryGrace = 6 * time.Second
 	laneReorderGapTimeout    = 15 * time.Second
 	laneReorderCheckInterval = time.Second
@@ -51,6 +52,7 @@ const (
 
 var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 2, 0}
 var workerRecycle = [8]byte{'H', 'C', 'V', 'K', 'R', 'C', 1, 0}
+var workerRecycleControl = [8]byte{'H', 'C', 'V', 'K', 'R', 'C', 2, 0}
 var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 6, 0}
 
 type queuedSegment struct {
@@ -180,6 +182,8 @@ type ParasiteTunnel struct {
 	recoveryLane      uint16
 	recoveryDeadline  time.Time
 	recoveryStartedAt time.Time
+	recoveryCooldown  time.Duration
+	recoveryReadyAt   time.Time
 
 	telemetryMu             sync.RWMutex
 	telemetryCollectionMu   sync.Mutex
@@ -216,6 +220,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 	tunnel.lastProgress.Store(now)
 	tunnel.sendStallTimeout = laneSendStallTimeout
 	tunnel.laneRecoveryGrace = defaultLaneRecoveryGrace
+	tunnel.recoveryCooldown = laneSendStallTimeout
 	tunnel.reorderGapTimeout = laneReorderGapTimeout
 	for index := 0; index < LaneCount; index++ {
 		lane := &kcpLane{
@@ -549,6 +554,10 @@ func (w *laneWorker) readLoop() {
 			w.parent.removeWorker(w)
 			return
 		}
+		if workerID, epoch, ok := decodeWorkerRecycleControl(buffer[:n]); ok {
+			w.parent.recyclePeerWorker(workerID, epoch)
+			continue
+		}
 		w.lane.inputSegment(buffer[:n])
 	}
 }
@@ -605,18 +614,91 @@ func (w *laneWorker) writeWithTimeout(payload []byte, timeout time.Duration) err
 	return err
 }
 
-func (w *laneWorker) requestPeerRecycle() {
+func (w *laneWorker) writeRecycleControl(payload []byte) bool {
 	deadline := time.Now().Add(workerRecycleWriteTimeout)
 	for !w.writeMu.TryLock() {
 		if time.Now().After(deadline) {
-			return
+			return false
 		}
 		time.Sleep(laneSendRetryInterval)
 	}
 	defer w.writeMu.Unlock()
 	_ = w.conn.SetWriteDeadline(deadline)
-	_, _ = w.conn.Write(workerRecycle[:])
+	n, err := w.conn.Write(payload)
 	_ = w.conn.SetWriteDeadline(time.Time{})
+	return err == nil && n == len(payload)
+}
+
+func encodeWorkerRecycleControl(workerID uint16, epoch uint64) []byte {
+	payload := make([]byte, 18)
+	copy(payload[:8], workerRecycleControl[:])
+	binary.BigEndian.PutUint16(payload[8:10], workerID)
+	binary.BigEndian.PutUint64(payload[10:18], epoch)
+	return payload
+}
+
+func decodeWorkerRecycleControl(payload []byte) (uint16, uint64, bool) {
+	if len(payload) != 18 || !bytes.Equal(payload[:8], workerRecycleControl[:]) {
+		return 0, 0, false
+	}
+	workerID := binary.BigEndian.Uint16(payload[8:10])
+	if workerID >= LaneCount {
+		return 0, 0, false
+	}
+	return workerID, binary.BigEndian.Uint64(payload[10:18]), true
+}
+
+// requestPeerWorkerRecycle routes the generation-fenced recycle request over a
+// different, healthy VK call first. The affected DTLS writer is precisely the
+// resource that may be wedged, so using it as the only control path leaves the
+// remote half alive until its much slower liveness timeout.
+func (t *ParasiteTunnel) requestPeerWorkerRecycle(target *laneWorker) bool {
+	payload := encodeWorkerRecycleControl(target.id, target.epoch)
+	type candidate struct {
+		worker *laneWorker
+		depth  int
+	}
+	candidates := make([]candidate, 0, LaneCount-1)
+	for _, lane := range t.lanes {
+		if lane.id == target.id {
+			continue
+		}
+		lane.workerMu.RLock()
+		worker := lane.worker
+		if worker != nil {
+			candidates = append(candidates, candidate{worker: worker, depth: len(worker.sendQueue)})
+		}
+		lane.workerMu.RUnlock()
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].depth < candidates[j].depth })
+	for _, current := range candidates {
+		if current.worker.writeRecycleControl(payload) {
+			workerID := target.id
+			t.recordEvent("lane_peer_recycle_requested", "lane", "alternate_worker", &workerID)
+			return true
+		}
+	}
+	if target.writeRecycleControl(payload) {
+		workerID := target.id
+		t.recordEvent("lane_peer_recycle_requested", "lane", "target_worker", &workerID)
+		return true
+	}
+	workerID := target.id
+	t.recordEvent("lane_peer_recycle_unavailable", "lane", "control_write_timeout", &workerID)
+	return false
+}
+
+func (t *ParasiteTunnel) recyclePeerWorker(workerID uint16, epoch uint64) {
+	lane := t.lanes[workerID]
+	lane.workerMu.RLock()
+	worker := lane.worker
+	stale := worker != nil && worker.epoch <= epoch
+	lane.workerMu.RUnlock()
+	if !stale {
+		return
+	}
+	t.recordEvent("lane_peer_recycle", "lane", "peer_request", &workerID)
+	t.removeWorker(worker)
 }
 
 func (w *laneWorker) watchdogLoop() {
@@ -1119,10 +1201,26 @@ func (l *kcpLane) admissionLimitLocked(priority bool) int {
 	return limit
 }
 
+func (l *kcpLane) ackStallTimeoutLocked() time.Duration {
+	timeout := laneAckStallTimeout
+	// A high-latency TURN path needs several measured retransmission windows
+	// before lack of ACK progress is evidence of a dead worker. The four-second
+	// floor still reacts quickly on normal 50-100 ms paths, while the cap avoids
+	// recreating the former 20-second dead connection.
+	if adaptive := 8 * l.estimatedKCPRTO(); adaptive > timeout {
+		timeout = adaptive
+	}
+	if timeout > laneAckStallMaximum {
+		return laneAckStallMaximum
+	}
+	return timeout
+}
+
 func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneRecoveryResult) {
 	t.recoveryMu.Lock()
+	now := time.Now()
 	if t.recoveryActive {
-		if time.Now().After(t.recoveryDeadline) {
+		if now.After(t.recoveryDeadline) {
 			workerID := t.recoveryLane
 			t.recoveryActive = false
 			t.recoveryDeadline = time.Time{}
@@ -1131,6 +1229,14 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 			t.abortLaneFlows(workerID, "lane_recovery_timeout")
 			return workerID, laneRecoveryTimedOut
 		}
+		workerID := t.recoveryLane
+		t.recoveryMu.Unlock()
+		return workerID, laneRecoveryInProgress
+	}
+	// Senders that were already waiting when a lane recovered retain their own
+	// stall timers. Without a cooldown, those stale timers immediately recycle
+	// the fresh worker even though its KCP backlog has only just begun draining.
+	if now.Before(t.recoveryReadyAt) {
 		workerID := t.recoveryLane
 		t.recoveryMu.Unlock()
 		return workerID, laneRecoveryInProgress
@@ -1184,10 +1290,10 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 	workerID := selected.id
 	t.recoveryActive = true
 	t.recoveryLane = workerID
-	t.recoveryStartedAt = time.Now()
-	t.recoveryDeadline = time.Now().Add(3 * t.sendStallTimeout)
+	t.recoveryStartedAt = now
+	t.recoveryDeadline = now.Add(3 * t.sendStallTimeout)
 	t.recoveryMu.Unlock()
-	selected.requestPeerRecycle()
+	t.requestPeerWorkerRecycle(selected)
 	t.removeWorker(selected)
 	return workerID, laneRecoveryStarted
 }
@@ -1199,6 +1305,7 @@ func (t *ParasiteTunnel) completeLaneRecovery(laneID uint16) {
 		t.recoveryActive = false
 		t.recoveryDeadline = time.Time{}
 		t.recoveryStartedAt = time.Time{}
+		t.recoveryReadyAt = time.Now().Add(t.recoveryCooldown)
 	}
 	t.recoveryMu.Unlock()
 	if recovered {
@@ -1509,6 +1616,7 @@ func (t *ParasiteTunnel) Close() error {
 		t.recoveryActive = false
 		t.recoveryDeadline = time.Time{}
 		t.recoveryStartedAt = time.Time{}
+		t.recoveryReadyAt = time.Time{}
 		t.recoveryMu.Unlock()
 		if recoveryActive {
 			t.recordEvent("lane_send_recovery_escalated", "session", "session_close", &recoveryLane)
@@ -1571,9 +1679,10 @@ func (l *kcpLane) updateLoop() {
 			} else {
 				l.pressureSince = time.Time{}
 			}
+			ackStallTimeout := l.ackStallTimeoutLocked()
 			ackStalled := pressure && !l.pressureSince.IsZero() &&
-				now.Sub(l.pressureSince) >= laneAckStallTimeout &&
-				now.Sub(time.Unix(0, l.lastAckProgress.Load())) >= laneAckStallTimeout
+				now.Sub(l.pressureSince) >= ackStallTimeout &&
+				now.Sub(time.Unix(0, l.lastAckProgress.Load())) >= ackStallTimeout
 			l.mu.Unlock()
 			if ackStalled {
 				workerID, recovery := l.parent.recoverStalledLane(&l.id)

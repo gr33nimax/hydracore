@@ -559,6 +559,12 @@ func TestParasiteTunnelCoalescesConcurrentLaneRecovery(t *testing.T) {
 	peers = append(peers, replacementPeer)
 	_, err = tunnel.reserveWorker(0, 2, replacement)
 	require.NoError(t, err)
+	// Cooldown behavior has its own regression test below. End it explicitly so
+	// this test can keep checking that a completed recovery permits a different
+	// lane to become the next recovery target.
+	tunnel.recoveryMu.Lock()
+	tunnel.recoveryReadyAt = time.Time{}
+	tunnel.recoveryMu.Unlock()
 	workerID, result = tunnel.recoverStalledLane(&second)
 	require.Equal(t, laneRecoveryStarted, result)
 	require.Equal(t, uint16(1), workerID)

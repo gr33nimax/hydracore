@@ -15,6 +15,7 @@ func TestKCPRTTMatchesRetransmissionTimestamp(t *testing.T) {
 		metrics: telemetry.NewAccumulator(),
 		kcpSent: make(map[uint32]kcpSentSegment),
 	}
+	lane.metrics.SetCollectionActive(true)
 	first := testKCPSegment(kcpCommandPush, 7, 100, 0)
 	second := testKCPSegment(kcpCommandPush, 7, 101, 0)
 	lane.observeKCPOutput(first)

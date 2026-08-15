@@ -33,6 +33,38 @@ func TestKCPRTTMatchesRetransmissionTimestamp(t *testing.T) {
 	require.Empty(t, lane.kcpSent)
 }
 
+func TestTelemetryLeaseRenewalDoesNotResetLaneRTTState(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x12344321, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	tunnel.SetTelemetryCollectionActive(true)
+	lane := tunnel.lanes[0]
+	lane.mu.Lock()
+	lane.kcpSRTTMS = 57
+	lane.kcpRTTVARMS = 9
+	lane.kcpSent[3] = kcpSentSegment{lastSentAt: time.Now()}
+	lane.mu.Unlock()
+
+	// The server renews the client telemetry lease every snapshot. A renewal is
+	// not a collection transition and must preserve the running estimator.
+	tunnel.SetTelemetryCollectionActive(true)
+	lane.mu.Lock()
+	require.Equal(t, float64(57), lane.kcpSRTTMS)
+	require.Equal(t, float64(9), lane.kcpRTTVARMS)
+	require.Contains(t, lane.kcpSent, uint32(3))
+	lane.mu.Unlock()
+
+	tunnel.SetTelemetryCollectionActive(false)
+	tunnel.SetTelemetryCollectionActive(true)
+	lane.mu.Lock()
+	require.Zero(t, lane.kcpSRTTMS)
+	require.Zero(t, lane.kcpRTTVARMS)
+	require.Empty(t, lane.kcpSent)
+	lane.mu.Unlock()
+}
+
 func testKCPSegment(command byte, sequence, timestamp, una uint32) []byte {
 	segment := make([]byte, kcpHeaderSize)
 	segment[4] = command

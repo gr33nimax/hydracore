@@ -141,7 +141,7 @@ func TestParasiteTunnelUsesFourIndependentLanes(t *testing.T) {
 	require.Len(t, used, LaneCount)
 }
 
-func TestParasiteTunnelHasNoLegacy64KiBAdmissionBurstCap(t *testing.T) {
+func TestParasiteTunnelAdmissionWindowHasNonCollapsingFloor(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x22334455, logger.NOP())
 	require.NoError(t, err)
@@ -153,13 +153,14 @@ func TestParasiteTunnelHasNoLegacy64KiBAdmissionBurstCap(t *testing.T) {
 		_ = workerPeer.Close()
 	})
 
-	// The removed admission controller started with a fixed 64 KiB token
-	// bucket. Keep this burst below KCP and worker-queue bounds but above that
-	// legacy cap, so a fixed application-rate limiter cannot return unnoticed.
+	// Admission is ACK-clocked, expressed in segments rather than a fixed byte
+	// rate, and must retain enough initial flight to avoid Reno's one-segment
+	// collapse while leaving room for control traffic.
 	payload := make([]byte, 800)
-	for frame := 0; frame < 84; frame++ {
-		require.NotNil(t, tunnel.trySendEncoded(payload, 1, nil), "frame %d hit a fixed admission cap", frame)
+	for frame := 0; frame < laneKCPInitialAdmission-laneKCPControlReserve; frame++ {
+		require.NotNil(t, tunnel.trySendEncoded(payload, 1, nil, false), "frame %d hit the initial admission floor", frame)
 	}
+	require.Equal(t, laneKCPInitialAdmission, tunnel.lanes[0].admissionWindow)
 }
 
 func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {
@@ -196,7 +197,7 @@ func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {
 	client.sendMu.Unlock()
 }
 
-func TestParasiteTunnelSpillsPinnedFlowToHealthyLaneUnderPressure(t *testing.T) {
+func TestParasiteTunnelDoesNotSpillPinnedFlowAcrossLossDomains(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x22334457, logger.NOP())
 	require.NoError(t, err)
@@ -209,14 +210,14 @@ func TestParasiteTunnelSpillsPinnedFlowToHealthyLaneUnderPressure(t *testing.T) 
 	}
 	preferred := uint16(0)
 	tunnel.lanes[preferred].mu.Lock()
-	for index := 0; index < laneKCPPreferredPending; index++ {
+	limit := tunnel.lanes[preferred].admissionLimitLocked(false)
+	for index := 0; index < limit; index++ {
 		require.GreaterOrEqual(t, tunnel.lanes[preferred].kcp.Send([]byte{byte(index)}), 0)
 	}
 	tunnel.lanes[preferred].mu.Unlock()
 
-	selected := tunnel.trySendEncoded([]byte("spill"), 1, &preferred)
-	require.NotNil(t, selected)
-	require.Equal(t, uint16(1), selected.id)
+	selected := tunnel.trySendEncoded([]byte("spill"), 1, &preferred, false)
+	require.Nil(t, selected, "ordered flow must wait for or recover its assigned lane")
 }
 
 func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T) {
@@ -429,13 +430,21 @@ func TestParasiteTunnelSendStallRecyclesOnlyBlockedLane(t *testing.T) {
 	for len(worker.sendQueue) < cap(worker.sendQueue) {
 		worker.sendQueue <- queuedSegment{payload: []byte("blocked"), enqueuedAt: time.Now()}
 	}
+	tunnel.lanes[0].mu.Lock()
+	for len(tunnel.lanes[0].outputPending) < laneKCPOutputBacklog {
+		tunnel.lanes[0].outputPending = append(tunnel.lanes[0].outputPending, queuedSegment{
+			payload:    []byte("staged"),
+			enqueuedAt: time.Now(),
+		})
+	}
+	tunnel.lanes[0].mu.Unlock()
 
 	events := make(chan telemetry.Event, 4)
 	tunnel.SetTelemetryEventHandler(func(event telemetry.Event) { events <- event })
 	sendDone := make(chan bool, 1)
 	preferred := uint16(0)
 	go func() {
-		_, sent := tunnel.sendEncoded([]byte("payload"), true, &preferred)
+		_, sent := tunnel.sendEncoded([]byte("payload"), true, &preferred, false)
 		sendDone <- sent
 	}()
 
@@ -576,16 +585,31 @@ func TestParasiteTunnelReorderGapExpires(t *testing.T) {
 	tunnel, err := NewParasiteTunnel(0x778899aa, logger.NOP())
 	require.NoError(t, err)
 	tunnel.reorderGapTimeout = 20 * time.Millisecond
+	tunnel.SetTelemetryCollectionActive(true)
 	t.Cleanup(func() { _ = tunnel.Close() })
 
+	closedFlow := make(chan uint32, 1)
+	tunnel.SetOnData(func(frame []byte) {
+		connID, msgType, ok := relayFrameIdentity(frame)
+		if ok && msgType == calltunnel.MsgClose {
+			closedFlow <- connID
+		}
+	})
 	frame := calltunnel.EncodeFrame(99, calltunnel.MsgData, []byte("second"))
 	tunnel.deliver(1, encodeLaneFrame(99, 1, frame))
 	require.True(t, tunnel.expireReorderGaps(time.Now().Add(time.Second)))
 	select {
-	case <-tunnel.Done():
-	default:
-		t.Fatal("expired sequence gap did not close the logical session")
+	case connID := <-closedFlow:
+		require.Equal(t, uint32(99), connID)
+	case <-time.After(time.Second):
+		t.Fatal("expired sequence gap did not close the affected flow")
 	}
+	select {
+	case <-tunnel.Done():
+		t.Fatal("one expired flow closed the logical session")
+	default:
+	}
+	require.Equal(t, float64(1), tunnel.metrics.Value(telemetry.FlowReorderAbortTotal))
 }
 
 func TestParasiteTunnelUDPReorderGapDoesNotKillLogicalSession(t *testing.T) {

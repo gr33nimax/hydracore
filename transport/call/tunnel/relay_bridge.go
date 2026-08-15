@@ -66,8 +66,11 @@ func (c *udpClient) closePending() (bool, int) {
 }
 
 type RelayBridge struct {
-	tunnelMu   sync.RWMutex
-	tunnel     DataTunnel
+	tunnelMu         sync.RWMutex
+	tunnel           DataTunnel
+	tunnelGeneration uint64
+	nextGeneration   atomic.Uint64
+	callbackDispatchMu sync.Mutex
 	conns      sync.Map
 	udpClients sync.Map
 	nextID     atomic.Uint32
@@ -78,7 +81,7 @@ type RelayBridge struct {
 	once       sync.Once
 	closed     atomic.Bool
 	dialer     N.Dialer
-	flowControl bool
+	flowControl atomic.Bool
 
 	acceptHandlerMu sync.Mutex
 	acceptHandler   func(conn net.Conn, destination string)
@@ -93,17 +96,42 @@ type RelayBridge struct {
 func NewRelayBridge(tunnel DataTunnel, mode string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) *RelayBridge {
 	flowController, _ := tunnel.(FlowControlledDataTunnel)
 	rb := &RelayBridge{
-		tunnel:  tunnel,
-		logger:  logger,
-		mode:    mode,
-		readBuf: readBuf,
-		dialer:  dialer,
-		ready:   make(chan struct{}),
-		flowControl: flowController != nil && flowController.FlowControlEnabled(),
+		tunnel:     tunnel,
+		logger:     logger,
+		mode:       mode,
+		readBuf:    readBuf,
+		dialer:     dialer,
+		ready:      make(chan struct{}),
 	}
-	tunnel.SetOnData(rb.handleTunnelData)
-	tunnel.SetOnClose(rb.handleTunnelClose)
+	rb.flowControl.Store(flowController != nil && flowController.FlowControlEnabled())
+	generation := rb.nextGeneration.Add(1)
+	rb.tunnelGeneration = generation
+	rb.bindTunnelCallbacks(tunnel, generation)
 	return rb
+}
+
+func (rb *RelayBridge) bindTunnelCallbacks(dataTunnel DataTunnel, generation uint64) {
+	dataTunnel.SetOnData(func(data []byte) {
+		rb.callbackDispatchMu.Lock()
+		defer rb.callbackDispatchMu.Unlock()
+		if rb.isCurrentTunnelGeneration(generation) {
+			rb.handleTunnelData(data)
+		}
+	})
+	dataTunnel.SetOnClose(func() {
+		rb.callbackDispatchMu.Lock()
+		defer rb.callbackDispatchMu.Unlock()
+		if rb.isCurrentTunnelGeneration(generation) {
+			rb.handleTunnelClose()
+		}
+	})
+}
+
+func (rb *RelayBridge) isCurrentTunnelGeneration(generation uint64) bool {
+	rb.tunnelMu.RLock()
+	current := rb.tunnelGeneration == generation
+	rb.tunnelMu.RUnlock()
+	return current
 }
 
 func (rb *RelayBridge) SetAcceptHandler(fn func(conn net.Conn, destination string)) {
@@ -279,12 +307,21 @@ func relayPayloadBytes(messageType byte, payload []byte) int {
 }
 
 func (rb *RelayBridge) SwapTunnel(newTunnel DataTunnel) {
+	generation := rb.nextGeneration.Add(1)
+	// Install generation-aware callbacks before publishing the tunnel. Events
+	// emitted during callback installation are ignored; after publication an
+	// arbitrarily late OnData/OnClose from the old transport cannot tear down
+	// relay state that already belongs to the replacement.
+	rb.bindTunnelCallbacks(newTunnel, generation)
+	rb.callbackDispatchMu.Lock()
 	rb.tunnelMu.Lock()
 	rb.tunnel = newTunnel
+	rb.tunnelGeneration = generation
+	flowController, _ := newTunnel.(FlowControlledDataTunnel)
+	rb.flowControl.Store(flowController != nil && flowController.FlowControlEnabled())
 	rb.tunnelMu.Unlock()
-	newTunnel.SetOnData(rb.handleTunnelData)
-	newTunnel.SetOnClose(rb.handleTunnelClose)
 	rb.closeAll(false)
+	rb.callbackDispatchMu.Unlock()
 }
 
 func (rb *RelayBridge) IsClosed() bool {
@@ -384,7 +421,7 @@ func (rb *RelayBridge) handleTunnelData(data []byte) {
 }
 
 func (rb *RelayBridge) handleFlowCredit(connID uint32, payload []byte) {
-	if !rb.flowControl || connID == ControlConnID || len(payload) != 4 {
+	if !rb.flowControl.Load() || connID == ControlConnID || len(payload) != 4 {
 		return
 	}
 	credit := int(binary.BigEndian.Uint32(payload))
@@ -654,7 +691,7 @@ type tunnelConn struct {
 }
 
 func newTunnelConn(id uint32, rb *RelayBridge) *tunnelConn {
-	flowControl := rb != nil && rb.flowControl
+	flowControl := rb != nil && rb.flowControl.Load()
 	credit := 0
 	if flowControl {
 		credit = relayFlowWindowBytes

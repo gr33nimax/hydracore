@@ -130,6 +130,13 @@ const (
 	WorkerOutputQueueDelayMS
 	WorkerOutputQueueLateTotal
 	LaneAdmissionRateBPS
+	LaneAdmissionWindowSegments
+	KCPOutputQueueDepth
+	KCPOutputQueueCapacity
+	KCPUpdateBackpressureTotal
+	KCPMutexBlockedSecondsTotal
+	WorkerWriteLatencyMS
+	FlowReorderAbortTotal
 	OuterRTPPayloadType
 	metricCount
 )
@@ -259,6 +266,13 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "worker_output_queue_delay_ms"},
 	{name: "worker_output_queue_late_total", counter: true},
 	{name: "lane_admission_bytes_per_second"},
+	{name: "lane_admission_window_segments"},
+	{name: "kcp_output_queue_depth"},
+	{name: "kcp_output_queue_capacity"},
+	{name: "kcp_update_backpressure_total", counter: true},
+	{name: "kcp_mutex_blocked_seconds_total"},
+	{name: "worker_write_latency_ms"},
+	{name: "flow_reorder_abort_total", counter: true},
 	{name: "outer_rtp_payload_type"},
 }
 
@@ -284,7 +298,10 @@ var ServerRequired = []Metric{
 	WorkerActive, WorkerAttachSuccessTotal, WorkerAttachFailureTotal, WorkerSendQueueDepth,
 	WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
 	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, LaneAdmissionRateBPS, OuterRTPPayloadType,
+	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, WorkerWriteLatencyMS,
+	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
+	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
+	FlowReorderAbortTotal, OuterRTPPayloadType,
 	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
 }
 
@@ -300,7 +317,10 @@ var ClientRequired = []Metric{
 	WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerLivenessExpiredTotal,
 	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, LaneAdmissionRateBPS, OuterRTPPayloadType,
+	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, WorkerWriteLatencyMS,
+	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
+	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
+	FlowReorderAbortTotal, OuterRTPPayloadType,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
 	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
 	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
@@ -326,7 +346,10 @@ var TunnelMetrics = []Metric{
 	WorkerActive, WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
 	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
 	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, LaneAdmissionRateBPS, OuterRTPPayloadType,
+	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, WorkerWriteLatencyMS,
+	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
+	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
+	FlowReorderAbortTotal, OuterRTPPayloadType,
 }
 
 type Accumulator struct {

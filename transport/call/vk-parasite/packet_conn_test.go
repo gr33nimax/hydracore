@@ -125,7 +125,7 @@ func TestPeerPacketConnIgnoresSupersededDeadlineTimer(t *testing.T) {
 	}
 }
 
-func TestLaneBackpressuresInsteadOfDroppingWhenItsOutputQueueIsFull(t *testing.T) {
+func TestLaneStagesOutputWithoutHoldingKCPMutexOnFullPhysicalQueue(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x10203040, nil)
 	require.NoError(t, err)
@@ -148,20 +148,16 @@ func TestLaneBackpressuresInsteadOfDroppingWhenItsOutputQueueIsFull(t *testing.T
 	lane.workerMu.Lock()
 	lane.worker = worker
 	lane.workerMu.Unlock()
-	dispatched := make(chan bool, 1)
-	go func() { dispatched <- lane.dispatchSegment([]byte("delayed")) }()
-	select {
-	case <-dispatched:
-		t.Fatal("KCP output bypassed a full physical queue")
-	case <-time.After(20 * time.Millisecond):
-	}
+	lane.mu.Lock()
+	lane.stageSegment([]byte("delayed"))
+	lane.mu.Unlock()
+	lane.mu.Lock()
+	require.Len(t, lane.outputPending, 1, "KCP output must be staged while the physical queue is full")
+	lane.mu.Unlock()
 	<-worker.sendQueue
-	select {
-	case accepted := <-dispatched:
-		require.True(t, accepted)
-	case <-time.After(time.Second):
-		t.Fatal("KCP output did not resume after queue capacity became available")
-	}
+	require.Eventually(t, func() bool {
+		return len(worker.sendQueue) == 1
+	}, time.Second, time.Millisecond)
 	require.Equal(t, "delayed", string((<-worker.sendQueue).payload))
 
 	require.Zero(t, lane.metrics.Value(telemetry.WorkerSendQueueDropsTotal))

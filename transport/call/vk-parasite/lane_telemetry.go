@@ -2,6 +2,7 @@ package vkparasite
 
 import (
 	"encoding/binary"
+	"math"
 	"time"
 
 	"github.com/sagernet/sing-box/transport/call/telemetry"
@@ -22,7 +23,9 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 		if command != kcpCommandPush {
 			return
 		}
+		l.deliveryOutSegments++
 		if previous, exists := l.kcpSent[sequence]; exists {
+			l.deliveryRetrans++
 			if isEstimatedRTO(now.Sub(previous.lastSentAt), l.estimatedKCPRTO()) {
 				l.metrics.AddHot(telemetry.KCPRTORetransEstimateSegmentsTotal, 1)
 				l.metrics.AddHot(telemetry.KCPRTORetransEstimateBytesTotal, uint64(size))
@@ -64,6 +67,7 @@ func isEstimatedRTO(elapsed, rto time.Duration) bool {
 
 func (l *kcpLane) observeKCPInput(packet []byte) {
 	now := time.Now()
+	ackedProgress := 0
 	var cumulativeACK uint32
 	hasCumulativeACK := false
 	type acknowledgement struct{ sequence, timestamp uint32 }
@@ -86,6 +90,7 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 		}
 		delete(l.kcpSent, ack.sequence)
 		l.metrics.AddHot(telemetry.KCPAckProgressSegmentsTotal, 1)
+		ackedProgress++
 		for _, attempt := range sent.attempts {
 			if attempt.timestamp == ack.timestamp {
 				l.updateKCPRTT(float64(now.Sub(attempt.sentAt)) / float64(time.Millisecond))
@@ -94,8 +99,78 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 		}
 	}
 	if hasCumulativeACK {
-		l.metrics.AddHot(telemetry.KCPAckProgressSegmentsTotal, uint64(l.pruneKCPSentBefore(cumulativeACK)))
+		pruned := l.pruneKCPSentBefore(cumulativeACK)
+		l.metrics.AddHot(telemetry.KCPAckProgressSegmentsTotal, uint64(pruned))
+		ackedProgress += pruned
 	}
+	if ackedProgress > 0 {
+		l.updateDeliveryController(now, ackedProgress)
+	}
+}
+
+func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
+	if ackedSegments <= 0 {
+		return
+	}
+	if l.deliverySampleAt.IsZero() {
+		l.deliverySampleAt = now
+	}
+	// Do not interpret the first ACK after an idle period as a low-rate path.
+	// Start a fresh delivery epoch instead.
+	if idle := now.Sub(l.deliverySampleAt); idle > 5*time.Second {
+		l.deliverySampleAt = now
+		l.deliveryAckedSegments = uint64(ackedSegments)
+		l.deliveryOutSegments = 0
+		l.deliveryRetrans = 0
+		return
+	}
+	l.deliveryAckedSegments += uint64(ackedSegments)
+	elapsed := now.Sub(l.deliverySampleAt)
+	if elapsed < laneDeliverySampleWindow {
+		return
+	}
+	mss := float64(laneKCPMTU - kcpHeaderSize)
+	instantRate := float64(l.deliveryAckedSegments) * mss / elapsed.Seconds()
+	if l.deliveryRateBPS == 0 {
+		l.deliveryRateBPS = instantRate
+	} else {
+		l.deliveryRateBPS = 0.75*l.deliveryRateBPS + 0.25*instantRate
+	}
+	rttMS := l.kcpSRTTMS
+	if rttMS <= 0 {
+		rttMS = 80
+	}
+	if rttMS > 500 {
+		rttMS = 500
+	}
+	target := int(math.Ceil(l.deliveryRateBPS * (rttMS / 1000) * laneDeliveryWindowGain / mss))
+	if target < laneKCPMinimumAdmission {
+		target = laneKCPMinimumAdmission
+	}
+	if target > laneKCPMaximumAdmission {
+		target = laneKCPMaximumAdmission
+	}
+	if l.deliveryOutSegments > 0 {
+		retryRatio := float64(l.deliveryRetrans) / float64(l.deliveryOutSegments)
+		switch {
+		case retryRatio >= 0.40:
+			target = max(laneKCPMinimumAdmission, int(float64(l.admissionWindow)*0.70))
+		case retryRatio >= 0.20:
+			target = min(target, max(laneKCPMinimumAdmission, int(float64(l.admissionWindow)*0.85)))
+		}
+	}
+	// Increase deliberately so one compressed ACK burst cannot release a large
+	// KCP burst. Decreases react faster, but retain a 48-segment floor so the
+	// controller cannot recreate Reno's one-segment throughput collapse.
+	if target > l.admissionWindow {
+		l.admissionWindow = min(target, l.admissionWindow+8)
+	} else if target < l.admissionWindow {
+		l.admissionWindow = max(target, l.admissionWindow-16)
+	}
+	l.deliverySampleAt = now
+	l.deliveryAckedSegments = 0
+	l.deliveryOutSegments = 0
+	l.deliveryRetrans = 0
 }
 
 func (l *kcpLane) updateKCPRTT(rtt float64) {

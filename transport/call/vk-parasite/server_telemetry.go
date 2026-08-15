@@ -103,8 +103,9 @@ func (t *serverTelemetry) emit() {
 	t.processSampler.Sample(t.metrics)
 	t.metrics.Set(telemetry.HandshakePending, float64(len(t.server.pending)))
 	t.metrics.Set(telemetry.SessionActive, float64(len(sessions)))
-	t.metrics.Set(telemetry.PeerReadQueueDepth, float64(t.server.peerQueueDepth()))
-	t.metrics.Set(telemetry.PeerReadQueueCapacity, float64(t.server.options.PeerReadQueuePackets))
+	peerDepth, peerCapacity := t.server.peerQueueStats()
+	t.metrics.Set(telemetry.PeerReadQueueDepth, float64(peerDepth))
+	t.metrics.Set(telemetry.PeerReadQueueCapacity, float64(peerCapacity))
 	t.metrics.Set(telemetry.UDPIngressQueueDepth, float64(t.server.ingressDepth.Load()))
 	t.metrics.Set(telemetry.UDPIngressQueueCapacity, float64(t.server.options.IngressQueuePackets))
 	t.metrics.Set(telemetry.UDPIngressWorkers, float64(t.server.options.IngressWorkers))
@@ -135,8 +136,13 @@ func (t *serverTelemetry) emitSession(session *serverSession, sequence uint64) {
 	workers := session.tunnel.telemetryWorkerSnapshots(serverWorkerSnapshotMetrics())
 	mergeWorkerNetworkGauges(session.tunnel.metrics, workers)
 	peerDepth := 0.0
+	peerCapacity := 0.0
 	for _, worker := range workers {
+		if metricNumber(worker.metrics[telemetry.Name(telemetry.WorkerActive)]) == 0 {
+			continue
+		}
 		peerDepth += metricNumber(worker.metrics[telemetry.Name(telemetry.PeerReadQueueDepth)])
+		peerCapacity += metricNumber(worker.metrics[telemetry.Name(telemetry.PeerReadQueueCapacity)])
 	}
 	session.tunnel.metrics.Set(telemetry.PeerReadQueueDepth, peerDepth)
 	metrics := session.tunnel.metrics.Snapshot(serverSessionSnapshotMetrics())
@@ -145,7 +151,7 @@ func (t *serverTelemetry) emitSession(session *serverSession, sequence uint64) {
 	metrics[telemetry.Name(telemetry.SessionAgeSeconds)] = max(0, now.Sub(session.createdAt).Seconds())
 	metrics[telemetry.Name(telemetry.SessionIdleSeconds)] = max(0, now.Sub(session.tunnel.LastActivity()).Seconds())
 	metrics[telemetry.Name(telemetry.WorkerDesired)] = float64(session.expected)
-	metrics[telemetry.Name(telemetry.PeerReadQueueCapacity)] = float64(t.server.options.PeerReadQueuePackets)
+	metrics[telemetry.Name(telemetry.PeerReadQueueCapacity)] = peerCapacity
 	metrics[telemetry.Name(telemetry.TelemetrySequence)] = sequence
 	if err := t.sink.Write(telemetry.Snapshot("server", session.user, identity, metrics)); err != nil {
 		t.logger.Warn("call telemetry: write server session snapshot: ", err)
@@ -242,8 +248,16 @@ func serverWorkerSnapshotMetrics() []telemetry.Metric {
 		telemetry.KCPAckSegmentsTotal,
 		telemetry.KCPAckProgressSegmentsTotal,
 		telemetry.KCPInflightSegments,
+		telemetry.KCPOutputQueueDepth,
+		telemetry.KCPOutputQueueCapacity,
+		telemetry.KCPUpdateBackpressureTotal,
+		telemetry.KCPMutexBlockedSecondsTotal,
 		telemetry.WorkerOutputQueueDelayMS,
 		telemetry.WorkerOutputQueueLateTotal,
+		telemetry.WorkerWriteLatencyMS,
+		telemetry.LaneAdmissionRateBPS,
+		telemetry.LaneAdmissionWindowSegments,
+		telemetry.FlowReorderAbortTotal,
 		telemetry.PeerReadQueueDepth,
 		telemetry.PeerReadQueueCapacity,
 		telemetry.PeerReadQueueDropsTotal,
@@ -265,14 +279,14 @@ func serverWorkerSnapshotMetrics() []telemetry.Metric {
 	}
 }
 
-func (s *Server) peerQueueDepth() int {
+func (s *Server) peerQueueStats() (depth int, capacity int) {
 	s.peersMu.Lock()
 	defer s.peersMu.Unlock()
-	depth := 0
 	for _, peer := range s.peers {
 		depth += len(peer.readQueue)
+		capacity += cap(peer.readQueue)
 	}
-	return depth
+	return
 }
 
 func (s *Server) telemetrySessions() []*serverSession {
@@ -289,12 +303,15 @@ func mergeTunnelMetrics(target map[string]any, values map[telemetry.Metric]float
 	for metric, value := range values {
 		name := telemetry.Name(metric)
 		current := metricNumber(target[name])
-		if telemetry.IsCounter(metric) || metric == telemetry.KCPSendBlockedSecondsTotal {
+		if telemetry.IsCounter(metric) || metric == telemetry.KCPSendBlockedSecondsTotal || metric == telemetry.KCPMutexBlockedSecondsTotal {
 			continue
 		}
 		switch metric {
 		case telemetry.KCPWaitSnd,
 			telemetry.KCPInflightSegments,
+			telemetry.KCPOutputQueueDepth,
+			telemetry.LaneAdmissionRateBPS,
+			telemetry.LaneAdmissionWindowSegments,
 			telemetry.RelayTCPActive,
 			telemetry.RelayUDPActive,
 			telemetry.RelayQueueDepth,

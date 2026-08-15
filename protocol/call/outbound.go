@@ -42,7 +42,6 @@ type Outbound struct {
 	awaitOnce     sync.Once
 	started       atomic.Bool
 	closed        atomic.Bool
-	rebindPending atomic.Bool
 	cancel        context.CancelFunc
 }
 
@@ -116,9 +115,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			return
 		}
 		ob.bridge = bridge
-		if ob.rebindPending.Swap(false) {
-			bridge.RebindNetwork()
-		}
 	}
 	return ob, nil
 }
@@ -136,7 +132,11 @@ func (o *Outbound) InterfaceUpdated() {
 			o.bridge.RebindNetwork()
 		}
 	default:
-		o.rebindPending.Store(true)
+		// A reset received before the initial bridge is ready is already
+		// reflected by the dialer used by call.Connect. Replaying it after the
+		// four fresh TURN/DTLS lanes attach would immediately destroy a healthy
+		// startup and was the source of the observed connect/rebind cycle.
+		return
 	}
 }
 

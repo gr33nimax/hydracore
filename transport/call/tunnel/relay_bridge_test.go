@@ -103,6 +103,25 @@ func TestRelayBridgeRejectsQueuedReadyConnectionClosedBeforeDialReturns(t *testi
 	require.Nil(t, connection)
 }
 
+func TestRelayBridgeIgnoresCallbacksFromSupersededTunnel(t *testing.T) {
+	t.Parallel()
+	oldTunnel := &discardDataTunnel{}
+	newTunnel := &discardDataTunnel{}
+	relay := NewRelayBridge(oldTunnel, "joiner", 32768, nil, logger.NOP())
+	oldOnData := oldTunnel.onData
+	oldOnClose := oldTunnel.onClose
+	relay.SwapTunnel(newTunnel)
+
+	connection := newTunnelConn(77, relay)
+	relay.conns.Store(uint32(77), connection)
+	oldOnData(EncodeFrame(77, MsgClose, nil))
+	oldOnClose()
+	require.False(t, connection.closed.Load(), "stale callbacks closed replacement relay state")
+
+	newTunnel.onData(EncodeFrame(77, MsgClose, nil))
+	require.True(t, connection.closed.Load(), "current tunnel callback was not delivered")
+}
+
 func TestUDPClientCloseAndDeliverAreConcurrentSafe(t *testing.T) {
 	t.Parallel()
 	for attempt := 0; attempt < 100; attempt++ {

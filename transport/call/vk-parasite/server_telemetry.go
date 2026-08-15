@@ -237,6 +237,11 @@ func serverWorkerSnapshotMetrics() []telemetry.Metric {
 		telemetry.KCPRTORetransEstimateBytesTotal,
 		telemetry.KCPRTTMS,
 		telemetry.KCPRTOMS,
+		telemetry.KCPRTTVarMS,
+		telemetry.KCPRTTSamplesTotal,
+		telemetry.KCPAckSegmentsTotal,
+		telemetry.KCPAckProgressSegmentsTotal,
+		telemetry.KCPInflightSegments,
 		telemetry.WorkerOutputQueueDelayMS,
 		telemetry.WorkerOutputQueueLateTotal,
 		telemetry.PeerReadQueueDepth,
@@ -289,6 +294,7 @@ func mergeTunnelMetrics(target map[string]any, values map[telemetry.Metric]float
 		}
 		switch metric {
 		case telemetry.KCPWaitSnd,
+			telemetry.KCPInflightSegments,
 			telemetry.RelayTCPActive,
 			telemetry.RelayUDPActive,
 			telemetry.RelayQueueDepth,

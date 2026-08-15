@@ -31,6 +31,11 @@ const (
 	KCPRTORetransEstimateBytesTotal
 	KCPRTTMS
 	KCPRTOMS
+	KCPRTTVarMS
+	KCPRTTSamplesTotal
+	KCPAckSegmentsTotal
+	KCPAckProgressSegmentsTotal
+	KCPInflightSegments
 	KCPSendBlockedSecondsTotal
 	OuterPacketsInTotal
 	OuterPacketsOutTotal
@@ -155,6 +160,11 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "kcp_rto_retrans_estimate_bytes_total", counter: true},
 	{name: "kcp_rtt_ms"},
 	{name: "kcp_rto_ms"},
+	{name: "kcp_rttvar_ms"},
+	{name: "kcp_rtt_samples_total", counter: true},
+	{name: "kcp_ack_segments_total", counter: true},
+	{name: "kcp_ack_progress_segments_total", counter: true},
+	{name: "kcp_inflight_segments"},
 	{name: "kcp_send_blocked_seconds_total"},
 	{name: "outer_packets_in_total", counter: true},
 	{name: "outer_packets_out_total", counter: true},
@@ -258,7 +268,8 @@ var ServerRequired = []Metric{
 	HandshakePending, HandshakeRejectedTotal, HandshakeTimeoutTotal, HandshakeLatencyMS,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
 	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
-	KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
+	KCPAckSegmentsTotal, KCPAckProgressSegmentsTotal, KCPInflightSegments, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
 	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal,
@@ -292,7 +303,8 @@ var ClientRequired = []Metric{
 	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, LaneAdmissionRateBPS, OuterRTPPayloadType,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
 	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
-	KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
+	KCPAckSegmentsTotal, KCPAckProgressSegmentsTotal, KCPInflightSegments, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
 	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	NetworkLossRatio, NetworkJitterMS, NetworkHandoverTotal, NetworkChangeTotal,
@@ -306,7 +318,8 @@ var ClientRequired = []Metric{
 var TunnelMetrics = []Metric{
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
 	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
-	KCPRTTMS, KCPRTOMS, KCPSendBlockedSecondsTotal,
+	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
+	KCPAckSegmentsTotal, KCPAckProgressSegmentsTotal, KCPInflightSegments, KCPSendBlockedSecondsTotal,
 	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
 	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	RelayTCPActive, RelayUDPActive, RelayBytesTotal, RelayQueueDepth, RelayQueueDropsTotal, RelayConnectFailureTotal,

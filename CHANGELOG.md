@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.22
+
+- Removed the debug.21 throughput clamp caused by applying KCP Reno congestion
+  collapse to delayed or duplicated VK TURN delivery; each of the four lanes
+  remains bounded by its own send, pending and physical output queues.
+- Restored fast-resend 2 so ACK progress can repair a missing segment before a
+  full RTO instead of leaving timeout retransmission as the dominant path.
+- Matched RTT samples to the exact KCP sequence and echoed transmission
+  timestamp, including retransmitted attempts, and added per-lane RTT variance,
+  sample, ACK-progress and in-flight telemetry.
+- Added explicit failed and session-escalated lane recovery events so a full
+  session replacement is distinguishable from a permanently unfinished lane
+  recovery.
+
 ## v1.13.16-extended-hydracore.11-debug.21
 
 - Coalesced simultaneous send stalls into one session-wide lane recovery, so

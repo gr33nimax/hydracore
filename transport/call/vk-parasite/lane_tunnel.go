@@ -25,8 +25,8 @@ const (
 	laneKCPPreferredPending  = laneKCPSendWindow / 2
 	laneKCPMaxFragments      = 255
 	laneKCPUpdateInterval    = 10 * time.Millisecond
-	laneKCPFastResend        = 4
-	laneKCPNoCongestion      = 0
+	laneKCPFastResend        = 2
+	laneKCPNoCongestion      = 1
 	laneKCPReceiveBuffer     = 32 * 1024
 	laneSendQueueDepth       = 96
 	laneReorderFrameLimit    = 4096
@@ -49,9 +49,13 @@ type queuedSegment struct {
 }
 
 type kcpSentSegment struct {
-	sentAt        time.Time
-	lastSentAt    time.Time
-	retransmitted bool
+	lastSentAt time.Time
+	attempts   []kcpSendAttempt
+}
+
+type kcpSendAttempt struct {
+	timestamp uint32
+	sentAt    time.Time
 }
 
 type laneRecoveryResult uint8
@@ -148,6 +152,7 @@ type ParasiteTunnel struct {
 	recoveryActive    bool
 	recoveryLane      uint16
 	recoveryDeadline  time.Time
+	recoveryStartedAt time.Time
 
 	telemetryMu             sync.RWMutex
 	onTelemetryControl      func(time.Duration)
@@ -198,9 +203,10 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 				lane.observeKCPOutput(buffer[:size])
 			}
 		})
-		// Let each independent KCP lane react to loss on its own VK/TURN path.
-		// Disabling KCP congestion control here caused the measured positive
-		// feedback loop: TURN loss -> retransmits -> more TURN loss.
+		// TURN relay loss includes delayed/duplicated delivery and is not a safe
+		// congestion signal. Native Reno repeatedly collapsed a lane to one
+		// segment after RTO and imposed the measured per-client speed ceiling.
+		// Bounded per-lane send/pending queues provide backpressure instead.
 		lane.kcp.NoDelay(1, int(laneKCPUpdateInterval/time.Millisecond), laneKCPFastResend, laneKCPNoCongestion)
 		lane.kcp.WndSize(laneKCPSendWindow, laneKCPReceiveWindow)
 		lane.kcp.SetMtu(laneKCPMTU)
@@ -868,6 +874,10 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 				blockedAt = time.Now()
 				timer.Reset(t.sendStallTimeout)
 				continue
+			case laneRecoveryTimedOut:
+				t.recordEvent("lane_send_recovery_failed", "lane", "timeout", &workerID)
+			default:
+				t.recordEvent("lane_send_recovery_failed", "lane", "unavailable", nil)
 			}
 			t.closeAsync()
 			return nil, false
@@ -992,6 +1002,7 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 	workerID := selected.id
 	t.recoveryActive = true
 	t.recoveryLane = workerID
+	t.recoveryStartedAt = time.Now()
 	t.recoveryDeadline = time.Now().Add(3 * t.sendStallTimeout)
 	t.removeWorker(selected)
 	return workerID, laneRecoveryStarted
@@ -1003,6 +1014,7 @@ func (t *ParasiteTunnel) completeLaneRecovery(laneID uint16) {
 	if recovered {
 		t.recoveryActive = false
 		t.recoveryDeadline = time.Time{}
+		t.recoveryStartedAt = time.Time{}
 	}
 	t.recoveryMu.Unlock()
 	if recovered {
@@ -1105,7 +1117,7 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.KCPMaxPendingSegments, LaneCount*laneKCPMaxPending)
 	t.metrics.Set(telemetry.KCPUpdateIntervalMS, float64(laneKCPUpdateInterval/time.Millisecond))
 	t.metrics.Set(telemetry.KCPFastResend, laneKCPFastResend)
-	t.metrics.Set(telemetry.KCPCongestionControl, 1)
+	t.metrics.Set(telemetry.KCPCongestionControl, 0)
 	t.metrics.Set(telemetry.WorkerSendQueueCapacity, LaneCount*laneSendQueueDepth)
 	t.metrics.Set(telemetry.WorkerHeartbeatIntervalMS, float64(workerHeartbeatInterval/time.Millisecond))
 	t.metrics.Set(telemetry.WorkerLivenessTimeoutMS, float64(workerLivenessTimeout/time.Millisecond))
@@ -1119,6 +1131,7 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 		laneWait := lane.kcp.WaitSnd()
 		waitSnd += laneWait
 		rtt := lane.kcpSRTTMS
+		rttVar := lane.kcpRTTVARMS
 		rto := 200.0
 		if rtt > 0 {
 			rto = max(30, rtt+max(10, 4*lane.kcpRTTVARMS))
@@ -1126,6 +1139,8 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 		lane.metrics.Set(telemetry.KCPWaitSnd, float64(laneWait))
 		lane.metrics.Set(telemetry.KCPRTTMS, rtt)
 		lane.metrics.Set(telemetry.KCPRTOMS, rto)
+		lane.metrics.Set(telemetry.KCPRTTVarMS, rttVar)
+		lane.metrics.Set(telemetry.KCPInflightSegments, float64(len(lane.kcpSent)))
 		lane.metrics.Set(telemetry.KCPSendWindowSegments, laneKCPSendWindow)
 		lane.metrics.Set(telemetry.KCPReceiveWindowSegments, laneKCPReceiveWindow)
 		lane.metrics.Set(telemetry.KCPMaxPendingSegments, laneKCPMaxPending)
@@ -1230,6 +1245,16 @@ func (t *ParasiteTunnel) recordEvent(event, stage, reason string, workerID *uint
 
 func (t *ParasiteTunnel) Close() error {
 	t.closeOnce.Do(func() {
+		t.recoveryMu.Lock()
+		recoveryActive := t.recoveryActive
+		recoveryLane := t.recoveryLane
+		t.recoveryActive = false
+		t.recoveryDeadline = time.Time{}
+		t.recoveryStartedAt = time.Time{}
+		t.recoveryMu.Unlock()
+		if recoveryActive {
+			t.recordEvent("lane_send_recovery_escalated", "session", "session_close", &recoveryLane)
+		}
 		close(t.closed)
 		for _, lane := range t.lanes {
 			lane.workerMu.Lock()

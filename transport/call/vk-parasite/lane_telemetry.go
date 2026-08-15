@@ -16,7 +16,7 @@ const (
 
 func (l *kcpLane) observeKCPOutput(packet []byte) {
 	now := time.Now()
-	forEachKCPSegment(packet, func(command byte, sequence uint32, size int) {
+	forEachKCPSegment(packet, func(command byte, sequence, timestamp uint32, size int) {
 		l.metrics.AddHot(telemetry.KCPOutSegmentsTotal, 1)
 		l.metrics.AddHot(telemetry.KCPOutBytesTotal, uint64(size))
 		if command != kcpCommandPush {
@@ -30,14 +30,17 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 				l.metrics.AddHot(telemetry.KCPFastRetransEstimateSegmentsTotal, 1)
 				l.metrics.AddHot(telemetry.KCPFastRetransEstimateBytesTotal, uint64(size))
 			}
-			previous.retransmitted = true
 			previous.lastSentAt = now
+			previous.attempts = append(previous.attempts, kcpSendAttempt{timestamp: timestamp, sentAt: now})
 			l.kcpSent[sequence] = previous
 			l.metrics.AddHot(telemetry.KCPRetransSegmentsTotal, 1)
 			l.metrics.AddHot(telemetry.KCPRetransBytesTotal, uint64(size))
 			return
 		}
-		l.kcpSent[sequence] = kcpSentSegment{sentAt: now, lastSentAt: now}
+		l.kcpSent[sequence] = kcpSentSegment{
+			lastSentAt: now,
+			attempts:   []kcpSendAttempt{{timestamp: timestamp, sentAt: now}},
+		}
 	})
 }
 
@@ -63,8 +66,9 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 	now := time.Now()
 	var cumulativeACK uint32
 	hasCumulativeACK := false
-	acknowledgements := make([]uint32, 0, 1)
-	forEachKCPSegmentHeader(packet, func(command byte, sequence, una uint32, _ int) {
+	type acknowledgement struct{ sequence, timestamp uint32 }
+	acknowledgements := make([]acknowledgement, 0, 1)
+	forEachKCPSegmentHeader(packet, func(command byte, sequence, una, timestamp uint32, _ int) {
 		if !hasCumulativeACK || kcpSequenceAfter(una, cumulativeACK) {
 			cumulativeACK = una
 			hasCumulativeACK = true
@@ -72,74 +76,90 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 		if command != kcpCommandACK {
 			return
 		}
-		acknowledgements = append(acknowledgements, sequence)
+		acknowledgements = append(acknowledgements, acknowledgement{sequence, timestamp})
 	})
-	for _, sequence := range acknowledgements {
-		sent, exists := l.kcpSent[sequence]
+	for _, ack := range acknowledgements {
+		l.metrics.AddHot(telemetry.KCPAckSegmentsTotal, 1)
+		sent, exists := l.kcpSent[ack.sequence]
 		if !exists {
 			continue
 		}
-		delete(l.kcpSent, sequence)
-		if sent.retransmitted {
-			continue
+		delete(l.kcpSent, ack.sequence)
+		l.metrics.AddHot(telemetry.KCPAckProgressSegmentsTotal, 1)
+		for _, attempt := range sent.attempts {
+			if attempt.timestamp == ack.timestamp {
+				l.updateKCPRTT(float64(now.Sub(attempt.sentAt)) / float64(time.Millisecond))
+				break
+			}
 		}
-		rtt := float64(now.Sub(sent.sentAt)) / float64(time.Millisecond)
-		if rtt < 0 {
-			continue
-		}
-		if l.kcpSRTTMS == 0 {
-			l.kcpSRTTMS = rtt
-			l.kcpRTTVARMS = rtt / 2
-			continue
-		}
-		delta := rtt - l.kcpSRTTMS
-		l.kcpSRTTMS += delta / 8
-		if delta < 0 {
-			delta = -delta
-		}
-		l.kcpRTTVARMS += (delta - l.kcpRTTVARMS) / 4
 	}
 	if hasCumulativeACK {
-		l.pruneKCPSentBefore(cumulativeACK)
+		l.metrics.AddHot(telemetry.KCPAckProgressSegmentsTotal, uint64(l.pruneKCPSentBefore(cumulativeACK)))
 	}
 }
 
-func (l *kcpLane) pruneKCPSentBefore(una uint32) {
+func (l *kcpLane) updateKCPRTT(rtt float64) {
+	if rtt < 0 {
+		return
+	}
+	l.metrics.AddHot(telemetry.KCPRTTSamplesTotal, 1)
+	if l.kcpSRTTMS == 0 {
+		l.kcpSRTTMS = rtt
+		l.kcpRTTVARMS = rtt / 2
+		return
+	}
+	delta := rtt - l.kcpSRTTMS
+	l.kcpSRTTMS += delta / 8
+	if delta < 0 {
+		delta = -delta
+	}
+	l.kcpRTTVARMS += (delta - l.kcpRTTVARMS) / 4
+}
+
+func (l *kcpLane) pruneKCPSentBefore(una uint32) int {
+	removed := 0
 	if !l.kcpHasUNA {
-		l.pruneKCPSentFallback(una)
+		removed = l.pruneKCPSentFallback(una)
 		l.kcpLastUNA = una
 		l.kcpHasUNA = true
-		return
+		return removed
 	}
 	distance := uint32(una - l.kcpLastUNA)
 	if distance == 0 || !kcpSequenceAfter(una, l.kcpLastUNA) {
-		return
+		return 0
 	}
 	if distance > laneKCPMaxPending*2 {
-		l.pruneKCPSentFallback(una)
+		removed = l.pruneKCPSentFallback(una)
 	} else {
 		for sequence := l.kcpLastUNA; sequence != una; sequence++ {
-			delete(l.kcpSent, sequence)
+			if _, exists := l.kcpSent[sequence]; exists {
+				delete(l.kcpSent, sequence)
+				removed++
+			}
 		}
 	}
 	l.kcpLastUNA = una
+	return removed
 }
 
-func (l *kcpLane) pruneKCPSentFallback(una uint32) {
+func (l *kcpLane) pruneKCPSentFallback(una uint32) int {
+	removed := 0
 	for sequence := range l.kcpSent {
 		if kcpSequenceBefore(sequence, una) {
 			delete(l.kcpSent, sequence)
+			removed++
 		}
 	}
+	return removed
 }
 
-func forEachKCPSegment(packet []byte, callback func(command byte, sequence uint32, size int)) {
-	forEachKCPSegmentHeader(packet, func(command byte, sequence, _ uint32, size int) {
-		callback(command, sequence, size)
+func forEachKCPSegment(packet []byte, callback func(command byte, sequence, timestamp uint32, size int)) {
+	forEachKCPSegmentHeader(packet, func(command byte, sequence, _ uint32, timestamp uint32, size int) {
+		callback(command, sequence, timestamp, size)
 	})
 }
 
-func forEachKCPSegmentHeader(packet []byte, callback func(command byte, sequence, una uint32, size int)) {
+func forEachKCPSegmentHeader(packet []byte, callback func(command byte, sequence, una, timestamp uint32, size int)) {
 	for len(packet) >= kcpHeaderSize {
 		length := int(binary.LittleEndian.Uint32(packet[20:24]))
 		if length < 0 || kcpHeaderSize+length > len(packet) {
@@ -150,6 +170,7 @@ func forEachKCPSegmentHeader(packet []byte, callback func(command byte, sequence
 			packet[4],
 			binary.LittleEndian.Uint32(packet[12:16]),
 			binary.LittleEndian.Uint32(packet[16:20]),
+			binary.LittleEndian.Uint32(packet[8:12]),
 			segmentSize,
 		)
 		packet = packet[segmentSize:]

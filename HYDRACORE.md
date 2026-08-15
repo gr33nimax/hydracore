@@ -1,7 +1,7 @@
 # HydraCore distribution contract
 
 Current debug release:
-`v1.13.16-extended-hydracore.11-debug.21`.
+`v1.13.16-extended-hydracore.11-debug.22`.
 
 HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
 must use artifacts from the same release manifest and commit; mixed wire
@@ -16,7 +16,8 @@ flow to one reliable lane, stripes unordered UDP/QUIC datagrams over all four,
 applies physical output backpressure without discarding KCP output and bounds
 each TCP flow with end-to-end byte credit. Recovery is session-wide and
 single-flight: one degraded line reconnects while the other three remain
-available. Every lane uses its own loss-responsive KCP congestion controller.
+available. Per-lane send, pending and physical output bounds provide
+backpressure without applying Reno congestion collapse to VK TURN delivery.
 
 The complete implementation is in `transport/call/vk-parasite`. Files outside
 that directory only register the sing-box inbound/outbound and map configuration

@@ -1,4 +1,20 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.21
+# HydraCore v1.13.16-extended-hydracore.11-debug.22
+
+This build keeps wire v6 and exactly four VK calls. It removes the speed clamp
+seen in debug.21: KCP's Reno controller treated delayed or duplicated TURN
+delivery as physical congestion and repeatedly collapsed a lane after RTO.
+The four lanes again use their bounded 128-segment windows and 256-segment
+pending ceilings for independent backpressure, with fast-resend 2 to recover
+missing segments before a full RTO where ACK progress allows it.
+
+RTT telemetry now matches every ACK to the exact KCP sequence and echoed send
+timestamp, including retransmitted attempts. Per-lane records add RTT variance,
+RTT sample count, ACK count, acknowledged progress and tracked in-flight
+segments. Recovery timeout and session-close escalation are explicit events,
+so a lane recycle followed by a complete session replacement no longer appears
+as an unexplained unfinished recovery.
+
+## Previous debug.21 notes
 
 This build keeps wire v6 and exactly four VK calls. It closes the debug.20
 reconnect cascade by coordinating recovery across the complete logical

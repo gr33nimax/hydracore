@@ -161,7 +161,7 @@ func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {
 	client.sendMu.Lock()
 	require.Len(t, client.sendFlows, 1)
 	require.Equal(t, uint64(64), client.sendFlows[99].nextSequence)
-	require.Equal(t, uint8(0xff), client.sendFlows[99].laneMask)
+	require.Equal(t, uint8((1<<LaneCount)-1), client.sendFlows[99].laneMask)
 	client.sendMu.Unlock()
 }
 

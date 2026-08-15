@@ -1,6 +1,11 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.14
+# HydraCore v1.13.16-extended-hydracore.11-debug.15
 
-This paired debug release adds the signed Android HydraCore bundle contract.
+This paired debug release corrects the signed Android HydraCore bundle contract.
+The published capability document is now generated with the exact version and
+byte framing returned by `libbox.so`, so its signed digest matches the runtime
+capability handshake performed by HydraBox in the isolated candidate process.
+
+The previous debug release added the signed Android HydraCore bundle contract.
 The client AAR now routes generated gomobile loading through
 `HydraNativeLoader`, while the release also publishes detached per-ABI native
 artifacts, a capability digest, manifest, signature, provenance and checksums.

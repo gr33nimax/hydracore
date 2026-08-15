@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.15
+
+- Generated the signed client capability document with the exact version and
+  byte framing returned by the Android native runtime, so isolated candidate
+  verification compares identical bytes instead of rejecting every valid
+  update.
+- Restricted automatic debug publication to the permanent `debug` branch.
+
 ## v1.13.16-extended-hydracore.11-debug.14
 
 - Added the signed, independently updateable Android bundle contract with

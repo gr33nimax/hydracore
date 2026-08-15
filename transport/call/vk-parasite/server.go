@@ -178,12 +178,6 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	if options.MaxWorkersPerSession == 0 {
 		options.MaxWorkersPerSession = defaultMaxWorkers
 	}
-	// Existing VPS configurations emitted eight during the wire-v5 experiment.
-	// Normalize them at the core boundary so the server can be updated without
-	// requiring Hydra Ultimate to rewrite the subscription first.
-	if options.MaxWorkersPerSession == 8 {
-		options.MaxWorkersPerSession = LaneCount
-	}
 	if options.MaxWorkersPerSession != LaneCount {
 		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be four")
 	}

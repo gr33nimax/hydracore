@@ -356,11 +356,11 @@ jobs:
                .features.call_vk_parasite_client == false and
                .features.call_vk_parasite_server == true and
                .features.call_vk_telemetry == true and
-               .features.call_vk_eight_lane_kcp == true and
+               .features.call_vk_four_lane_kcp == true and
                .features.call_vk_pre_kcp_admission == true and
                .features.call_vk_relay_flow_control == true and
                .protocols.call_modes == ["vk_parasite"] and
-               .protocols.call_vk_parasite_wire == {"min": 5, "max": 5}' \
+               .protocols.call_vk_parasite_wire == {"min": 6, "max": 6}' \
               capabilities.json >/dev/null
           fi
           tar \
@@ -502,11 +502,11 @@ jobs:
              .features.call_vk_parasite_client == false and
              .features.call_vk_parasite_server == true and
              .features.call_vk_telemetry == true and
-             .features.call_vk_eight_lane_kcp == true and
+             .features.call_vk_four_lane_kcp == true and
              .features.call_vk_pre_kcp_admission == true and
              .features.call_vk_relay_flow_control == true and
              .protocols.call_modes == ["vk_parasite"] and
-             .protocols.call_vk_parasite_wire == {"min": 5, "max": 5}' >/dev/null
+             .protocols.call_vk_parasite_wire == {"min": 6, "max": 6}' >/dev/null
           jq -n \
             --arg version "$hydracore_version" \
             --arg commit "$GITHUB_SHA" \

@@ -13,7 +13,7 @@ import (
 func TestHydraSubscriptionJWEAcceptsVKParasiteRequiredFeature(t *testing.T) {
 	content := strings.Replace(validHydraSubscriptionJSON(),
 		`"features":["rmux"]`,
-		`"features":["rmux","call","call_vk_parasite","call_vk_eight_lane_kcp","call_vk_pre_kcp_admission","call_vk_relay_flow_control"]`,
+		`"features":["rmux","call","call_vk_parasite","call_vk_four_lane_kcp","call_vk_pre_kcp_admission","call_vk_relay_flow_control"]`,
 		1,
 	)
 	key := make([]byte, 32)

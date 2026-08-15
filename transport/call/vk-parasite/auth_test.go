@@ -44,12 +44,12 @@ func TestAuthRequestRejectsPreviousWireVersion(t *testing.T) {
 	}
 	frame, err := encodeAuthRequest(request)
 	require.NoError(t, err)
-	frame[4] = 4
+	frame[4] = 5
 	_, err = decodeAuthRequest(frame)
 	require.ErrorContains(t, err, "unsupported auth frame")
 
 	ack := encodeAuthAck(true, 42)
-	ack[4] = 4
+	ack[4] = 5
 	_, err = decodeAuthAck(ack)
 	require.ErrorContains(t, err, "invalid server auth response")
 }

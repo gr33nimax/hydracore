@@ -36,6 +36,7 @@ type FeatureSet struct {
 	CallVKParasiteServer         bool `json:"call_vk_parasite_server"`
 	CallVKTelemetry              bool `json:"call_vk_telemetry"`
 	CallVKEightLaneKCP           bool `json:"call_vk_eight_lane_kcp"`
+	CallVKFourLaneKCP            bool `json:"call_vk_four_lane_kcp"`
 	CallVKPreKCPAdmission        bool `json:"call_vk_pre_kcp_admission"`
 	CallVKRelayFlowControl       bool `json:"call_vk_relay_flow_control"`
 	AmneziaVersion               int  `json:"amnezia_version"`
@@ -130,7 +131,8 @@ func Capabilities() CapabilitySet {
 			CallVKParasiteClient:         callClientEnabled,
 			CallVKParasiteServer:         callServerEnabled,
 			CallVKTelemetry:              callEnabled,
-			CallVKEightLaneKCP:           callEnabled,
+			CallVKEightLaneKCP:           false,
+			CallVKFourLaneKCP:            callEnabled,
 			CallVKPreKCPAdmission:        callEnabled,
 			CallVKRelayFlowControl:       callEnabled,
 			AmneziaVersion:               3,

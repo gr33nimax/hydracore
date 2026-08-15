@@ -92,6 +92,14 @@ func TestLaneConversationsAreStableUniqueAndNonzero(t *testing.T) {
 	}
 }
 
+func TestLaneFrameRejectsWireV5(t *testing.T) {
+	t.Parallel()
+	encoded := encodeLaneFrame(1, 0, calltunnel.EncodeFrame(1, calltunnel.MsgData, []byte("payload")))
+	encoded[6] = 5
+	_, _, _, ok := decodeLaneFrame(encoded)
+	require.False(t, ok)
+}
+
 func TestParasiteTunnelUsesFourIndependentLanes(t *testing.T) {
 	t.Parallel()
 	client, err := NewParasiteTunnel(0x11223344, logger.NOP())
@@ -150,7 +158,7 @@ func TestParasiteTunnelHasNoLegacy64KiBAdmissionBurstCap(t *testing.T) {
 	// legacy cap, so a fixed application-rate limiter cannot return unnoticed.
 	payload := make([]byte, 800)
 	for frame := 0; frame < 84; frame++ {
-		require.NotNil(t, tunnel.trySendEncoded(payload, 1), "frame %d hit a fixed admission cap", frame)
+		require.NotNil(t, tunnel.trySendEncoded(payload, 1, nil), "frame %d hit a fixed admission cap", frame)
 	}
 }
 
@@ -182,7 +190,41 @@ func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {
 	client.sendMu.Lock()
 	require.Len(t, client.sendFlows, 1)
 	require.Equal(t, uint64(64), client.sendFlows[99].nextSequence)
-	require.Equal(t, uint8((1<<LaneCount)-1), client.sendFlows[99].laneMask)
+	require.NotZero(t, client.sendFlows[99].laneMask)
+	require.Zero(t, client.sendFlows[99].laneMask&(client.sendFlows[99].laneMask-1), "one ordered flow must stay on one KCP lane")
+	require.True(t, client.sendFlows[99].laneAssigned)
+	client.sendMu.Unlock()
+}
+
+func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T) {
+	t.Parallel()
+	client, err := NewParasiteTunnel(0x22334456, logger.NOP())
+	require.NoError(t, err)
+	server, err := NewParasiteTunnel(0x22334456, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = server.Close()
+	})
+	connectTestLanes(t, client, server)
+
+	received := make(chan byte, 64)
+	server.SetOnData(func(frame []byte) { received <- frame[9] })
+	for sequence := byte(0); sequence < 64; sequence++ {
+		client.SendData(calltunnel.EncodeFrame(100, calltunnel.MsgUDPReply, []byte{sequence}))
+	}
+	seen := make(map[byte]struct{}, 64)
+	for len(seen) < 64 {
+		select {
+		case sequence := <-received:
+			seen[sequence] = struct{}{}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for striped UDP payload")
+		}
+	}
+	client.sendMu.Lock()
+	require.Equal(t, uint8((1<<LaneCount)-1), client.sendFlows[100].laneMask)
+	require.False(t, client.sendFlows[100].laneAssigned)
 	client.sendMu.Unlock()
 }
 
@@ -422,6 +464,72 @@ func TestParasiteTunnelReorderGapExpires(t *testing.T) {
 	}
 }
 
+func TestParasiteTunnelUDPReorderGapDoesNotKillLogicalSession(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x778899ab, logger.NOP())
+	require.NoError(t, err)
+	tunnel.reorderGapTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	frame := calltunnel.EncodeFrame(100, calltunnel.MsgUDPReply, []byte("second"))
+	tunnel.deliver(1, encodeLaneFrame(100, 1, frame))
+	require.False(t, tunnel.expireReorderGaps(time.Now().Add(time.Second)))
+	select {
+	case <-tunnel.Done():
+		t.Fatal("an unordered UDP gap closed the entire logical session")
+	default:
+	}
+	tunnel.deliverMu.Lock()
+	require.NotContains(t, tunnel.receiveFlows, uint32(100))
+	tunnel.deliverMu.Unlock()
+}
+
+func TestClientNetworkRebindReplacesOneWorkerAtATime(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x778899ac, logger.NOP())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &Client{
+		ctx:     ctx,
+		cancel:  cancel,
+		tunnel:  tunnel,
+		metrics: telemetry.NewAccumulator(),
+		logger:  logger.NOP(),
+		options: ClientOptions{WorkerConnectTimeout: 9 * time.Second},
+		workers: make([]clientWorkerControl, LaneCount),
+	}
+	oldDone := make([]<-chan struct{}, LaneCount)
+	peers := make([]net.Conn, 0, 2*LaneCount)
+	for workerID := 0; workerID < LaneCount; workerID++ {
+		client.workers[workerID] = newClientWorkerControl()
+		connection, peer := newTestDatagramPair()
+		peers = append(peers, peer)
+		oldDone[workerID], err = tunnel.AddWorkerEpoch(uint16(workerID), 1, connection)
+		require.NoError(t, err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	client.RebindNetwork()
+	for workerID := 0; workerID < LaneCount; workerID++ {
+		select {
+		case <-oldDone[workerID]:
+		case <-time.After(time.Second):
+			t.Fatalf("worker %d was not selected for staged replacement", workerID)
+		}
+		require.Equal(t, LaneCount-1, tunnel.ActiveWorkers(), "another lane was dropped before worker %d recovered", workerID)
+		connection, peer := newTestDatagramPair()
+		peers = append(peers, peer)
+		_, err = tunnel.AddWorkerEpoch(uint16(workerID), 2, connection)
+		require.NoError(t, err)
+	}
+	require.Eventually(t, func() bool { return tunnel.ActiveWorkers() == LaneCount }, time.Second, 10*time.Millisecond)
+}
+
 func TestClientClosesImmediatelyWithLogicalTunnel(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x8899aabb, logger.NOP())
@@ -446,7 +554,7 @@ func TestClientClosesImmediatelyWithLogicalTunnel(t *testing.T) {
 	}
 }
 
-func TestServerRequiresFourLanesAndNormalizesLegacyEight(t *testing.T) {
+func TestServerRequiresExactlyFourLanes(t *testing.T) {
 	t.Parallel()
 	base := ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -457,9 +565,8 @@ func TestServerRequiresFourLanesAndNormalizesLegacyEight(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
 	base.MaxWorkersPerSession = 8
-	normalized, _, err = validateServerOptions(base)
-	require.NoError(t, err)
-	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
+	_, _, err = validateServerOptions(base)
+	require.ErrorContains(t, err, "must be four")
 	base.MaxWorkersPerSession = LaneCount - 1
 	_, _, err = validateServerOptions(base)
 	require.ErrorContains(t, err, "must be four")

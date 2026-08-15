@@ -56,6 +56,8 @@ type Client struct {
 	errors         chan error
 	closeOnce      sync.Once
 	workers        []clientWorkerControl
+	rebindMu       sync.Mutex
+	rebindCancel   context.CancelFunc
 }
 
 type clientWorkerControl struct {
@@ -207,10 +209,7 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 	if len(options.ObfsPassword) == 0 || len(options.ObfsPassword) > maximumPasswordLen {
 		return options, errors.New("call vk_parasite: invalid obfs_password length")
 	}
-	// Existing subscriptions emitted eight while wire v5 was being measured.
-	// Normalize that configuration at the core boundary so independently
-	// updated clients immediately use the canonical four physical VK calls.
-	if options.Workers == 0 || options.Workers == 8 {
+	if options.Workers == 0 {
 		options.Workers = LaneCount
 	}
 	if options.Workers != LaneCount {
@@ -426,9 +425,10 @@ func (c *Client) Tunnel() *ParasiteTunnel { return c.tunnel }
 
 func (c *Client) Done() <-chan struct{} { return c.ctx.Done() }
 
-// RebindNetwork tears down only the physical TURN/DTLS worker transports.
-// KCP, the logical session and RelayBridge remain alive while every worker
-// immediately reconnects through the new default Android network.
+// RebindNetwork replaces physical TURN/DTLS transports one lane at a time.
+// Keeping the other calls alive avoids a self-inflicted zero-path interval and
+// the VK auth/TURN/DTLS thundering herd observed when all four were dropped at
+// once. A second network notification supersedes the unfinished handover.
 func (c *Client) RebindNetwork() {
 	select {
 	case <-c.ctx.Done():
@@ -440,11 +440,61 @@ func (c *Client) RebindNetwork() {
 		c.metrics.Add(telemetry.NetworkHandoverTotal, 1)
 	}
 	c.metrics.RecordEvent("network_changed", "network", "default_interface", nil)
-	for workerID := range c.workers {
-		c.workers[workerID].interrupt()
-		c.tunnel.DropWorker(uint16(workerID))
+	c.rebindMu.Lock()
+	if c.rebindCancel != nil {
+		c.rebindCancel()
 	}
-	c.logger.Info("call vk_parasite: network changed, rebinding worker transports")
+	rebindContext, cancel := context.WithCancel(c.ctx)
+	c.rebindCancel = cancel
+	c.rebindMu.Unlock()
+	go c.rebindWorkers(rebindContext)
+	c.logger.Info("call vk_parasite: network changed, staging worker transport rebinds")
+}
+
+func (c *Client) rebindWorkers(ctx context.Context) {
+	for workerID := range c.workers {
+		id := uint16(workerID)
+		previousEpoch, _ := c.tunnel.WorkerEpoch(id)
+		c.tunnel.recordEvent("network_rebind_lane_started", "network", "staged", &id)
+		c.workers[workerID].interrupt()
+		c.tunnel.DropWorker(id)
+		if !c.waitWorkerReplacement(ctx, id, previousEpoch) {
+			if ctx.Err() == nil {
+				c.tunnel.recordEvent("network_rebind_lane_failed", "network", "timeout", &id)
+				c.logger.Warn(fmt.Sprintf("call vk_parasite: worker %d did not recover during staged network handover", id))
+			}
+			return
+		}
+		c.tunnel.recordEvent("network_rebind_lane_completed", "network", "staged", &id)
+	}
+}
+
+func (c *Client) waitWorkerReplacement(ctx context.Context, workerID uint16, previousEpoch uint64) bool {
+	timeout := c.options.WorkerConnectTimeout / 3
+	if timeout < 3*time.Second {
+		timeout = 3 * time.Second
+	}
+	if timeout > 8*time.Second {
+		timeout = 8 * time.Second
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	timer := time.NewTimer(timeout)
+	defer ticker.Stop()
+	defer timer.Stop()
+	for {
+		if epoch, active := c.tunnel.WorkerEpoch(workerID); active && epoch > previousEpoch {
+			return true
+		}
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			return false
+		case <-ctx.Done():
+			return false
+		case <-c.tunnel.Done():
+			return false
+		}
+	}
 }
 
 func (c *Client) monitorConnectivity() {
@@ -456,14 +506,14 @@ func (c *Client) monitorConnectivity() {
 		_ = c.Close()
 		return
 	}
-	grace := c.options.WorkerConnectTimeout / 2
-	if grace < 15*time.Second {
-		grace = 15 * time.Second
+	grace := c.options.WorkerConnectTimeout / 3
+	if grace < 5*time.Second {
+		grace = 5 * time.Second
 	}
-	if grace > 30*time.Second {
-		grace = 30 * time.Second
+	if grace > 10*time.Second {
+		grace = 10 * time.Second
 	}
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var disconnectedSince time.Time
 	for {
@@ -492,6 +542,12 @@ func (c *Client) monitorConnectivity() {
 
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
+		c.rebindMu.Lock()
+		if c.rebindCancel != nil {
+			c.rebindCancel()
+			c.rebindCancel = nil
+		}
+		c.rebindMu.Unlock()
 		c.cancel()
 		_ = c.tunnel.Close()
 	})

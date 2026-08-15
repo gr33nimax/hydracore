@@ -125,7 +125,7 @@ func TestPeerPacketConnIgnoresSupersededDeadlineTimer(t *testing.T) {
 	}
 }
 
-func TestLaneCountsOneDropWhenItsOutputQueueIsFull(t *testing.T) {
+func TestLaneBackpressuresInsteadOfDroppingWhenItsOutputQueueIsFull(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x10203040, nil)
 	require.NoError(t, err)
@@ -145,9 +145,25 @@ func TestLaneCountsOneDropWhenItsOutputQueueIsFull(t *testing.T) {
 		done:      make(chan struct{}),
 	}
 	worker.sendQueue <- queuedSegment{payload: []byte("already-full")}
+	lane.workerMu.Lock()
 	lane.worker = worker
-	lane.dispatchSegment([]byte("dropped"))
+	lane.workerMu.Unlock()
+	dispatched := make(chan bool, 1)
+	go func() { dispatched <- lane.dispatchSegment([]byte("delayed")) }()
+	select {
+	case <-dispatched:
+		t.Fatal("KCP output bypassed a full physical queue")
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-worker.sendQueue
+	select {
+	case accepted := <-dispatched:
+		require.True(t, accepted)
+	case <-time.After(time.Second):
+		t.Fatal("KCP output did not resume after queue capacity became available")
+	}
+	require.Equal(t, "delayed", string((<-worker.sendQueue).payload))
 
-	require.Equal(t, float64(1), lane.metrics.Value(telemetry.WorkerSendQueueDropsTotal))
-	require.Equal(t, float64(1), tunnel.metrics.Value(telemetry.WorkerNoAvailableDropsTotal))
+	require.Zero(t, lane.metrics.Value(telemetry.WorkerSendQueueDropsTotal))
+	require.Zero(t, tunnel.metrics.Value(telemetry.WorkerNoAvailableDropsTotal))
 }

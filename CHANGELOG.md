@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.19
+
+- Introduced incompatible VK parasite wire v6 with exactly four physical
+  VK/TURN calls and four independent KCP lanes. Ordered TCP flows stay on one
+  lane; unordered UDP/QUIC datagrams retain aggregate four-lane scheduling.
+- Replaced post-KCP non-blocking worker-queue drops with physical backpressure.
+  Each lane now owns its update loop, so a blocked TURN writer cannot stall
+  KCP timers on the other three calls.
+- Rebound Android network transports one lane at a time and shortened zero-path
+  failure detection. A failed replacement leaves the remaining calls alive
+  while its own maintenance loop continues retrying.
+- Added regression coverage for queue saturation, TCP affinity, UDP striping,
+  non-fatal UDP reorder gaps and staged four-worker handover.
+
 ## v1.13.16-extended-hydracore.11-debug.18
 
 - Removed the per-lane 320-800 kB/s token bucket that imposed an artificial

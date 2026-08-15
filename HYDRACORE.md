@@ -1,7 +1,7 @@
 # HydraCore distribution contract
 
 Current debug release:
-`v1.13.16-extended-hydracore.11-debug.18`.
+`v1.13.16-extended-hydracore.11-debug.19`.
 
 HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
 must use artifacts from the same release manifest and commit; mixed wire
@@ -11,10 +11,10 @@ versions are rejected during worker authentication.
 
 The native mode is `vk_parasite` and uses exactly four VK calls. Each call is
 one independent KCP lane with its own conversation, RTT/RTO, windows, queues,
-retransmission state and TURN/DTLS lifecycle. Wire v5 bonds relay frames across
-the four lanes, restores order per proxied connection, controls bulk admission
-before KCP from actual KCP/output-queue headroom without a fixed-rate pacer,
-and bounds each TCP flow with end-to-end byte credit.
+retransmission state and TURN/DTLS lifecycle. Wire v6 pins each ordered TCP
+flow to one reliable lane, stripes unordered UDP/QUIC datagrams over all four,
+applies physical output backpressure without discarding KCP output and bounds
+each TCP flow with end-to-end byte credit.
 
 The complete implementation is in `transport/call/vk-parasite`. Files outside
 that directory only register the sing-box inbound/outbound and map configuration
@@ -24,9 +24,9 @@ The role contract is:
 
 - client: `identity.role="client"`, `call_vk_parasite_client=true`;
 - VPS: `identity.role="vps"`, `call_vk_parasite_server=true`;
-- both: `call_vk_eight_lane_kcp=true`, `call_vk_pre_kcp_admission=true`,
+- both: `call_vk_four_lane_kcp=true`, `call_vk_pre_kcp_admission=true`,
   `call_vk_relay_flow_control=true`, `call_vk_telemetry=true`,
-  `call_vk_parasite_wire={"min":5,"max":5}` and
+  `call_vk_parasite_wire={"min":6,"max":6}` and
   `call_modes=["vk_parasite"]`.
 
 Example VPS inbound:
@@ -65,14 +65,10 @@ Example client outbound:
 }
 ```
 
-`workers` and `max_workers_per_session` default to four. The legacy value eight
-is normalized to four at the HydraCore boundary so already-issued subscriptions
-continue to work after a kernel-only update; every other value is rejected. The
-legacy-named `call_vk_eight_lane_kcp` capability is retained for those current
-subscription documents and no longer describes the physical lane count. One to
-four distinct join links are accepted; links are reused to create the fixed
-four calls when fewer than four are supplied. The legacy-named
-`call_vk_pre_kcp_admission` capability now means queue-headroom admission; it no
+`workers` and `max_workers_per_session` default to four and every other value is
+rejected. One to four distinct join links are accepted; links are reused to
+create the fixed four calls when fewer than four are supplied. The legacy-named
+`call_vk_pre_kcp_admission` capability means queue-headroom admission; it no
 longer installs the debug.17 token bucket or imposes a configured bitrate.
 
 ## Verification and publication

@@ -29,16 +29,17 @@ const (
 	laneSendQueueDepth       = 96
 	laneReorderFrameLimit    = 4096
 	laneSendRetryInterval    = 2 * time.Millisecond
-	laneSendStallTimeout     = 15 * time.Second
+	laneSendStallTimeout     = 8 * time.Second
 	laneReorderGapTimeout    = 15 * time.Second
 	laneReorderCheckInterval = time.Second
 	workerHeartbeatInterval  = 15 * time.Second
 	workerLivenessTimeout    = 60 * time.Second
+	workerWriteTimeout       = 5 * time.Second
 	workerStaleReplacement   = 2 * workerHeartbeatInterval
 )
 
 var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 2, 0}
-var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 5, 0}
+var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 6, 0}
 
 type queuedSegment struct {
 	payload    []byte
@@ -54,6 +55,10 @@ type sendFlowState struct {
 	mu           sync.Mutex
 	nextSequence uint64
 	laneMask     uint8
+	laneID       uint16
+	laneAssigned bool
+	initialized  bool
+	unordered    bool
 	closed       bool
 }
 
@@ -61,6 +66,7 @@ type receiveFlowState struct {
 	nextSequence uint64
 	pending      map[uint64][]byte
 	gapSince     time.Time
+	unordered    bool
 }
 
 type laneWorker struct {
@@ -110,6 +116,8 @@ type ParasiteTunnel struct {
 	sendFlows           map[uint32]*sendFlowState
 	controlSendMu       sync.Mutex
 	controlSendSequence uint64
+	controlLaneID       uint16
+	controlLaneAssigned bool
 	receiveFlows        map[uint32]*receiveFlowState
 	nextLane            atomic.Uint32
 
@@ -170,17 +178,16 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 		lane.metrics.SetCounterParent(metrics)
 		laneID := lane.id
 		lane.kcp = kcp.NewKCP(laneConversation(seed, laneID), func(buffer []byte, size int) {
-			if size > 0 {
+			if size > 0 && lane.dispatchSegment(buffer[:size]) {
 				lane.observeKCPOutput(buffer[:size])
-				lane.dispatchSegment(buffer[:size])
 			}
 		})
 		lane.kcp.NoDelay(1, int(laneKCPUpdateInterval/time.Millisecond), laneKCPFastResend, 1)
 		lane.kcp.WndSize(laneKCPSendWindow, laneKCPReceiveWindow)
 		lane.kcp.SetMtu(laneKCPMTU)
 		tunnel.lanes[index] = lane
+		go lane.updateLoop()
 	}
-	go tunnel.updateLoop()
 	go tunnel.reorderWatchLoop()
 	return tunnel, nil
 }
@@ -207,8 +214,10 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 		t.controlSendMu.Lock()
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
-		_, sent := t.sendEncoded(encoded, true)
+		lane, sent := t.sendEncoded(encoded, true, t.preferredControlLane())
 		if sent {
+			t.controlLaneID = lane.id
+			t.controlLaneAssigned = true
 			t.controlSendSequence++
 			t.touch()
 		}
@@ -220,8 +229,9 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 	if state.closed {
 		return
 	}
+	state.initialize(msgType)
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
-	lane, sent := t.sendEncoded(encoded, true)
+	lane, sent := t.sendEncoded(encoded, true, state.preferredLane())
 	if !sent {
 		return
 	}
@@ -254,10 +264,12 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		}
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
-		_, sent := t.sendEncoded(encoded, false)
+		lane, sent := t.sendEncoded(encoded, false, t.preferredControlLane())
 		if !sent {
 			return false
 		}
+		t.controlLaneID = lane.id
+		t.controlLaneAssigned = true
 		t.controlSendSequence++
 		if activity {
 			t.touch()
@@ -272,8 +284,9 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 	if state.closed {
 		return false
 	}
+	state.initialize(msgType)
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
-	lane, sent := t.sendEncoded(encoded, false)
+	lane, sent := t.sendEncoded(encoded, false, state.preferredLane())
 	if !sent {
 		return false
 	}
@@ -462,7 +475,7 @@ func (w *laneWorker) writeLoop() {
 		select {
 		case segment := <-w.sendQueue:
 			started := time.Now()
-			if _, err := w.conn.Write(segment.payload); err != nil {
+			if err := w.write(segment.payload); err != nil {
 				w.parent.removeWorker(w)
 				return
 			}
@@ -473,7 +486,7 @@ func (w *laneWorker) writeLoop() {
 			}
 			w.parent.touch()
 		case <-ticker.C:
-			if _, err := w.conn.Write(workerHeartbeat[:]); err != nil {
+			if err := w.write(workerHeartbeat[:]); err != nil {
 				w.parent.removeWorker(w)
 				return
 			}
@@ -484,6 +497,13 @@ func (w *laneWorker) writeLoop() {
 			return
 		}
 	}
+}
+
+func (w *laneWorker) write(payload []byte) error {
+	_ = w.conn.SetWriteDeadline(time.Now().Add(workerWriteTimeout))
+	_, err := w.conn.Write(payload)
+	_ = w.conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (w *laneWorker) watchdogLoop() {
@@ -507,22 +527,26 @@ func (w *laneWorker) watchdogLoop() {
 	}
 }
 
-func (l *kcpLane) dispatchSegment(segment []byte) {
+func (l *kcpLane) dispatchSegment(segment []byte) bool {
 	l.workerMu.RLock()
 	worker := l.worker
 	l.workerMu.RUnlock()
 	if worker == nil {
-		l.parent.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
-		return
+		return false
 	}
 	queued := queuedSegment{payload: append([]byte(nil), segment...), enqueuedAt: time.Now()}
+	blockedAt := time.Now()
 	select {
 	case worker.sendQueue <- queued:
+		blocked := time.Since(blockedAt)
+		if blocked >= laneSendRetryInterval {
+			worker.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, blocked.Seconds())
+		}
+		return true
 	case <-worker.done:
-		l.parent.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
-	default:
-		worker.metrics.AddHot(telemetry.WorkerSendQueueDropsTotal, 1)
-		l.parent.metrics.AddHot(telemetry.WorkerNoAvailableDropsTotal, 1)
+		return false
+	case <-l.parent.closed:
+		return false
 	}
 }
 
@@ -563,6 +587,11 @@ func (t *ParasiteTunnel) deliver(_ uint16, message []byte) {
 	}
 	t.deliverMu.Lock()
 	defer t.deliverMu.Unlock()
+	_, msgType, validFrame := relayFrameIdentity(frame)
+	if validFrame && unorderedRelayMessage(msgType) {
+		t.deliverUnorderedLocked(connID, sequence, frame)
+		return
+	}
 	state := t.receiveFlows[connID]
 	if state == nil {
 		state = &receiveFlowState{pending: make(map[uint64][]byte)}
@@ -600,6 +629,53 @@ func (t *ParasiteTunnel) deliver(_ uint16, message []byte) {
 		state.gapSince = time.Time{}
 	} else {
 		state.gapSince = time.Now()
+	}
+}
+
+// UDP datagrams may be striped over all four independent calls. They are
+// delivered immediately because UDP and QUIC tolerate reordering, while the
+// sequence map still suppresses KCP duplicates and delays a terminal close
+// until every preceding datagram was either received or timed out.
+func (t *ParasiteTunnel) deliverUnorderedLocked(connID uint32, sequence uint64, frame []byte) {
+	state := t.receiveFlows[connID]
+	if state == nil {
+		state = &receiveFlowState{pending: make(map[uint64][]byte), unordered: true}
+		t.receiveFlows[connID] = state
+	}
+	if !state.unordered || sequence < state.nextSequence {
+		return
+	}
+	if sequence > state.nextSequence {
+		if sequence-state.nextSequence > laneReorderFrameLimit || len(state.pending) >= laneReorderFrameLimit {
+			t.recordEvent("lane_udp_reorder_overflow", "lane", "sequence_gap", nil)
+			delete(t.receiveFlows, connID)
+			return
+		}
+		if _, exists := state.pending[sequence]; exists {
+			return
+		}
+		state.pending[sequence] = nil
+		if state.gapSince.IsZero() {
+			state.gapSince = time.Now()
+		}
+		t.deliverFrameLocked(connID, frame)
+		return
+	}
+	t.deliverFrameLocked(connID, frame)
+	state.nextSequence++
+	for {
+		pending, exists := state.pending[state.nextSequence]
+		if !exists {
+			break
+		}
+		delete(state.pending, state.nextSequence)
+		if pending != nil {
+			t.deliverFrameLocked(connID, pending)
+		}
+		state.nextSequence++
+	}
+	if len(state.pending) == 0 {
+		state.gapSince = time.Time{}
 	}
 }
 
@@ -643,7 +719,33 @@ func (t *ParasiteTunnel) sendFlow(connID uint32) *sendFlowState {
 	return state
 }
 
+func (state *sendFlowState) initialize(msgType byte) {
+	if state.initialized {
+		return
+	}
+	state.initialized = true
+	state.unordered = unorderedRelayMessage(msgType)
+}
+
+func (state *sendFlowState) preferredLane() *uint16 {
+	if state.unordered || !state.laneAssigned {
+		return nil
+	}
+	return &state.laneID
+}
+
+func (t *ParasiteTunnel) preferredControlLane() *uint16 {
+	if !t.controlLaneAssigned {
+		return nil
+	}
+	return &t.controlLaneID
+}
+
 func (t *ParasiteTunnel) commitFlowFrame(connID uint32, msgType byte, state *sendFlowState, lane *kcpLane) {
+	if !state.unordered && !state.laneAssigned {
+		state.laneID = lane.id
+		state.laneAssigned = true
+	}
 	state.nextSequence++
 	bit := uint8(1 << lane.id)
 	if state.laneMask&bit == 0 {
@@ -696,7 +798,7 @@ type laneCandidate struct {
 	score float64
 }
 
-func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool) (*kcpLane, bool) {
+func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint16) (*kcpLane, bool) {
 	select {
 	case <-t.closed:
 		return nil, false
@@ -710,7 +812,7 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool) (*kcpLane, bool)
 		}
 		return nil, false
 	}
-	if lane := t.trySendEncoded(encoded, required); lane != nil {
+	if lane := t.trySendEncoded(encoded, required, preferred); lane != nil {
 		return lane, true
 	}
 	if !wait {
@@ -726,7 +828,7 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool) (*kcpLane, bool)
 		case <-t.closed:
 			return nil, false
 		case <-ticker.C:
-			if lane := t.trySendEncoded(encoded, required); lane != nil {
+			if lane := t.trySendEncoded(encoded, required, preferred); lane != nil {
 				lane.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 				return lane, true
 			}
@@ -747,11 +849,18 @@ func kcpSegmentsForPayload(size int) int {
 	return (size + mss - 1) / mss
 }
 
-func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int) *kcpLane {
+func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, preferred *uint16) *kcpLane {
 	start := int((t.nextLane.Add(1) - 1) % LaneCount)
 	candidates := make([]laneCandidate, 0, LaneCount)
 	for offset := 0; offset < LaneCount; offset++ {
-		lane := t.lanes[(start+offset)%LaneCount]
+		laneID := (start + offset) % LaneCount
+		if preferred != nil {
+			laneID = int(*preferred)
+			if offset > 0 || laneID >= LaneCount {
+				break
+			}
+		}
+		lane := t.lanes[laneID]
 		active, queueDepth := lane.workerState()
 		if !active {
 			continue
@@ -792,6 +901,10 @@ func (l *kcpLane) workerState() (bool, int) {
 		return false, 0
 	}
 	return true, len(worker.sendQueue)
+}
+
+func unorderedRelayMessage(msgType byte) bool {
+	return msgType == calltunnel.MsgUDP || msgType == calltunnel.MsgUDPReply
 }
 
 func relayFrameIdentity(frame []byte) (uint32, byte, bool) {
@@ -853,6 +966,19 @@ func (t *ParasiteTunnel) ActiveWorkers() int {
 		lane.workerMu.RUnlock()
 	}
 	return active
+}
+
+func (t *ParasiteTunnel) WorkerEpoch(id uint16) (uint64, bool) {
+	if id >= LaneCount {
+		return 0, false
+	}
+	lane := t.lanes[id]
+	lane.workerMu.RLock()
+	defer lane.workerMu.RUnlock()
+	if lane.worker == nil {
+		return 0, false
+	}
+	return lane.worker.epoch, true
 }
 
 func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
@@ -1014,18 +1140,16 @@ func (t *ParasiteTunnel) closeAsync() {
 	go func() { _ = t.Close() }()
 }
 
-func (t *ParasiteTunnel) updateLoop() {
+func (l *kcpLane) updateLoop() {
 	ticker := time.NewTicker(laneKCPUpdateInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			for _, lane := range t.lanes {
-				lane.mu.Lock()
-				lane.kcp.Update()
-				lane.mu.Unlock()
-			}
-		case <-t.closed:
+			l.mu.Lock()
+			l.kcp.Update()
+			l.mu.Unlock()
+		case <-l.parent.closed:
 			return
 		}
 	}
@@ -1047,8 +1171,20 @@ func (t *ParasiteTunnel) reorderWatchLoop() {
 func (t *ParasiteTunnel) expireReorderGaps(now time.Time) bool {
 	expired := false
 	t.deliverMu.Lock()
-	for _, state := range t.receiveFlows {
+	for connID, state := range t.receiveFlows {
 		if !state.gapSince.IsZero() && now.Sub(state.gapSince) >= t.reorderGapTimeout {
+			if state.unordered {
+				for _, pending := range state.pending {
+					_, msgType, ok := relayFrameIdentity(pending)
+					if ok && terminalRelayMessage(msgType) {
+						t.deliverFrameLocked(connID, pending)
+						break
+					}
+				}
+				delete(t.receiveFlows, connID)
+				t.recordEvent("lane_udp_reorder_timeout", "lane", "sequence_gap", nil)
+				continue
+			}
 			expired = true
 			break
 		}

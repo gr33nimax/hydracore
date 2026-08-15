@@ -383,7 +383,7 @@ func validateHydraSubscriptionRequirements(requirements hydraSubscriptionRequire
 	if hydraCoreCallEnabled {
 		supportedFeatures["call"] = true
 		supportedFeatures["call_vk_parasite"] = true
-		supportedFeatures["call_vk_eight_lane_kcp"] = true
+		supportedFeatures["call_vk_four_lane_kcp"] = true
 		supportedFeatures["call_vk_pre_kcp_admission"] = true
 		supportedFeatures["call_vk_relay_flow_control"] = true
 	}

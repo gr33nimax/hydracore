@@ -1,10 +1,31 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestResolveBuildVersionPreservesExplicitReleaseIdentity(t *testing.T) {
+	const expected = "v1.13.16-extended-hydracore.11-debug.16"
+	actual := resolveBuildVersion(expected, func() (string, error) {
+		return "1.13.16-extended-hydracore.11-debug.16", nil
+	})
+	require.Equal(t, expected, actual)
+}
+
+func TestResolveBuildVersionFallsBackToRepositoryTag(t *testing.T) {
+	actual := resolveBuildVersion("", func() (string, error) {
+		return "1.13.16-extended", nil
+	})
+	require.Equal(t, "1.13.16-extended", actual)
+
+	actual = resolveBuildVersion("", func() (string, error) {
+		return "", errors.New("no tag")
+	})
+	require.Equal(t, "unknown", actual)
+}
 
 func TestAndroidSharedTagsCoverExtendedCore(t *testing.T) {
 	required := []string{

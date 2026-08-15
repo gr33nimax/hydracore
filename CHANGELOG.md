@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.16
+
+- Passed the canonical `HYDRACORE_VERSION` directly into the gomobile linker so
+  native capabilities retain the same leading `v` as the signed manifest.
+- Added an Android bundle gate that rejects every ABI whose native library does
+  not contain the exact release identity.
+
 ## v1.13.16-extended-hydracore.11-debug.15
 
 - Generated the signed client capability document with the exact version and

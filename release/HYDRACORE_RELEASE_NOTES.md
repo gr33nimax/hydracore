@@ -1,9 +1,10 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.15
+# HydraCore v1.13.16-extended-hydracore.11-debug.16
 
-This paired debug release corrects the signed Android HydraCore bundle contract.
-The published capability document is now generated with the exact version and
-byte framing returned by `libbox.so`, so its signed digest matches the runtime
-capability handshake performed by HydraBox in the isolated candidate process.
+This paired debug release corrects the Android native build identity used by
+the signed HydraCore bundle contract. The gomobile build now receives the exact
+version stored in `HYDRACORE_VERSION`, including its leading `v`, instead of a
+normalized Git tag. The native capability bytes and the signed manifest digest
+therefore describe the same runtime identity in the isolated candidate process.
 
 The previous debug release added the signed Android HydraCore bundle contract.
 The client AAR now routes generated gomobile loading through

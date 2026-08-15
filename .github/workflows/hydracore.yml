@@ -138,8 +138,19 @@ jobs:
         run: make lib_install
       - name: Build libbox
         run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export HYDRACORE_BUILD_VERSION="$version"
           make lib_android
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            library="$RUNNER_TEMP/hydracore-${abi}.so"
+            unzip -p libbox.aar "jni/${abi}/libbox.so" > "$library"
+            if ! grep -aF -- "$version" "$library" >/dev/null; then
+              echo "::error title=HydraCore native version mismatch::${abi} does not contain ${version}" >&2
+              exit 1
+            fi
+          done
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           HYDRACORE_BUILD_ROLE: client

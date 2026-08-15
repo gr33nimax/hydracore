@@ -1,7 +1,7 @@
 # HydraCore distribution contract
 
 Current debug release:
-`v1.13.16-extended-hydracore.11-debug.23`.
+`v1.13.16-extended-hydracore.11-debug.24`.
 
 HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
 must use artifacts from the same release manifest and commit; mixed wire
@@ -15,11 +15,12 @@ retransmission state and TURN/DTLS lifecycle. Wire v6 pins each ordered TCP
 flow to one reliable lane, stripes unordered UDP/QUIC datagrams over all four,
 stages physical output outside the KCP mutex without discarding KCP segments
 and bounds each TCP flow with ACK-clocked end-to-end byte credit. Recovery is
-session-wide and single-flight: one degraded line reconnects while the other
-three remain available. Generation-aware bridge callbacks prevent a retired
-tunnel from closing its replacement. Per-lane send, pending and physical
-output bounds provide backpressure without applying Reno congestion collapse
-to VK TURN delivery.
+single-flight, but a recycle is signalled to the opposite DTLS peer immediately
+instead of waiting for UDP liveness expiry. A line that does not return aborts
+only its pinned flows; the other calls and the logical tunnel remain available.
+Generation-aware bridge callbacks prevent a retired tunnel from closing its
+replacement. Per-lane send, pending and physical output bounds provide
+backpressure without applying Reno congestion collapse to VK TURN delivery.
 
 The complete implementation is in `transport/call/vk-parasite`. Files outside
 that directory only register the sing-box inbound/outbound and map configuration

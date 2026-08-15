@@ -104,6 +104,7 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 		ackedProgress += pruned
 	}
 	if ackedProgress > 0 {
+		l.lastAckProgress.Store(now.UnixNano())
 		l.updateDeliveryController(now, ackedProgress)
 	}
 }

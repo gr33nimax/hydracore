@@ -1,4 +1,24 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.23
+# HydraCore v1.13.16-extended-hydracore.11-debug.24
+
+This build fixes the failure chain measured after debug.23. A stalled lane now
+sends an authenticated recycle marker to its DTLS peer, so the client and VPS
+detach the same physical worker immediately and the client's existing worker
+maintainer can establish its replacement without waiting for UDP liveness
+expiry.
+
+HydraCore also detects sustained output/WaitSnd pressure with no ACK progress.
+Recovery remains single-flight to preserve the other three calls, but timeout
+is flow-local: only ordered TCP flows pinned to the missing lane are closed so
+applications can reconnect them through a healthy lane. The logical tunnel is
+not closed, and a missing preferred lane cannot cause an unrelated healthy
+worker to be recycled.
+
+The per-peer DTLS ingress burst queue is now bounded at 4096 packets. This
+targets the internal queue drops seen during speed tests while keeping KCP,
+worker and lane counts unchanged: exactly four VK calls and four independent
+KCP lanes.
+
+## Previous debug.23 notes
 
 This build keeps wire v6 and exactly four VK calls. Each KCP lane now stages
 its generated segments in a bounded queue and performs the potentially

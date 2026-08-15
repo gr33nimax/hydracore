@@ -37,8 +37,8 @@ const (
 	defaultUDPReceiveBufferBytes = 4 * 1024 * 1024
 	defaultUDPSendBufferBytes    = 4 * 1024 * 1024
 	defaultIngressQueuePackets   = 4096
-	defaultPeerReadQueuePackets  = 512
-	minimumPeerReadQueuePackets  = 1024
+	defaultPeerReadQueuePackets  = HardMaxPeerReadQueuePackets
+	minimumPeerReadQueuePackets  = HardMaxPeerReadQueuePackets
 )
 
 type ServerUser struct {
@@ -230,10 +230,10 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	if options.PeerReadQueuePackets < 16 || options.PeerReadQueuePackets > HardMaxPeerReadQueuePackets {
 		return options, nil, errors.New("call vk_parasite: peer_read_queue_packets outside hard bounds")
 	}
-	// Preserve explicit configuration compatibility but guarantee enough
-	// bounded burst absorption for four KCP lanes. The old effective 512 packet
-	// queue was exhausted during a single speed-test burst and then amplified
-	// KCP retransmission pressure.
+	// A speed-test burst can stop the DTLS reader briefly while one lane is being
+	// recycled. A smaller per-peer queue dropped authenticated media packets and
+	// converted that pause into RTO retransmission pressure. Keep the queue
+	// bounded, but use the validated hard maximum for all wire-v6 sessions.
 	if options.PeerReadQueuePackets < minimumPeerReadQueuePackets {
 		options.PeerReadQueuePackets = minimumPeerReadQueuePackets
 	}

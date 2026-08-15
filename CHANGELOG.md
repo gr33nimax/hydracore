@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.24
+
+- Added an authenticated in-band recycle signal so both DTLS endpoints detach
+  a failed lane immediately instead of waiting up to the liveness timeout.
+- Detect sustained KCP output pressure without ACK progress and recycle only
+  that lane while the remaining calls continue carrying traffic.
+- Abort only TCP flows pinned to a lane that fails to return; a lane recovery
+  timeout no longer closes the complete VK parasite session.
+- Prevent a missing preferred lane from recycling an unrelated healthy call
+  and allow control traffic to reselect a lane before its current path stalls.
+- Raised the bounded per-peer DTLS burst queue to 4096 packets to absorb the
+  measured speed-test bursts without converting local drops into KCP RTOs.
+
 ## v1.13.16-extended-hydracore.11-debug.23
 
 - Moved physical worker writes out of the KCP mutex and staged generated

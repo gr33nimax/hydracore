@@ -393,14 +393,25 @@ func TestParasiteTunnelWaitingSendReselectsLaneAndKeepsTelemetryLive(t *testing.
 	}
 }
 
-func TestParasiteTunnelSendStallClosesLogicalSession(t *testing.T) {
+func TestParasiteTunnelSendStallAbortsOnlyAffectedFlow(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x66778899, logger.NOP())
 	require.NoError(t, err)
 	tunnel.sendStallTimeout = 40 * time.Millisecond
 	t.Cleanup(func() { _ = tunnel.Close() })
 	events := make(chan telemetry.Event, 1)
-	tunnel.SetTelemetryEventHandler(func(event telemetry.Event) { events <- event })
+	tunnel.SetTelemetryEventHandler(func(event telemetry.Event) {
+		if event.Event == "lane_send_stalled" {
+			events <- event
+		}
+	})
+	closedFlow := make(chan uint32, 1)
+	tunnel.SetOnData(func(frame []byte) {
+		connID, msgType, ok := relayFrameIdentity(frame)
+		if ok && msgType == calltunnel.MsgClose {
+			closedFlow <- connID
+		}
+	})
 
 	go tunnel.SendData(calltunnel.EncodeFrame(88, calltunnel.MsgData, []byte("payload")))
 	select {
@@ -411,9 +422,15 @@ func TestParasiteTunnelSendStallClosesLogicalSession(t *testing.T) {
 		t.Fatal("stalled logical session did not emit a telemetry event")
 	}
 	select {
-	case <-tunnel.Done():
+	case connID := <-closedFlow:
+		require.Equal(t, uint32(88), connID)
 	case <-time.After(time.Second):
-		t.Fatal("stalled logical session did not close")
+		t.Fatal("stalled flow was not aborted")
+	}
+	select {
+	case <-tunnel.Done():
+		t.Fatal("one stalled lane closed the logical session")
+	default:
 	}
 }
 
@@ -526,7 +543,7 @@ func TestKCPRetransmissionReasonEstimate(t *testing.T) {
 	require.True(t, isEstimatedRTO(75*time.Millisecond, 100*time.Millisecond))
 }
 
-func TestRelayBridgeSendStallClosesWithoutReentrantDeadlock(t *testing.T) {
+func TestRelayBridgeSendStallAbortsFlowWithoutReentrantDeadlock(t *testing.T) {
 	t.Parallel()
 	dataTunnel, err := NewParasiteTunnel(0x6677889b, logger.NOP())
 	require.NoError(t, err)
@@ -551,9 +568,100 @@ func TestRelayBridgeSendStallClosesWithoutReentrantDeadlock(t *testing.T) {
 	}
 	select {
 	case <-dataTunnel.Done():
-	case <-time.After(time.Second):
-		t.Fatal("stalled data tunnel did not finish closing")
+		t.Fatal("one stalled relay flow closed the data tunnel")
+	default:
 	}
+}
+
+func TestParasiteTunnelRecycleSignalDetachesPeerLane(t *testing.T) {
+	t.Parallel()
+	left, err := NewParasiteTunnel(0x6677889e, logger.NOP())
+	require.NoError(t, err)
+	right, err := NewParasiteTunnel(0x6677889e, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+	})
+
+	leftConn, rightConn := newTestDatagramPair()
+	_, err = left.AddWorkerEpoch(0, 1, leftConn)
+	require.NoError(t, err)
+	_, err = right.AddWorkerEpoch(0, 1, rightConn)
+	require.NoError(t, err)
+	workerID := uint16(0)
+	recoveredID, result := left.recoverStalledLane(&workerID)
+	require.Equal(t, laneRecoveryStarted, result)
+	require.Equal(t, workerID, recoveredID)
+	require.Eventually(t, func() bool {
+		return left.ActiveWorkers() == 0 && right.ActiveWorkers() == 0
+	}, time.Second, 10*time.Millisecond)
+	select {
+	case <-left.Done():
+		t.Fatal("lane recycle closed the left logical session")
+	case <-right.Done():
+		t.Fatal("lane recycle closed the right logical session")
+	default:
+	}
+}
+
+func TestParasiteTunnelUnavailableLaneAbortsOnlyItsFlows(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x6677889f, logger.NOP())
+	require.NoError(t, err)
+	tunnel.laneRecoveryGrace = 40 * time.Millisecond
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	connection, peer := newTestDatagramPair()
+	_, err = tunnel.AddWorkerEpoch(0, 1, connection)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+	state := tunnel.sendFlow(101)
+	state.mu.Lock()
+	state.initialized = true
+	state.laneAssigned = true
+	state.laneID = 0
+	state.laneOwner.Store(1)
+	state.laneMask = 1
+	tunnel.lanes[0].flowCount.Add(1)
+	state.mu.Unlock()
+	closedFlow := make(chan uint32, 1)
+	tunnel.SetOnData(func(frame []byte) {
+		connID, msgType, ok := relayFrameIdentity(frame)
+		if ok && msgType == calltunnel.MsgClose {
+			closedFlow <- connID
+		}
+	})
+
+	tunnel.DropWorker(0)
+	select {
+	case connID := <-closedFlow:
+		require.Equal(t, uint32(101), connID)
+	case <-time.After(time.Second):
+		t.Fatal("flow pinned to an unavailable lane was not aborted")
+	}
+	select {
+	case <-tunnel.Done():
+		t.Fatal("unavailable lane closed the logical session")
+	default:
+	}
+}
+
+func TestParasiteTunnelMissingPreferredLaneDoesNotRecycleHealthyLane(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788a0, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	connection, peer := newTestDatagramPair()
+	_, err = tunnel.AddWorkerEpoch(1, 1, connection)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+	missing := uint16(0)
+	workerID, result := tunnel.recoverStalledLane(&missing)
+	require.Equal(t, laneRecoveryUnavailable, result)
+	require.Equal(t, missing, workerID)
+	require.Equal(t, 1, tunnel.ActiveWorkers())
 }
 
 func TestParasiteTunnelTelemetryTrySendDoesNotWaitForControlFlow(t *testing.T) {

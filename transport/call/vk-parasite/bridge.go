@@ -75,6 +75,7 @@ func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLog
 				Credential: server.Credential,
 			}, fetchErr
 		},
+		InvalidateCredentials: provider.Invalidate,
 		Telemetry: metrics,
 	}
 	managerCtx, cancel := context.WithCancel(ctx)

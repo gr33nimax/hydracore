@@ -38,7 +38,6 @@ const (
 	defaultUDPSendBufferBytes    = 4 * 1024 * 1024
 	defaultIngressQueuePackets   = 4096
 	defaultPeerReadQueuePackets  = 512
-	sessionTakeoverGrace        = workerStaleReplacement
 )
 
 type ServerUser struct {
@@ -179,14 +178,14 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	if options.MaxWorkersPerSession == 0 {
 		options.MaxWorkersPerSession = defaultMaxWorkers
 	}
-	// Allow an already-running wire-v4 VPS configuration to pass the atomic
-	// binary switch. Wire v5 still authenticates exactly LaneCount workers and
-	// the next HYDRA configuration apply persists the canonical value.
-	if options.MaxWorkersPerSession == 4 {
+	// Existing VPS configurations emitted eight during the wire-v5 experiment.
+	// Normalize them at the core boundary so the server can be updated without
+	// requiring Hydra Ultimate to rewrite the subscription first.
+	if options.MaxWorkersPerSession == 8 {
 		options.MaxWorkersPerSession = LaneCount
 	}
 	if options.MaxWorkersPerSession != LaneCount {
-		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be eight")
+		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be four")
 	}
 	if options.MaxPendingHandshakes == 0 {
 		options.MaxPendingHandshakes = defaultMaxPendingHandshakes
@@ -360,14 +359,41 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 	if metrics.CollectionActive() {
 		metrics.ObserveOuterPacket(wire, time.Now())
 	}
+	var replacedPeer *peerPacketConn
+	rejectNewPeer := false
 	s.peersMu.Lock()
 	peer = s.peers[key]
-	if peer == nil {
+	clientHello, isClientHello := dtlsClientHelloIdentity(plain)
+	if peer != nil && isClientHello && (peer.isEstablished() || peer.rememberClientHello(clientHello)) {
+		select {
+		case s.pending <- struct{}{}:
+			codec, codecErr := newRTPCodec(s.key)
+			if codecErr == nil {
+				replacedPeer = peer
+				peer = newPeerPacketConn(s.packetConn, remote, codec, s.telemetry.metrics, s.options.PeerReadQueuePackets)
+				peer.rememberClientHello(clientHello)
+				s.peers[key] = peer
+				go s.handlePeer(key, peer)
+				s.telemetry.event("dtls_peer_replaced", "dtls", "client_hello", "", [16]byte{}, nil)
+			} else {
+				<-s.pending
+			}
+		default:
+			s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
+			s.telemetry.event("handshake_rejected", "handshake", "pending_limit", "", [16]byte{}, nil)
+			peer = nil
+			rejectNewPeer = true
+		}
+	}
+	if peer == nil && !rejectNewPeer {
 		select {
 		case s.pending <- struct{}{}:
 			codec, codecErr := newRTPCodec(s.key)
 			if codecErr == nil {
 				peer = newPeerPacketConn(s.packetConn, remote, codec, s.telemetry.metrics, s.options.PeerReadQueuePackets)
+				if isClientHello {
+					peer.rememberClientHello(clientHello)
+				}
 				s.peers[key] = peer
 				go s.handlePeer(key, peer)
 			} else {
@@ -379,9 +405,38 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 		}
 	}
 	s.peersMu.Unlock()
+	if replacedPeer != nil {
+		_ = replacedPeer.Close()
+	}
 	if peer != nil {
 		peer.enqueue(plain, remote)
 	}
+}
+
+func isDTLSClientHello(packet []byte) bool {
+	_, ok := dtlsClientHelloIdentity(packet)
+	return ok
+}
+
+func dtlsClientHelloIdentity(packet []byte) ([32]byte, bool) {
+	const dtlsRecordHeaderLength = 13
+	const dtlsHandshakeHeaderLength = 12
+	const clientHelloVersionLength = 2
+	var identity [32]byte
+	minimumLength := dtlsRecordHeaderLength + dtlsHandshakeHeaderLength + clientHelloVersionLength + len(identity)
+	if len(packet) < minimumLength || packet[0] != 22 || packet[1] != 0xfe {
+		return identity, false
+	}
+	if packet[3] != 0 || packet[4] != 0 {
+		return identity, false
+	}
+	payloadLength := int(binary.BigEndian.Uint16(packet[11:13]))
+	if payloadLength < minimumLength-dtlsRecordHeaderLength || len(packet) < dtlsRecordHeaderLength+payloadLength || packet[13] != 1 {
+		return identity, false
+	}
+	randomOffset := dtlsRecordHeaderLength + dtlsHandshakeHeaderLength + clientHelloVersionLength
+	copy(identity[:], packet[randomOffset:randomOffset+len(identity)])
+	return identity, true
 }
 
 func makeIngressQueues(workers, totalCapacity int) []chan receivedPacket {
@@ -502,6 +557,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		_, _ = conn.Write(encodeAuthAck(false, 0))
 		return
 	}
+	peer.markEstablished()
 	workerMetrics.Add(telemetry.WorkerAttachSuccessTotal, 1)
 	s.telemetry.event("worker_attached", "worker", "success", request.User, request.SessionID, &request.WorkerID)
 	s.telemetry.metrics.Set(telemetry.HandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
@@ -552,7 +608,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	record := s.users[request.User]
 	var evicted []*serverSession
 	if len(s.sessions) >= s.options.MaxSessions || s.userSessions[request.User] >= record.maxSessions {
-		evicted = s.evictTakeoverEligibleUserSessionsLocked(request.User, time.Now())
+		evicted = s.evictSupersededUserSessionsLocked(request.User, record.maxSessions)
 	}
 	if len(s.sessions) >= s.options.MaxSessions {
 		s.sessionsMu.Unlock()
@@ -631,19 +687,19 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	return session, true, nil
 }
 
-func (s *Server) evictTakeoverEligibleUserSessionsLocked(user string, now time.Time) []*serverSession {
-	evicted := make([]*serverSession, 0, 1)
-	progressCutoff := now.Add(-sessionTakeoverGrace)
+func (s *Server) evictSupersededUserSessionsLocked(user string, maxSessions int) []*serverSession {
+	needed := s.userSessions[user] - maxSessions + 1
+	if needed < 1 {
+		needed = 1
+	}
+	evicted := make([]*serverSession, 0, needed)
 	for id, session := range s.sessions {
-		if session.user != user || session.pendingAttaches != 0 || now.Sub(session.createdAt) < sessionTakeoverGrace {
+		if len(evicted) >= needed || session.user != user || session.pendingAttaches != 0 {
 			continue
 		}
 		select {
 		case <-session.ready:
 		default:
-			continue
-		}
-		if session.tunnel.ActiveWorkers() != 0 && session.tunnel.LastProgress().After(progressCutoff) {
 			continue
 		}
 		delete(s.sessions, id)

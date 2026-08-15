@@ -1,6 +1,7 @@
 package vkparasite
 
 import (
+	"encoding/binary"
 	"errors"
 	"net"
 	"testing"
@@ -9,6 +10,41 @@ import (
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDTLSClientHelloDetection(t *testing.T) {
+	t.Parallel()
+	packet := make([]byte, 59)
+	packet[0] = 22
+	packet[1] = 0xfe
+	packet[2] = 0xfd
+	binary.BigEndian.PutUint16(packet[11:13], uint16(len(packet)-13))
+	packet[13] = 1
+	for index := 27; index < 59; index++ {
+		packet[index] = byte(index)
+	}
+
+	require.True(t, isDTLSClientHello(packet))
+	identity, ok := dtlsClientHelloIdentity(packet)
+	require.True(t, ok)
+	require.Equal(t, packet[27:59], identity[:])
+	packet[13] = 2
+	require.False(t, isDTLSClientHello(packet))
+	packet[13] = 1
+	packet[3] = 1
+	require.False(t, isDTLSClientHello(packet))
+	require.False(t, isDTLSClientHello(packet[:13]))
+}
+
+func TestPeerPacketConnDistinguishesRetransmittedAndNewClientHello(t *testing.T) {
+	t.Parallel()
+	peer := &peerPacketConn{}
+	first := [32]byte{1}
+	second := [32]byte{2}
+
+	require.False(t, peer.rememberClientHello(first))
+	require.False(t, peer.rememberClientHello(first))
+	require.True(t, peer.rememberClientHello(second))
+}
 
 type inertPacketConn struct{}
 
@@ -34,6 +70,9 @@ func TestPeerPacketConnAppliesDeadlineChangedAfterReadStarted(t *testing.T) {
 	require.NoError(t, err)
 	peer := newPeerPacketConn(inertPacketConn{}, testAddr("remote"), codec, telemetry.NewAccumulator(), 16)
 	t.Cleanup(func() { _ = peer.Close() })
+	require.False(t, peer.isEstablished())
+	peer.markEstablished()
+	require.True(t, peer.isEstablished())
 
 	result := make(chan error, 1)
 	go func() {

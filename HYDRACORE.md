@@ -1,7 +1,7 @@
 # HydraCore distribution contract
 
 Current debug release:
-`v1.13.16-extended-hydracore.11-debug.15`.
+`v1.13.16-extended-hydracore.11-debug.17`.
 
 HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
 must use artifacts from the same release manifest and commit; mixed wire
@@ -9,10 +9,10 @@ versions are rejected during worker authentication.
 
 ## VK parasite transport
 
-The native mode is `vk_parasite` and uses exactly eight VK calls. Each call is
+The native mode is `vk_parasite` and uses exactly four VK calls. Each call is
 one independent KCP lane with its own conversation, RTT/RTO, windows, queues,
 retransmission state and TURN/DTLS lifecycle. Wire v5 bonds relay frames across
-the eight lanes, restores order per proxied connection, controls bulk admission
+the four lanes, restores order per proxied connection, controls bulk admission
 before KCP, and bounds each TCP flow with end-to-end byte credit.
 
 The complete implementation is in `transport/call/vk-parasite`. Files outside
@@ -39,7 +39,7 @@ Example VPS inbound:
   "listen": "0.0.0.0",
   "listen_port": 8443,
   "obfs_password": "outer-secret",
-  "max_workers_per_session": 8,
+  "max_workers_per_session": 4,
   "users": [
     {"name": "tester-1", "password": "per-user-secret"}
   ]
@@ -60,13 +60,17 @@ Example client outbound:
   "user": "tester-1",
   "password": "per-user-secret",
   "obfs_password": "outer-secret",
-  "workers": 8
+  "workers": 4
 }
 ```
 
-`workers` and `max_workers_per_session` default to eight and reject every other
-value. One to four distinct join links are accepted; links are reused to create
-the fixed four calls when fewer than four are supplied.
+`workers` and `max_workers_per_session` default to four. The legacy value eight
+is normalized to four at the HydraCore boundary so already-issued subscriptions
+continue to work after a kernel-only update; every other value is rejected. The
+legacy-named `call_vk_eight_lane_kcp` capability is retained for those current
+subscription documents and no longer describes the physical lane count. One to
+four distinct join links are accepted; links are reused to create the fixed
+four calls when fewer than four are supplied.
 
 ## Verification and publication
 

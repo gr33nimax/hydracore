@@ -87,6 +87,17 @@ func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (Tu
 	}
 }
 
+// Invalidate forces the next physical TURN connection for this VK call to
+// obtain a new allocation identity. A successful TURN Allocate does not prove
+// that a cached VK credential still carries return traffic, so DTLS or inner
+// authentication failures must not keep retrying it for the full cache TTL.
+func (p *TURNCredentialProvider) Invalidate(joinLink string) {
+	p.mu.Lock()
+	delete(p.cache, joinLink)
+	p.mu.Unlock()
+	p.group.Forget(joinLink)
+}
+
 func (p *TURNCredentialProvider) cached(joinLink string) (TurnServer, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

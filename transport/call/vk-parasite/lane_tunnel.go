@@ -17,11 +17,11 @@ import (
 )
 
 const (
-	LaneCount                = 8
+	LaneCount                = 4
 	laneKCPMTU               = 1000
-	laneKCPSendWindow        = 96
+	laneKCPSendWindow        = 128
 	laneKCPReceiveWindow     = 128
-	laneKCPMaxPending        = 192
+	laneKCPMaxPending        = 256
 	laneKCPMaxFragments      = 255
 	laneKCPUpdateInterval    = 10 * time.Millisecond
 	laneKCPFastResend        = 2

@@ -21,17 +21,18 @@ import (
 )
 
 type ClientOptions struct {
-	Server               M.Socksaddr
-	JoinLinks            []string
-	User                 string
-	Password             string
-	ObfsPassword         string
-	Workers              int
-	WorkerConnectTimeout time.Duration
-	Dialer               N.Dialer
-	DNSRouter            adapter.DNSRouter
-	Credentials          CredentialProvider
-	Telemetry            *telemetry.Accumulator
+	Server                M.Socksaddr
+	JoinLinks             []string
+	User                  string
+	Password              string
+	ObfsPassword          string
+	Workers               int
+	WorkerConnectTimeout  time.Duration
+	Dialer                N.Dialer
+	DNSRouter             adapter.DNSRouter
+	Credentials           CredentialProvider
+	InvalidateCredentials func(string)
+	Telemetry             *telemetry.Accumulator
 }
 
 type Client struct {
@@ -206,11 +207,14 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 	if len(options.ObfsPassword) == 0 || len(options.ObfsPassword) > maximumPasswordLen {
 		return options, errors.New("call vk_parasite: invalid obfs_password length")
 	}
-	if options.Workers == 0 {
+	// Existing subscriptions emitted eight while wire v5 was being measured.
+	// Normalize that configuration at the core boundary so independently
+	// updated clients immediately use the canonical four physical VK calls.
+	if options.Workers == 0 || options.Workers == 8 {
 		options.Workers = LaneCount
 	}
 	if options.Workers != LaneCount {
-		return options, errors.New("call vk_parasite: exactly eight VK lanes are required")
+		return options, errors.New("call vk_parasite: exactly four VK lanes are required")
 	}
 	if options.WorkerConnectTimeout == 0 {
 		options.WorkerConnectTimeout = 30 * time.Second
@@ -245,6 +249,7 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 			c.readyOnce.Do(func() { close(c.ready) })
 			select {
 			case <-done:
+				c.invalidateCredentials(joinLink)
 			case <-c.ctx.Done():
 				return
 			}
@@ -284,6 +289,12 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	if err != nil {
 		return nil, err
 	}
+	attached := false
+	defer func() {
+		if !attached {
+			c.invalidateCredentials(joinLink)
+		}
+	}()
 	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), metrics, workerID)
 	if err != nil {
 		return nil, err
@@ -377,7 +388,14 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	}
 	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
 	metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
+	attached = true
 	return done, nil
+}
+
+func (c *Client) invalidateCredentials(joinLink string) {
+	if c.options.InvalidateCredentials != nil {
+		c.options.InvalidateCredentials(joinLink)
+	}
 }
 
 func (c *Client) recordInnerAuthFailure(metrics *telemetry.Accumulator, ctx context.Context, started time.Time, workerID uint16, reason string) {

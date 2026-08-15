@@ -21,16 +21,18 @@ type receivedPacket struct {
 // peerPacketConn gives one DTLS server a connected view of a shared UDP
 // listener. The owner decodes the shared RTP wrapper before enqueueing data.
 type peerPacketConn struct {
-	base          net.PacketConn
-	remote        net.Addr
-	codec         *rtpCodec
-	metrics       atomic.Pointer[telemetry.Accumulator]
-	readQueue     chan receivedPacket
+	base            net.PacketConn
+	remote          net.Addr
+	codec           *rtpCodec
+	metrics         atomic.Pointer[telemetry.Accumulator]
+	readQueue       chan receivedPacket
 	deadlineChanged chan struct{}
-	closed        chan struct{}
-	closeOnce     sync.Once
-	readDeadline  atomic.Int64
-	writeDeadline atomic.Int64
+	closed          chan struct{}
+	closeOnce       sync.Once
+	established     atomic.Bool
+	clientHello     atomic.Pointer[[32]byte]
+	readDeadline    atomic.Int64
+	writeDeadline   atomic.Int64
 }
 
 func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, metrics *telemetry.Accumulator, queueCapacity int) *peerPacketConn {
@@ -48,6 +50,22 @@ func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, me
 	connection.metrics.Store(metrics)
 	metrics.Set(telemetry.PeerReadQueueCapacity, float64(queueCapacity))
 	return connection
+}
+
+func (c *peerPacketConn) markEstablished() { c.established.Store(true) }
+
+func (c *peerPacketConn) isEstablished() bool { return c.established.Load() }
+
+func (c *peerPacketConn) rememberClientHello(identity [32]byte) bool {
+	stored := c.clientHello.Load()
+	if stored == nil {
+		candidate := identity
+		if c.clientHello.CompareAndSwap(nil, &candidate) {
+			return false
+		}
+		stored = c.clientHello.Load()
+	}
+	return stored != nil && *stored != identity
 }
 
 func (c *peerPacketConn) telemetryMetrics() *telemetry.Accumulator {

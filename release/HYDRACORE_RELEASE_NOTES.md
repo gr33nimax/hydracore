@@ -1,50 +1,41 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.16
+# HydraCore v1.13.16-extended-hydracore.11-debug.17
 
-This paired debug release corrects the Android native build identity used by
-the signed HydraCore bundle contract. The gomobile build now receives the exact
-version stored in `HYDRACORE_VERSION`, including its leading `v`, instead of a
-normalized Git tag. The native capability bytes and the signed manifest digest
-therefore describe the same runtime identity in the isolated candidate process.
+This debug release keeps VK parasite wire v5 but returns its physical topology
+to the intended model: four VK calls, four TURN/DTLS workers and four independent
+KCP lanes. Each lane retains its own conversation, RTT/RTO estimator, windows,
+retransmission state, admission controller and reconnect lifecycle. Raw mode is
+unchanged.
 
-The previous debug release added the signed Android HydraCore bundle contract.
-The client AAR now routes generated gomobile loading through
-`HydraNativeLoader`, while the release also publishes detached per-ABI native
-artifacts, a capability digest, manifest, signature, provenance and checksums.
-HydraBox can therefore validate a candidate in an isolated process, activate
-it manually, and fall back to the previous or APK-embedded core after an
-unhealthy launch.
+Existing client subscriptions and VPS configurations that contain
+`workers=8` or `max_workers_per_session=8` are normalized to four inside
+HydraCore. This lets both endpoints receive a kernel-only update without a new
+HydraBox APK or an immediate subscription rewrite. The legacy-named
+`call_vk_eight_lane_kcp` capability is retained only because current signed
+subscription documents require it; it no longer describes the physical count.
 
-This is an intentionally incompatible paired client/VPS debug release of the
-VK parasite transport. Both endpoints must run this exact release.
+Reconnect recovery now has three explicit repairs. A disconnected or
+not-fully-attached worker invalidates its cached VK/TURN credential, so its next
+attempt requests a fresh allocation instead of repeating a dead path for the
+eight-minute cache lifetime. The VPS recognizes a new DTLS ClientHello arriving
+from an established relay endpoint and replaces the stale peer; while a
+handshake is pending it also distinguishes a retransmission from a genuinely
+new handshake by the ClientHello random. Finally, the latest fully authenticated
+session for a user immediately supersedes that user's previous ready session,
+even when the old workers still look active.
 
-Wire v5 expands the transport from four to eight independent KCP lanes. The
-change follows the measured VK/TURN media-path ceiling of approximately
-2.07 Mbit/s per lane: adding independent allocations raises aggregate headroom
-without coupling congestion recovery between calls. Each lane keeps its own
-conversation, window, RTT/RTO estimator, retransmission state, output queue and
-reconnecting TURN/DTLS worker.
+Four-lane KCP keeps an aggregate send window of 512 segments and an aggregate
+pending ceiling of 1024 segments. The pre-KCP admission controller now starts at
+320 kB/s per physical call (about 10.2 Mbit/s aggregate) and may grow to
+800 kB/s per call when that call's own retry and queue pressure permit it. This
+does not promise a particular VK throughput; it removes the eight-lane ramp
+penalty while preserving per-path backoff.
 
-New bulk bytes are adaptively admitted before KCP starts retransmission timing.
-The per-lane controller begins below the measured media-path ceiling, increases
-only while retransmission pressure stays low, and reduces only the affected
-lane under loss. KCP ACK/recovery traffic and relay control frames bypass this
-gate. There is no post-KCP rate limiter or timer-distorting output queue.
+The non-raw RTP wrapper continues to emit dynamic video payload type 96 with a
+90 kHz timestamp clock. Relay TCP streams retain end-to-end byte credit, 16 KiB
+data frames and a 256 KiB receive window per flow. Telemetry continues to expose
+per-lane throughput, loss, retries, RTT, WaitSnd, output queues and reconnects.
 
-The non-raw RTP wrapper now emits dynamic video payload type 96 with a 90 kHz
-timestamp clock. Receivers continue to accept legacy payload type 111 only for
-diagnostics. Raw mode is unchanged.
-
-Relay TCP streams now use end-to-end byte credit, 16 KiB data frames and a
-256 KiB receive window per flow. This bounds the previously unbounded relay
-backlog and propagates slow consumers to the originating socket instead of
-letting memory and KCP WaitSnd grow. Remote terminal frames also release local
-lane-flow accounting, removing stale flows observed after speed tests.
-
-Telemetry adds each lane's admission rate and the emitted RTP payload type.
-The exact runtime capability contract is now `call_vk_eight_lane_kcp`,
-`call_vk_pre_kcp_admission`, `call_vk_relay_flow_control`, and
-`call_vk_parasite_wire={min:5,max:5}`.
-
-For an atomic VPS rollout only, the server normalizes an existing persisted
-`max_workers_per_session=4` configuration to eight. Worker authentication and
-all client traffic remain strict wire v5; the next HYDRA apply writes eight.
+Both client and VPS must run this exact signed HydraCore release. The exact
+runtime contract remains `call_vk_parasite_wire={min:5,max:5}` with
+`call_vk_eight_lane_kcp`, `call_vk_pre_kcp_admission` and
+`call_vk_relay_flow_control` advertised.

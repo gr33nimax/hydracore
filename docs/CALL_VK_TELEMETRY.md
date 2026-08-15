@@ -45,7 +45,7 @@ lane count, relay goodput, connection counts and backpressure. Process records
 add UDP ingress/socket buffers, listener drops, CPU, RSS, thermal state and
 handshake capacity.
 
-The eight independent KCP records are the critical difference in wire v5: RTT,
+The four independent KCP records are the critical difference in wire v5: RTT,
 RTO and retransmission pressure can be attributed to the exact VK call instead
 of inferred from a shared reliable session. Comparing lane goodput, WaitSnd,
 RTT/RTO, physical loss and queue delay reveals whether the next optimization

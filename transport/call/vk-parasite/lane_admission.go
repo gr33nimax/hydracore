@@ -6,9 +6,13 @@ import (
 )
 
 const (
-	laneAdmissionInitialRate = 190_000.0
+	// Four physical VK/TURN calls sustain roughly 2-3 Mbit/s each in the
+	// instrumented runs. Start close to that measured operating point instead
+	// of inheriting the eight-lane aggregate ramp, then let retransmission
+	// pressure tune each call independently.
+	laneAdmissionInitialRate = 320_000.0
 	laneAdmissionMinimumRate = 96_000.0
-	laneAdmissionMaximumRate = 640_000.0
+	laneAdmissionMaximumRate = 800_000.0
 	laneAdmissionBurstBytes  = 64 * 1024
 	laneAdmissionTunePeriod  = time.Second
 )

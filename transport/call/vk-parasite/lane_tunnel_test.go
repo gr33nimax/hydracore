@@ -92,7 +92,7 @@ func TestLaneConversationsAreStableUniqueAndNonzero(t *testing.T) {
 	}
 }
 
-func TestParasiteTunnelUsesEightIndependentLanes(t *testing.T) {
+func TestParasiteTunnelUsesFourIndependentLanes(t *testing.T) {
 	t.Parallel()
 	client, err := NewParasiteTunnel(0x11223344, logger.NOP())
 	require.NoError(t, err)
@@ -406,7 +406,7 @@ func TestClientClosesImmediatelyWithLogicalTunnel(t *testing.T) {
 	}
 }
 
-func TestServerRequiresExactlyEightLanes(t *testing.T) {
+func TestServerRequiresFourLanesAndNormalizesLegacyEight(t *testing.T) {
 	t.Parallel()
 	base := ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -416,13 +416,13 @@ func TestServerRequiresExactlyEightLanes(t *testing.T) {
 	normalized, _, err := validateServerOptions(base)
 	require.NoError(t, err)
 	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
-	base.MaxWorkersPerSession = 4
+	base.MaxWorkersPerSession = 8
 	normalized, _, err = validateServerOptions(base)
 	require.NoError(t, err)
 	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
 	base.MaxWorkersPerSession = LaneCount - 1
 	_, _, err = validateServerOptions(base)
-	require.ErrorContains(t, err, "must be eight")
+	require.ErrorContains(t, err, "must be four")
 
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -438,7 +438,7 @@ func TestServerRequiresExactlyEightLanes(t *testing.T) {
 	server.releaseSessionAttach(session)
 }
 
-func TestServerAllowsStalledActiveSessionTakeover(t *testing.T) {
+func TestServerAllowsAuthenticatedSessionTakeover(t *testing.T) {
 	t.Parallel()
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -453,8 +453,6 @@ func TestServerAllowsStalledActiveSessionTakeover(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, created)
 	server.releaseSessionAttach(oldSession)
-	oldSession.createdAt = time.Now().Add(-2 * sessionTakeoverGrace)
-	oldSession.tunnel.lastProgress.Store(time.Now().Add(-2 * sessionTakeoverGrace).UnixNano())
 	workerConn, workerPeer := newTestDatagramPair()
 	_, err = oldSession.tunnel.AddWorker(0, workerConn)
 	require.NoError(t, err)
@@ -469,11 +467,11 @@ func TestServerAllowsStalledActiveSessionTakeover(t *testing.T) {
 	select {
 	case <-oldSession.tunnel.Done():
 	case <-time.After(time.Second):
-		t.Fatal("stalled active session was not evicted during takeover")
+		t.Fatal("old active session was not evicted during authenticated takeover")
 	}
 }
 
-func TestServerRejectsTakeoverOfProgressingSession(t *testing.T) {
+func TestServerReplacesProgressingSessionForSameAuthenticatedUser(t *testing.T) {
 	t.Parallel()
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -489,7 +487,6 @@ func TestServerRejectsTakeoverOfProgressingSession(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, created)
 	server.releaseSessionAttach(oldSession)
-	oldSession.createdAt = time.Now().Add(-2 * sessionTakeoverGrace)
 	oldSession.tunnel.markProgress()
 	workerConn, workerPeer := newTestDatagramPair()
 	_, err = oldSession.tunnel.AddWorker(0, workerConn)
@@ -497,12 +494,13 @@ func TestServerRejectsTakeoverOfProgressingSession(t *testing.T) {
 	t.Cleanup(func() { _ = workerPeer.Close() })
 
 	newRequest := authRequest{SessionID: [16]byte{4}, Conv: 4, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
-	_, created, err = server.getOrCreateSession(newRequest)
-	require.ErrorContains(t, err, "user session limit reached")
-	require.False(t, created)
+	newSession, created, err := server.getOrCreateSession(newRequest)
+	require.NoError(t, err)
+	require.True(t, created)
+	server.releaseSessionAttach(newSession)
 	select {
 	case <-oldSession.tunnel.Done():
-		t.Fatal("progressing session was evicted")
-	default:
+	case <-time.After(time.Second):
+		t.Fatal("progressing old session was not evicted during authenticated takeover")
 	}
 }

@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.17
+
+- Returned wire v5 to four physical VK/TURN calls and four independent KCP
+  lanes; existing `workers=8` and `max_workers_per_session=8` settings are
+  normalized by HydraCore so the client and VPS can update independently.
+- Replaced a stale server-side DTLS peer when a new ClientHello arrives from a
+  reused TURN relay address, including rapid reconnects with a new handshake
+  identity.
+- Invalidated cached VK/TURN credentials after a worker disconnect or failed
+  setup so retries do not reuse a dead allocation for the eight-minute cache
+  lifetime.
+- Made the latest fully authenticated session replace the previous session for
+  the same user immediately, instead of rejecting reconnects while old workers
+  remained attached.
+- Restored four-lane aggregate KCP headroom and raised the per-call admission
+  starting point to the operating range measured in telemetry.
+
 ## v1.13.16-extended-hydracore.11-debug.16
 
 - Passed the canonical `HYDRACORE_VERSION` directly into the gomobile linker so

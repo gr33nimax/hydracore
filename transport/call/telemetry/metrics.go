@@ -138,6 +138,24 @@ const (
 	WorkerWriteLatencyMS
 	FlowReorderAbortTotal
 	OuterRTPPayloadType
+	LaneGeneration
+	LaneState
+	LanePacingRateBPS
+	LaneDeliveredRateBPS
+	LaneMinRTTMS
+	LaneInflightLimitSegments
+	LaneTokenStarvationTotal
+	LaneAckAgeSeconds
+	LaneResetRequestTotal
+	LaneResetRetryTotal
+	LaneResetAckTotal
+	LaneResetCommitTotal
+	LaneResetDurationMS
+	LaneStaleGenerationDropsTotal
+	LaneProbeResult
+	AggregateProgressAgeSeconds
+	QuarantinedLanes
+	SessionReplacementTotal
 	metricCount
 )
 
@@ -274,6 +292,24 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "worker_write_latency_ms"},
 	{name: "flow_reorder_abort_total", counter: true},
 	{name: "outer_rtp_payload_type"},
+	{name: "lane_generation"},
+	{name: "lane_state"},
+	{name: "lane_pacing_bytes_per_second"},
+	{name: "lane_delivered_bytes_per_second"},
+	{name: "lane_min_rtt_ms"},
+	{name: "lane_inflight_limit_segments"},
+	{name: "lane_token_starvation_total", counter: true},
+	{name: "lane_ack_age_seconds"},
+	{name: "lane_reset_request_total", counter: true},
+	{name: "lane_reset_retry_total", counter: true},
+	{name: "lane_reset_ack_total", counter: true},
+	{name: "lane_reset_commit_total", counter: true},
+	{name: "lane_reset_duration_ms"},
+	{name: "lane_stale_generation_drops_total", counter: true},
+	{name: "lane_probe_result"},
+	{name: "aggregate_progress_age_seconds"},
+	{name: "quarantined_lanes"},
+	{name: "session_replacement_total", counter: true},
 }
 
 var ServerRequired = []Metric{
@@ -302,6 +338,10 @@ var ServerRequired = []Metric{
 	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
 	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
 	FlowReorderAbortTotal, OuterRTPPayloadType,
+	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
+	LaneTokenStarvationTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
+	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
+	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
 	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
 }
 
@@ -321,6 +361,10 @@ var ClientRequired = []Metric{
 	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
 	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
 	FlowReorderAbortTotal, OuterRTPPayloadType,
+	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
+	LaneTokenStarvationTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
+	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
+	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
 	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
 	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
@@ -350,6 +394,10 @@ var TunnelMetrics = []Metric{
 	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
 	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
 	FlowReorderAbortTotal, OuterRTPPayloadType,
+	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
+	LaneTokenStarvationTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
+	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
+	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
 }
 
 type Accumulator struct {

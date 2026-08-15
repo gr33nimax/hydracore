@@ -1,4 +1,26 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.24
+# HydraCore v1.13.16-extended-hydracore.11-debug.25
+
+This build introduces incompatible VK parasite wire v7. Client and VPS must be
+updated together; wire v6 is rejected. TCP data is fragmented to at most four
+KCP MSS before admission, while UDP datagrams remain whole. Every lane starts
+at 1.5 Mbit/s and uses ACK-clocked delivered-rate sampling, bounded startup,
+loss/RTT/queue backoff, periodic probes and an 8-64 segment BDP inflight limit.
+
+Lane recovery is now generation-scoped. `RESET_PREPARE`, `RESET_ACK` and
+`RESET_COMMIT` are retried over every healthy call. Commit creates a new KCP,
+clears staged output and transport estimators, and rejects old-generation KCP
+or lane frames. A replacement is declared healthy only after both endpoints
+exchange KCP probes and observe fresh ACK progress. TCP flows owned by the
+reset lane close locally; unrelated flows and the other calls stay alive.
+
+Aggregate ACK/relay progress now protects the complete session. Pending data
+without progress for `max(5s, 3 x median RTO)`, capped at ten seconds, replaces
+the logical session; three quarantined lanes escalate immediately. Telemetry
+adds lane generation/state, pacing and delivered rates, minRTT, inflight limit,
+token starvation, ACK age, reset lifecycle, stale-generation drops, probe
+result, aggregate progress age and quarantined-lane count.
+
+## Previous debug.24 notes
 
 This build fixes the failure chain measured after debug.23. A stalled lane now
 sends an authenticated recycle marker to its DTLS peer, so the client and VPS

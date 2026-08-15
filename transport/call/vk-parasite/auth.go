@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	authProtocolVersion   = 6
+	authProtocolVersion   = 7
 	maximumUserLength     = 64
 	maximumPasswordLen    = 256
-	maximumAuthFrameLen   = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
+	maximumAuthFrameLen   = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
 )
 
 var (
@@ -27,6 +27,7 @@ type authRequest struct {
 	WorkerID        uint16
 	WorkerTotal     uint16
 	WorkerEpoch     uint64
+	LaneGeneration  uint64
 	User            string
 	Password        string
 }
@@ -44,7 +45,10 @@ func encodeAuthRequest(request authRequest) ([]byte, error) {
 	if request.WorkerEpoch == 0 {
 		return nil, errors.New("call vk_parasite: zero worker epoch")
 	}
-	headerLength := 40
+	if request.LaneGeneration == 0 {
+		return nil, errors.New("call vk_parasite: zero lane generation")
+	}
+	headerLength := 48
 	frame := make([]byte, headerLength+len(request.User)+len(request.Password))
 	copy(frame[0:4], authMagic[:])
 	frame[4] = authProtocolVersion
@@ -53,7 +57,8 @@ func encodeAuthRequest(request authRequest) ([]byte, error) {
 	binary.BigEndian.PutUint16(frame[25:27], request.WorkerID)
 	binary.BigEndian.PutUint16(frame[27:29], request.WorkerTotal)
 	binary.BigEndian.PutUint64(frame[29:37], request.WorkerEpoch)
-	identityOffset := 37
+	binary.BigEndian.PutUint64(frame[37:45], request.LaneGeneration)
+	identityOffset := 45
 	frame[identityOffset] = byte(len(request.User))
 	binary.BigEndian.PutUint16(frame[identityOffset+1:identityOffset+3], uint16(len(request.Password)))
 	copy(frame[identityOffset+3:identityOffset+3+len(request.User)], request.User)
@@ -63,7 +68,7 @@ func encodeAuthRequest(request authRequest) ([]byte, error) {
 
 func decodeAuthRequest(frame []byte) (authRequest, error) {
 	var request authRequest
-	if len(frame) < 40 || len(frame) > maximumAuthFrameLen {
+	if len(frame) < 48 || len(frame) > maximumAuthFrameLen {
 		return request, errors.New("call vk_parasite: invalid auth frame length")
 	}
 	if !bytes.Equal(frame[0:4], authMagic[:]) || frame[4] != authProtocolVersion {
@@ -81,7 +86,11 @@ func decodeAuthRequest(frame []byte) (authRequest, error) {
 	if request.WorkerEpoch == 0 {
 		return request, errors.New("call vk_parasite: zero worker epoch")
 	}
-	identityOffset := 37
+	request.LaneGeneration = binary.BigEndian.Uint64(frame[37:45])
+	if request.LaneGeneration == 0 {
+		return request, errors.New("call vk_parasite: zero lane generation")
+	}
+	identityOffset := 45
 	userLength := int(frame[identityOffset])
 	passwordLength := int(binary.BigEndian.Uint16(frame[identityOffset+1 : identityOffset+3]))
 	if userLength == 0 || userLength > maximumUserLength || passwordLength == 0 || passwordLength > maximumPasswordLen {

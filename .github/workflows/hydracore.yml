@@ -81,6 +81,8 @@ jobs:
         run: go test -tags with_call_server ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Race test Call telemetry and transport
         run: go test -race ./transport/call/telemetry ./transport/call/vk-parasite ./transport/call/tunnel
+      - name: Verify wire v7 deterministic four-lane emulator
+        run: go test ./transport/call/vk-parasite -run '^TestWireV7' -count=1
       - name: Race test HydraCore inherited runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
       - name: Resource and performance gate
@@ -360,7 +362,7 @@ jobs:
                .features.call_vk_pre_kcp_admission == true and
                .features.call_vk_relay_flow_control == true and
                .protocols.call_modes == ["vk_parasite"] and
-               .protocols.call_vk_parasite_wire == {"min": 6, "max": 6}' \
+               .protocols.call_vk_parasite_wire == {"min": 7, "max": 7}' \
               capabilities.json >/dev/null
           fi
           tar \
@@ -506,7 +508,7 @@ jobs:
              .features.call_vk_pre_kcp_admission == true and
              .features.call_vk_relay_flow_control == true and
              .protocols.call_modes == ["vk_parasite"] and
-             .protocols.call_vk_parasite_wire == {"min": 6, "max": 6}' >/dev/null
+             .protocols.call_vk_parasite_wire == {"min": 7, "max": 7}' >/dev/null
           jq -n \
             --arg version "$hydracore_version" \
             --arg commit "$GITHUB_SHA" \

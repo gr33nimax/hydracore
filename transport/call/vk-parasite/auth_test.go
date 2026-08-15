@@ -15,6 +15,7 @@ func TestAuthRequestRoundTrip(t *testing.T) {
 		WorkerID:    2,
 		WorkerTotal: LaneCount,
 		WorkerEpoch: 9,
+		LaneGeneration: 1,
 		User:        "alice",
 		Password:    "correct horse battery staple",
 	}
@@ -39,17 +40,18 @@ func TestAuthRequestRejectsPreviousWireVersion(t *testing.T) {
 		WorkerID:    1,
 		WorkerTotal: LaneCount,
 		WorkerEpoch: 7,
+		LaneGeneration: 1,
 		User:        "alice",
 		Password:    "secret",
 	}
 	frame, err := encodeAuthRequest(request)
 	require.NoError(t, err)
-	frame[4] = 5
+	frame[4] = authProtocolVersion - 1
 	_, err = decodeAuthRequest(frame)
 	require.ErrorContains(t, err, "unsupported auth frame")
 
 	ack := encodeAuthAck(true, 42)
-	ack[4] = 5
+	ack[4] = authProtocolVersion - 1
 	_, err = decodeAuthAck(ack)
 	require.ErrorContains(t, err, "invalid server auth response")
 }

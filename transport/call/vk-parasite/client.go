@@ -56,6 +56,7 @@ type Client struct {
 	errors         chan error
 	closeOnce      sync.Once
 	workers        []clientWorkerControl
+	workerReconnectMu sync.Mutex
 	rebindMu       sync.Mutex
 	rebindCancel   context.CancelFunc
 }
@@ -238,11 +239,18 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 			return
 		default:
 		}
-		if attempt > 0 {
+		reconnecting := attempt > 0
+		if reconnecting {
 			metrics.Add(telemetry.WorkerReconnectTotal, 1)
 		}
 		attempt++
+		if reconnecting {
+			c.workerReconnectMu.Lock()
+		}
 		done, err := c.connectWorker(workerID, joinLink, control)
+		if reconnecting {
+			c.workerReconnectMu.Unlock()
+		}
 		if err == nil {
 			backoff = time.Second
 			c.readyOnce.Do(func() { close(c.ready) })
@@ -334,12 +342,14 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	stopAuthInterrupt := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopAuthInterrupt()
 	innerAuthStarted := time.Now()
+	laneGeneration := c.tunnel.LaneGeneration(workerID)
 	request, err := encodeAuthRequest(authRequest{
 		SessionID:   c.sessionID,
 		Conv:        c.conv,
 		WorkerID:    workerID,
 		WorkerTotal: uint16(c.options.Workers),
 		WorkerEpoch: workerEpoch,
+		LaneGeneration: laneGeneration,
 		User:        c.options.User,
 		Password:    c.options.Password,
 	})
@@ -379,7 +389,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		return nil, errors.New("call vk_parasite: server session state was reset")
 	}
 	_ = conn.SetDeadline(time.Time{})
-	done, err := c.tunnel.AddWorkerEpoch(workerID, workerEpoch, conn)
+	done, err := c.tunnel.AddWorkerGenerationEpoch(workerID, laneGeneration, workerEpoch, conn)
 	if err != nil {
 		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "attach")
 		_ = conn.Close()

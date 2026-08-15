@@ -233,7 +233,7 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	// A speed-test burst can stop the DTLS reader briefly while one lane is being
 	// recycled. A smaller per-peer queue dropped authenticated media packets and
 	// converted that pause into RTO retransmission pressure. Keep the queue
-	// bounded, but use the validated hard maximum for all wire-v6 sessions.
+	// bounded, but use the validated hard maximum for all wire-v7 sessions.
 	if options.PeerReadQueuePackets < minimumPeerReadQueuePackets {
 		options.PeerReadQueuePackets = minimumPeerReadQueuePackets
 	}
@@ -570,7 +570,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 	}
 	workerMetrics := session.tunnel.telemetryWorker(request.WorkerID)
 	peer.setTelemetryMetrics(workerMetrics)
-	done, err := session.tunnel.AttachWorkerEpoch(request.WorkerID, request.WorkerEpoch, conn, func() error {
+	done, err := session.tunnel.AttachWorkerGenerationEpoch(request.WorkerID, request.LaneGeneration, request.WorkerEpoch, conn, func() error {
 		_, writeErr := conn.Write(encodeAuthAck(true, session.generation))
 		if writeErr == nil {
 			writeErr = conn.SetDeadline(time.Time{})
@@ -628,6 +628,10 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 				s.sessionsMu.Unlock()
 				return nil, false, sessionsErr
 			}
+			if session.tunnel.LaneGeneration(request.WorkerID) != request.LaneGeneration {
+				s.sessionsMu.Unlock()
+				return nil, false, errors.New("call vk_parasite: lane generation mismatch")
+			}
 			session.pendingAttaches++
 			s.sessionsMu.Unlock()
 			return session, false, nil
@@ -649,6 +653,11 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		s.sessionsMu.Unlock()
 		closeServerSessions(evicted)
 		return nil, false, errors.New("call vk_parasite: user session limit reached")
+	}
+	if request.LaneGeneration != 1 {
+		s.sessionsMu.Unlock()
+		closeServerSessions(evicted)
+		return nil, false, errors.New("call vk_parasite: initial lane generation must be one")
 	}
 	tunnel, err := NewParasiteTunnel(request.Conv, s.logger)
 	if err != nil {

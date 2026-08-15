@@ -9,7 +9,7 @@ timer and records only while Ultimate's active session marker is present.
 The VPS watches `/var/lib/hydra/calls/vk/telemetry/active.json`, writes schema-v1
 JSONL to `/run/hydra/calls-telemetry.jsonl`, and rotates 64 MiB handoff parts.
 Ultimate drains them into its compressed bounded timeline. Client snapshots
-travel inside authenticated wire-v6 control frames; no extra listener or
+travel inside authenticated wire-v7 control frames; no extra listener or
 credential is exposed.
 
 The VPS overwrites client identity and timestamp with the authenticated user,
@@ -38,14 +38,19 @@ Every lane reports independently:
 - assigned active flow count;
 - DTLS/TURN/VK setup latency and failure stage;
 - outer packets, payload/wrapper bytes, physical loss and jitter;
-- output and peer-read queue depth, delay, late packets and drops.
+- output and peer-read queue depth, delay, late packets and drops;
+- generation and state (`active`, `quarantined`, `resetting`, `probing`);
+- pacing/delivered rate, minRTT, inflight limit, token starvation and ACK age;
+- reset request/retry/ACK/commit counts, duration, stale-generation drops and
+  the bidirectional probe result.
 
 Session records report aggregate KCP pending depth and retransmissions, active
-lane count, relay goodput, connection counts and backpressure. Process records
-add UDP ingress/socket buffers, listener drops, CPU, RSS, thermal state and
-handshake capacity.
+lane count, relay goodput, connection counts, aggregate progress age,
+quarantined lanes, the session-replacement counter/reason events and
+backpressure. Process records add UDP ingress/socket buffers, listener drops,
+CPU, RSS, thermal state and handshake capacity.
 
-The four independent KCP records are the critical difference in wire v6: RTT,
+The four independent KCP records are the critical difference in wire v7: RTT,
 RTO and retransmission pressure can be attributed to the exact VK call instead
 of inferred from a shared reliable session. Comparing lane goodput, WaitSnd,
 RTT/RTO, physical loss and queue delay reveals whether the next optimization

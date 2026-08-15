@@ -168,7 +168,7 @@ func TestParasiteTunnelUsesFourIndependentLanes(t *testing.T) {
 	require.Len(t, used, LaneCount)
 }
 
-func TestParasiteTunnelAdmissionWindowHasNonCollapsingFloor(t *testing.T) {
+func TestParasiteTunnelAdmissionWindowStartsInsideBDPBounds(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x22334455, logger.NOP())
 	require.NoError(t, err)
@@ -180,9 +180,7 @@ func TestParasiteTunnelAdmissionWindowHasNonCollapsingFloor(t *testing.T) {
 		_ = workerPeer.Close()
 	})
 
-	// Admission is ACK-clocked, expressed in segments rather than a fixed byte
-	// rate, and must retain enough initial flight to avoid Reno's one-segment
-	// collapse while leaving room for control traffic. Exercise the admission
+	// Admission is ACK-clocked and bounded to an 8-64 segment BDP range. Exercise the admission
 	// policy while holding the lane lock: trySendEncoded is deliberately
 	// non-blocking and may lose a TryLock race with the 10 ms update loop under
 	// the race detector, which is unrelated to the window floor being tested.
@@ -192,7 +190,7 @@ func TestParasiteTunnelAdmissionWindowHasNonCollapsingFloor(t *testing.T) {
 		lane.mu.Lock()
 		defer lane.mu.Unlock()
 		admissionLimit := lane.admissionLimitLocked(false)
-		require.Equal(t, laneKCPInitialAdmission-laneKCPControlReserve, admissionLimit)
+		require.Equal(t, laneKCPInitialAdmission, admissionLimit)
 		for frame := 0; frame < admissionLimit; frame++ {
 			require.LessOrEqual(t, lane.kcp.WaitSnd()+1, admissionLimit, "frame %d hit the initial admission floor", frame)
 			require.GreaterOrEqual(t, lane.kcp.Send(payload), 0)
@@ -473,7 +471,7 @@ func TestParasiteTunnelSendStallAbortsOnlyAffectedFlow(t *testing.T) {
 	}
 }
 
-func TestParasiteTunnelSendStallRecyclesOnlyBlockedLane(t *testing.T) {
+func TestParasiteTunnelSendStallQuarantinesBlockedLaneBeforeResetACK(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x6677889c, logger.NOP())
 	require.NoError(t, err)
@@ -523,20 +521,18 @@ recovered:
 		t.Fatal("single-lane recovery closed the logical session")
 	default:
 	}
-	replacement, replacementPeer := newTestDatagramPair()
-	_, err = tunnel.reserveWorker(0, 2, replacement)
-	require.NoError(t, err)
-	select {
-	case sent := <-sendDone:
-		require.True(t, sent)
-	case <-time.After(time.Second):
-		t.Fatal("send did not resume on the replacement lane")
-	}
+	tunnel.lanes[0].mu.Lock()
+	require.Equal(t, laneStateQuarantined, tunnel.lanes[0].state)
+	tunnel.lanes[0].mu.Unlock()
+	require.Equal(t, 1, tunnel.ActiveWorkers(), "wire v7 waits for RESET_ACK before detaching the physical lane")
 	_ = blockedPeer.Close()
-	_ = replacementPeer.Close()
+	select {
+	case <-sendDone:
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
-func TestParasiteTunnelCoalescesConcurrentLaneRecovery(t *testing.T) {
+func TestParasiteTunnelAllowsTwoQuarantinesAndEscalatesTheThird(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x6677889d, logger.NOP())
 	require.NoError(t, err)
@@ -555,31 +551,15 @@ func TestParasiteTunnelCoalescesConcurrentLaneRecovery(t *testing.T) {
 		}
 	})
 
-	first := uint16(0)
-	workerID, result := tunnel.recoverStalledLane(&first)
-	require.Equal(t, laneRecoveryStarted, result)
-	require.Equal(t, uint16(0), workerID)
-	require.Equal(t, LaneCount-1, tunnel.ActiveWorkers())
-
-	second := uint16(1)
-	workerID, result = tunnel.recoverStalledLane(&second)
-	require.Equal(t, laneRecoveryInProgress, result)
-	require.Equal(t, uint16(0), workerID)
-	require.Equal(t, LaneCount-1, tunnel.ActiveWorkers(), "coalesced recovery must not recycle another lane")
-
-	replacement, replacementPeer := newTestDatagramPair()
-	peers = append(peers, replacementPeer)
-	_, err = tunnel.reserveWorker(0, 2, replacement)
-	require.NoError(t, err)
-	// Cooldown behavior has its own regression test below. End it explicitly so
-	// this test can keep checking that a completed recovery permits a different
-	// lane to become the next recovery target.
-	tunnel.recoveryMu.Lock()
-	tunnel.recoveryReadyAt = time.Time{}
-	tunnel.recoveryMu.Unlock()
-	workerID, result = tunnel.recoverStalledLane(&second)
-	require.Equal(t, laneRecoveryStarted, result)
-	require.Equal(t, uint16(1), workerID)
+	require.True(t, tunnel.initiateLaneReset(0, "test"))
+	require.True(t, tunnel.initiateLaneReset(1, "test"))
+	require.Equal(t, 2, tunnel.quarantinedLaneCount())
+	require.True(t, tunnel.initiateLaneReset(2, "test"))
+	select {
+	case <-tunnel.Done():
+	case <-time.After(time.Second):
+		t.Fatal("three quarantined lanes did not trigger full session replacement")
+	}
 }
 
 func TestKCPRetransmissionReasonEstimate(t *testing.T) {
@@ -727,41 +707,17 @@ func TestParasiteTunnelRecycleControlCannotDropNewerWorkerEpoch(t *testing.T) {
 	}
 }
 
-func TestParasiteTunnelRecoveryCooldownProtectsFreshWorker(t *testing.T) {
+func TestParasiteTunnelRejectsDataWhileLaneIsQuarantined(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x667788a3, logger.NOP())
 	require.NoError(t, err)
-	tunnel.recoveryCooldown = 40 * time.Millisecond
 	t.Cleanup(func() { _ = tunnel.Close() })
-	peers := make([]net.Conn, 0, 3)
-	for laneID := uint16(0); laneID < 2; laneID++ {
-		connection, peer := newTestDatagramPair()
-		peers = append(peers, peer)
-		_, err = tunnel.AddWorkerEpoch(laneID, 1, connection)
-		require.NoError(t, err)
-	}
-	t.Cleanup(func() {
-		for _, peer := range peers {
-			_ = peer.Close()
-		}
-	})
-
-	first := uint16(0)
-	_, result := tunnel.recoverStalledLane(&first)
-	require.Equal(t, laneRecoveryStarted, result)
-	replacement, peer := newTestDatagramPair()
-	peers = append(peers, peer)
-	_, err = tunnel.AddWorkerEpoch(first, 2, replacement)
+	connection, peer := newTestDatagramPair()
+	_, err = tunnel.AddWorkerEpoch(0, 1, connection)
 	require.NoError(t, err)
-
-	second := uint16(1)
-	_, result = tunnel.recoverStalledLane(&second)
-	require.Equal(t, laneRecoveryInProgress, result)
-	require.Equal(t, 2, tunnel.ActiveWorkers(), "fresh recovery immediately recycled another lane")
-	time.Sleep(60 * time.Millisecond)
-	workerID, result := tunnel.recoverStalledLane(&second)
-	require.Equal(t, laneRecoveryStarted, result)
-	require.Equal(t, second, workerID)
+	t.Cleanup(func() { _ = peer.Close() })
+	require.True(t, tunnel.initiateLaneReset(0, "test"))
+	require.False(t, tunnel.trySendEncodedOnLane(tunnel.lanes[0], []byte("payload"), 1, false))
 }
 
 func TestLaneAckStallTimeoutTracksMeasuredRTO(t *testing.T) {
@@ -1011,7 +967,7 @@ func TestServerRequiresExactlyFourLanes(t *testing.T) {
 	}, logger.NOP())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = server.Close() })
-	request := authRequest{SessionID: [16]byte{1}, Conv: 1, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+	request := authRequest{SessionID: [16]byte{1}, Conv: 1, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, LaneGeneration: 1, User: "alice", Password: "secret"}
 	session, created, err := server.getOrCreateSession(request)
 	require.NoError(t, err)
 	require.True(t, created)
@@ -1028,7 +984,7 @@ func TestServerAllowsAuthenticatedSessionTakeover(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = server.Close() })
 
-	oldRequest := authRequest{SessionID: [16]byte{1}, Conv: 1, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+	oldRequest := authRequest{SessionID: [16]byte{1}, Conv: 1, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, LaneGeneration: 1, User: "alice", Password: "secret"}
 	oldSession, created, err := server.getOrCreateSession(oldRequest)
 	require.NoError(t, err)
 	require.True(t, created)
@@ -1039,7 +995,7 @@ func TestServerAllowsAuthenticatedSessionTakeover(t *testing.T) {
 	t.Cleanup(func() { _ = workerPeer.Close() })
 	require.Equal(t, 1, oldSession.tunnel.ActiveWorkers())
 
-	newRequest := authRequest{SessionID: [16]byte{2}, Conv: 2, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+	newRequest := authRequest{SessionID: [16]byte{2}, Conv: 2, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, LaneGeneration: 1, User: "alice", Password: "secret"}
 	newSession, created, err := server.getOrCreateSession(newRequest)
 	require.NoError(t, err)
 	require.True(t, created)
@@ -1062,7 +1018,7 @@ func TestServerReplacesProgressingSessionForSameAuthenticatedUser(t *testing.T) 
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = server.Close() })
 
-	oldRequest := authRequest{SessionID: [16]byte{3}, Conv: 3, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+	oldRequest := authRequest{SessionID: [16]byte{3}, Conv: 3, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, LaneGeneration: 1, User: "alice", Password: "secret"}
 	oldSession, created, err := server.getOrCreateSession(oldRequest)
 	require.NoError(t, err)
 	require.True(t, created)
@@ -1073,7 +1029,7 @@ func TestServerReplacesProgressingSessionForSameAuthenticatedUser(t *testing.T) 
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = workerPeer.Close() })
 
-	newRequest := authRequest{SessionID: [16]byte{4}, Conv: 4, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+	newRequest := authRequest{SessionID: [16]byte{4}, Conv: 4, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, LaneGeneration: 1, User: "alice", Password: "secret"}
 	newSession, created, err := server.getOrCreateSession(newRequest)
 	require.NoError(t, err)
 	require.True(t, created)
@@ -1101,7 +1057,7 @@ func TestServerTakeoverDoesNotWaitForSupersededSessionCleanup(t *testing.T) {
 		_ = server.Close()
 	})
 
-	oldRequest := authRequest{SessionID: [16]byte{5}, Conv: 5, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+	oldRequest := authRequest{SessionID: [16]byte{5}, Conv: 5, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, LaneGeneration: 1, User: "alice", Password: "secret"}
 	oldSession, created, err := server.getOrCreateSession(oldRequest)
 	require.NoError(t, err)
 	require.True(t, created)
@@ -1115,7 +1071,7 @@ func TestServerTakeoverDoesNotWaitForSupersededSessionCleanup(t *testing.T) {
 	}
 	result := make(chan takeoverResult, 1)
 	go func() {
-		newRequest := authRequest{SessionID: [16]byte{6}, Conv: 6, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+		newRequest := authRequest{SessionID: [16]byte{6}, Conv: 6, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, LaneGeneration: 1, User: "alice", Password: "secret"}
 		session, wasCreated, createErr := server.getOrCreateSession(newRequest)
 		result <- takeoverResult{session: session, created: wasCreated, err: createErr}
 	}()

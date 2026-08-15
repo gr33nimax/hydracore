@@ -105,6 +105,9 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 	}
 	if ackedProgress > 0 {
 		l.lastAckProgress.Store(now.UnixNano())
+		if l.parent != nil {
+			l.parent.markAggregateProgress()
+		}
 		l.updateDeliveryController(now, ackedProgress)
 	}
 }
@@ -137,37 +140,45 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	} else {
 		l.deliveryRateBPS = 0.75*l.deliveryRateBPS + 0.25*instantRate
 	}
-	rttMS := l.kcpSRTTMS
-	if rttMS <= 0 {
-		rttMS = 80
-	}
-	if rttMS > 500 {
-		rttMS = 500
-	}
-	target := int(math.Ceil(l.deliveryRateBPS * (rttMS / 1000) * laneDeliveryWindowGain / mss))
-	if target < laneKCPMinimumAdmission {
-		target = laneKCPMinimumAdmission
-	}
-	if target > laneKCPMaximumAdmission {
-		target = laneKCPMaximumAdmission
-	}
+	retryRatio := 0.0
 	if l.deliveryOutSegments > 0 {
-		retryRatio := float64(l.deliveryRetrans) / float64(l.deliveryOutSegments)
-		switch {
-		case retryRatio >= 0.40:
-			target = max(laneKCPMinimumAdmission, int(float64(l.admissionWindow)*0.70))
-		case retryRatio >= 0.20:
-			target = min(target, max(laneKCPMinimumAdmission, int(float64(l.admissionWindow)*0.85)))
+		retryRatio = float64(l.deliveryRetrans) / float64(l.deliveryOutSegments)
+	}
+	queueDepth := len(l.outputPending)
+	queueGrowing := queueDepth > l.previousOutputDepth && queueDepth >= lanePacingBucketSegments
+	rttInflated := l.minRTTMS > 0 && l.kcpSRTTMS > 1.5*l.minRTTMS
+	congested := retryRatio > 0.10 || rttInflated || queueGrowing
+	switch {
+	case congested:
+		l.pacingRateBPS *= lanePacingDecrease
+		l.pacingStartup = false
+		l.pacingProbeUntil = time.Time{}
+		l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+	case l.pacingStartup && instantRate >= 0.80*l.pacingRateBPS && retryRatio < 0.10:
+		l.pacingRateBPS *= lanePacingStartupGain
+		if l.pacingRateBPS >= lanePacingMaximumBPS {
+			l.pacingStartup = false
+			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 		}
+	case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
+		l.pacingRateBPS = lanePacingSteadyGain * l.deliveryRateBPS
+		l.pacingProbeUntil = time.Time{}
+	case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
+		l.pacingRateBPS *= lanePacingProbeGain
+		l.pacingProbeUntil = now.Add(lanePacingProbeDuration)
+		l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+	case !l.pacingStartup:
+		targetRate := lanePacingSteadyGain * l.deliveryRateBPS
+		l.pacingRateBPS = 0.75*l.pacingRateBPS + 0.25*targetRate
 	}
-	// Increase deliberately so one compressed ACK burst cannot release a large
-	// KCP burst. Decreases react faster, but retain a 48-segment floor so the
-	// controller cannot recreate Reno's one-segment throughput collapse.
-	if target > l.admissionWindow {
-		l.admissionWindow = min(target, l.admissionWindow+8)
-	} else if target < l.admissionWindow {
-		l.admissionWindow = max(target, l.admissionWindow-16)
+	l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))
+	windowRTTMS := l.minRTTMS
+	if windowRTTMS <= 0 {
+		windowRTTMS = 80
 	}
+	target := int(math.Ceil(l.deliveryRateBPS * (windowRTTMS / 1000) / mss))
+	l.admissionWindow = min(laneKCPMaximumAdmission, max(laneKCPMinimumAdmission, target))
+	l.previousOutputDepth = queueDepth
 	l.deliverySampleAt = now
 	l.deliveryAckedSegments = 0
 	l.deliveryOutSegments = 0
@@ -179,6 +190,9 @@ func (l *kcpLane) updateKCPRTT(rtt float64) {
 		return
 	}
 	l.metrics.AddHot(telemetry.KCPRTTSamplesTotal, 1)
+	if l.minRTTMS == 0 || rtt < l.minRTTMS {
+		l.minRTTMS = rtt
+	}
 	if l.kcpSRTTMS == 0 {
 		l.kcpSRTTMS = rtt
 		l.kcpRTTVARMS = rtt / 2
@@ -326,6 +340,9 @@ func (t *ParasiteTunnel) RelaySetActive(tcp, udp int) {
 
 func (t *ParasiteTunnel) RelayAddBytes(bytes uint64) {
 	t.metrics.AddHot(telemetry.RelayBytesTotal, bytes)
+	if bytes > 0 {
+		t.markAggregateProgress()
+	}
 }
 
 func (t *ParasiteTunnel) RelayQueueDelta(bytes int) {

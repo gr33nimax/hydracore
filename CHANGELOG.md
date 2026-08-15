@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.25
+
+- Introduced incompatible VK parasite wire v7 with generation-scoped worker
+  authentication, KCP conversations and lane frames; wire v6 is rejected.
+- Added an ACK-clocked 1.5 Mbit/s startup pacer per VK lane, 500 ms delivered
+  rate sampling, bounded probing/backoff and an 8-64 segment BDP inflight limit.
+- Replaced one-shot worker recycle with retrying `RESET_PREPARE`, `RESET_ACK`
+  and `RESET_COMMIT`; reset now discards the poisoned KCP and staged output.
+- Require a replacement lane to complete bidirectional KCP probe/ACK and fresh
+  ACK progress before it returns to active service.
+- Added aggregate no-progress session replacement, three-lane quarantine
+  escalation and serialized TURN/DTLS reconnects while healthy lanes continue.
+- Added wire-v7 lane generation/state/pacing/reset/probe telemetry and a
+  deterministic four-lane CI emulator for capacity, loss, delay and blackhole.
+
 ## v1.13.16-extended-hydracore.11-debug.24
 
 - Added an authenticated in-band recycle signal so both DTLS endpoints detach

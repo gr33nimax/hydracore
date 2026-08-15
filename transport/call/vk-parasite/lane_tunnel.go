@@ -100,7 +100,6 @@ type kcpLane struct {
 	kcpLastUNA uint32
 	kcpHasUNA  bool
 	flowCount  atomic.Int64
-	admission  *laneAdmission
 }
 
 type ParasiteTunnel struct {
@@ -167,7 +166,6 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 			recvBuf: make([]byte, laneKCPReceiveBuffer),
 			metrics: telemetry.NewAccumulator(),
 			kcpSent: make(map[uint32]kcpSentSegment),
-			admission: newLaneAdmission(),
 		}
 		lane.metrics.SetCounterParent(metrics)
 		laneID := lane.id
@@ -209,7 +207,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 		t.controlSendMu.Lock()
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
-		_, sent := t.sendEncoded(encoded, true, true)
+		_, sent := t.sendEncoded(encoded, true)
 		if sent {
 			t.controlSendSequence++
 			t.touch()
@@ -223,7 +221,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 		return
 	}
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
-	lane, sent := t.sendEncoded(encoded, true, relayMessagePriority(msgType))
+	lane, sent := t.sendEncoded(encoded, true)
 	if !sent {
 		return
 	}
@@ -256,7 +254,7 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		}
 		defer t.controlSendMu.Unlock()
 		encoded := encodeLaneFrame(connID, t.controlSendSequence, frame)
-		_, sent := t.sendEncoded(encoded, false, true)
+		_, sent := t.sendEncoded(encoded, false)
 		if !sent {
 			return false
 		}
@@ -275,7 +273,7 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		return false
 	}
 	encoded := encodeLaneFrame(connID, state.nextSequence, frame)
-	lane, sent := t.sendEncoded(encoded, false, relayMessagePriority(msgType))
+	lane, sent := t.sendEncoded(encoded, false)
 	if !sent {
 		return false
 	}
@@ -698,7 +696,7 @@ type laneCandidate struct {
 	score float64
 }
 
-func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait, priority bool) (*kcpLane, bool) {
+func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool) (*kcpLane, bool) {
 	select {
 	case <-t.closed:
 		return nil, false
@@ -708,11 +706,11 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait, priority bool) (*kcpL
 	if required < 1 || required > laneKCPMaxFragments {
 		t.recordEvent("lane_send_rejected", "kcp", "frame_too_large", nil)
 		if wait {
-			_ = t.Close()
+			t.closeAsync()
 		}
 		return nil, false
 	}
-	if lane := t.trySendEncoded(encoded, required, priority); lane != nil {
+	if lane := t.trySendEncoded(encoded, required); lane != nil {
 		return lane, true
 	}
 	if !wait {
@@ -728,14 +726,14 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait, priority bool) (*kcpL
 		case <-t.closed:
 			return nil, false
 		case <-ticker.C:
-			if lane := t.trySendEncoded(encoded, required, priority); lane != nil {
+			if lane := t.trySendEncoded(encoded, required); lane != nil {
 				lane.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 				return lane, true
 			}
 		case <-timer.C:
 			t.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 			t.recordEvent("lane_send_stalled", "kcp", "pending_timeout", nil)
-			_ = t.Close()
+			t.closeAsync()
 			return nil, false
 		}
 	}
@@ -749,9 +747,8 @@ func kcpSegmentsForPayload(size int) int {
 	return (size + mss - 1) / mss
 }
 
-func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, priority bool) *kcpLane {
+func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int) *kcpLane {
 	start := int((t.nextLane.Add(1) - 1) % LaneCount)
-	now := time.Now()
 	candidates := make([]laneCandidate, 0, LaneCount)
 	for offset := 0; offset < LaneCount; offset++ {
 		lane := t.lanes[(start+offset)%LaneCount]
@@ -762,9 +759,8 @@ func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, priority b
 		lane.mu.Lock()
 		waitSnd := lane.kcp.WaitSnd()
 		rtt := lane.kcpSRTTMS
-		paceReady := lane.admission.ready(now, len(encoded), priority)
 		lane.mu.Unlock()
-		if !paceReady || waitSnd+required > laneKCPMaxPending || queueDepth+required > laneSendQueueDepth {
+		if waitSnd+required > laneKCPMaxPending || queueDepth+required > laneSendQueueDepth {
 			continue
 		}
 		score := float64(waitSnd*4+queueDepth*2) + rtt/10 + float64(lane.flowCount.Load())
@@ -778,7 +774,6 @@ func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, priority b
 		if active &&
 			queueDepth+required <= laneSendQueueDepth &&
 			lane.kcp.WaitSnd()+required <= laneKCPMaxPending &&
-			lane.admission.take(time.Now(), len(encoded), priority) &&
 			lane.kcp.Send(encoded) >= 0 {
 			lane.kcp.Update()
 			lane.mu.Unlock()
@@ -833,10 +828,6 @@ func decodeLaneFrame(encoded []byte) (uint32, uint64, []byte, bool) {
 
 func terminalRelayMessage(msgType byte) bool {
 	return msgType == calltunnel.MsgClose || msgType == calltunnel.MsgConnectErr
-}
-
-func relayMessagePriority(msgType byte) bool {
-	return msgType != calltunnel.MsgData && msgType != calltunnel.MsgUDP && msgType != calltunnel.MsgUDPReply
 }
 
 func (t *ParasiteTunnel) removeWorker(worker *laneWorker) {
@@ -897,7 +888,10 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 		lane.metrics.Set(telemetry.KCPMaxPendingSegments, laneKCPMaxPending)
 		lane.metrics.Set(telemetry.LaneCount, 1)
 		lane.metrics.Set(telemetry.LaneFlowCount, float64(lane.flowCount.Load()))
-		lane.metrics.Set(telemetry.LaneAdmissionRateBPS, lane.admission.rateBytesPerSecond())
+		// Zero means that no fixed-rate pre-KCP pacer is installed. New data is
+		// admitted only while the lane's KCP and physical output queues have
+		// capacity, so telemetry can distinguish an unpaced lane from a low cap.
+		lane.metrics.Set(telemetry.LaneAdmissionRateBPS, 0)
 		lane.metrics.Set(telemetry.OuterRTPPayloadType, rtpPayloadTypeVideo)
 		lane.mu.Unlock()
 		maxRTT = max(maxRTT, rtt)
@@ -1013,6 +1007,13 @@ func (t *ParasiteTunnel) Close() error {
 	return nil
 }
 
+// closeAsync is used by terminal conditions discovered while SendData owns a
+// per-flow lock. Closing inline would invoke RelayBridge's close callback and
+// could re-enter SendData for the same flow before that lock is released.
+func (t *ParasiteTunnel) closeAsync() {
+	go func() { _ = t.Close() }()
+}
+
 func (t *ParasiteTunnel) updateLoop() {
 	ticker := time.NewTicker(laneKCPUpdateInterval)
 	defer ticker.Stop()
@@ -1022,7 +1023,6 @@ func (t *ParasiteTunnel) updateLoop() {
 			for _, lane := range t.lanes {
 				lane.mu.Lock()
 				lane.kcp.Update()
-				lane.admission.tune(time.Now(), lane.kcp.WaitSnd())
 				lane.mu.Unlock()
 			}
 		case <-t.closed:

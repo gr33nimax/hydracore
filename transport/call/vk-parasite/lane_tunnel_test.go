@@ -133,6 +133,27 @@ func TestParasiteTunnelUsesFourIndependentLanes(t *testing.T) {
 	require.Len(t, used, LaneCount)
 }
 
+func TestParasiteTunnelHasNoLegacy64KiBAdmissionBurstCap(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x22334455, logger.NOP())
+	require.NoError(t, err)
+	workerConn, workerPeer := newTestDatagramPair()
+	_, err = tunnel.AddWorker(0, workerConn)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = tunnel.Close()
+		_ = workerPeer.Close()
+	})
+
+	// The removed admission controller started with a fixed 64 KiB token
+	// bucket. Keep this burst below KCP and worker-queue bounds but above that
+	// legacy cap, so a fixed application-rate limiter cannot return unnoticed.
+	payload := make([]byte, 800)
+	for frame := 0; frame < 84; frame++ {
+		require.NotNil(t, tunnel.trySendEncoded(payload, 1), "frame %d hit a fixed admission cap", frame)
+	}
+}
+
 func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {
 	t.Parallel()
 	client, err := NewParasiteTunnel(0x22334455, logger.NOP())
@@ -190,17 +211,6 @@ func TestRemoteCloseReleasesLocalLaneFlowAccounting(t *testing.T) {
 	tunnel.deliverMu.Unlock()
 	require.Zero(t, tunnel.lanes[0].flowCount.Load())
 	require.Zero(t, tunnel.lanes[2].flowCount.Load())
-}
-
-func TestLaneAdmissionBacksOffBeforeKCPUnderRetryPressure(t *testing.T) {
-	t.Parallel()
-	admission := newLaneAdmission()
-	initialRate := admission.rateBytesPerSecond()
-	admission.observeOutput(100_000, false)
-	admission.observeOutput(20_000, true)
-	admission.tune(time.Now().Add(laneAdmissionTunePeriod), laneKCPSendWindow)
-	require.Less(t, admission.rateBytesPerSecond(), initialRate)
-	require.True(t, admission.ready(time.Now(), 1, true), "control traffic must bypass bulk admission")
 }
 
 func TestParasiteTunnelHigherEpochImmediatelyReplacesLane(t *testing.T) {
@@ -338,6 +348,36 @@ func TestParasiteTunnelSendStallClosesLogicalSession(t *testing.T) {
 	case <-tunnel.Done():
 	case <-time.After(time.Second):
 		t.Fatal("stalled logical session did not close")
+	}
+}
+
+func TestRelayBridgeSendStallClosesWithoutReentrantDeadlock(t *testing.T) {
+	t.Parallel()
+	dataTunnel, err := NewParasiteTunnel(0x6677889b, logger.NOP())
+	require.NoError(t, err)
+	dataTunnel.sendStallTimeout = 40 * time.Millisecond
+	relay := calltunnel.NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+	relay.MarkReady()
+	t.Cleanup(func() {
+		relay.Close()
+		_ = dataTunnel.Close()
+	})
+
+	result := make(chan error, 1)
+	go func() {
+		_, dialErr := relay.DialContext(context.Background(), "1.1.1.1:80")
+		result <- dialErr
+	}()
+	select {
+	case dialErr := <-result:
+		require.ErrorIs(t, dialErr, io.ErrClosedPipe)
+	case <-time.After(time.Second):
+		t.Fatal("relay close callback re-entered the stalled send path")
+	}
+	select {
+	case <-dataTunnel.Done():
+	case <-time.After(time.Second):
+		t.Fatal("stalled data tunnel did not finish closing")
 	}
 }
 
@@ -503,4 +543,50 @@ func TestServerReplacesProgressingSessionForSameAuthenticatedUser(t *testing.T) 
 	case <-time.After(time.Second):
 		t.Fatal("progressing old session was not evicted during authenticated takeover")
 	}
+}
+
+func TestServerTakeoverDoesNotWaitForSupersededSessionCleanup(t *testing.T) {
+	t.Parallel()
+	server, err := NewServer(context.Background(), ServerOptions{
+		ObfsPassword: "outer-secret",
+		Users:        []ServerUser{{Name: "alice", Password: "secret"}},
+		SessionHandler: func(SessionInfo, *ParasiteTunnel) error { return nil },
+	}, logger.NOP())
+	require.NoError(t, err)
+	closeGate := make(chan struct{})
+	var closeGateOnce sync.Once
+	releaseCloseGate := func() { closeGateOnce.Do(func() { close(closeGate) }) }
+	t.Cleanup(func() {
+		releaseCloseGate()
+		_ = server.Close()
+	})
+
+	oldRequest := authRequest{SessionID: [16]byte{5}, Conv: 5, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+	oldSession, created, err := server.getOrCreateSession(oldRequest)
+	require.NoError(t, err)
+	require.True(t, created)
+	server.releaseSessionAttach(oldSession)
+	oldSession.tunnel.SetOnClose(func() { <-closeGate })
+
+	type takeoverResult struct {
+		session *serverSession
+		created bool
+		err     error
+	}
+	result := make(chan takeoverResult, 1)
+	go func() {
+		newRequest := authRequest{SessionID: [16]byte{6}, Conv: 6, WorkerID: 0, WorkerTotal: LaneCount, WorkerEpoch: 1, User: "alice", Password: "secret"}
+		session, wasCreated, createErr := server.getOrCreateSession(newRequest)
+		result <- takeoverResult{session: session, created: wasCreated, err: createErr}
+	}()
+
+	select {
+	case takeover := <-result:
+		require.NoError(t, takeover.err)
+		require.True(t, takeover.created)
+		server.releaseSessionAttach(takeover.session)
+	case <-time.After(time.Second):
+		t.Fatal("new authenticated session waited for superseded session cleanup")
+	}
+	releaseCloseGate()
 }

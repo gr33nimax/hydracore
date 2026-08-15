@@ -183,14 +183,14 @@ func (rb *RelayBridge) ListenPacket(ctx context.Context, destination string) (ne
 }
 
 func (rb *RelayBridge) Reset() {
-	rb.closeAll()
+	rb.closeAll(true)
 }
 
 func (rb *RelayBridge) Close() {
 	if !rb.closed.CompareAndSwap(false, true) {
 		return
 	}
-	rb.closeAll()
+	rb.closeAll(true)
 }
 
 func (rb *RelayBridge) MarkReady() {
@@ -284,7 +284,7 @@ func (rb *RelayBridge) SwapTunnel(newTunnel DataTunnel) {
 	rb.tunnelMu.Unlock()
 	newTunnel.SetOnData(rb.handleTunnelData)
 	newTunnel.SetOnClose(rb.handleTunnelClose)
-	rb.closeAll()
+	rb.closeAll(false)
 }
 
 func (rb *RelayBridge) IsClosed() bool {
@@ -292,17 +292,27 @@ func (rb *RelayBridge) IsClosed() bool {
 }
 
 func (rb *RelayBridge) handleTunnelClose() {
-	rb.closeAll()
+	// The data tunnel is already closing. Tear down local relay state without
+	// sending MsgClose back through that same tunnel: the close callback may
+	// have been reached from SendData while a per-flow lock is still owned.
+	rb.closeAll(false)
 }
 
-func (rb *RelayBridge) closeAll() {
+func (rb *RelayBridge) closeAll(notifyPeer bool) {
 	var ids []uint32
 	rb.conns.Range(func(key, value any) bool {
 		if id, ok := key.(uint32); ok {
 			ids = append(ids, id)
 		}
-		if c, ok := value.(net.Conn); ok {
-			c.Close()
+		switch connection := value.(type) {
+		case *tunnelConn:
+			if notifyPeer {
+				_ = connection.Close()
+			} else {
+				connection.closeLocal()
+			}
+		case net.Conn:
+			_ = connection.Close()
 		}
 		rb.conns.Delete(key)
 		return true
@@ -310,8 +320,17 @@ func (rb *RelayBridge) closeAll() {
 	udpCount := 0
 	rb.udpClients.Range(func(key, value any) bool {
 		udpCount++
-		if uc, ok := value.(*udpClient); ok {
-			uc.closePending()
+		switch connection := value.(type) {
+		case *udpClient:
+			connection.closePending()
+		case *creatorUDPConn:
+			if notifyPeer {
+				_ = connection.Close()
+			} else {
+				connection.closeLocal()
+			}
+		case net.Conn:
+			_ = connection.Close()
 		}
 		rb.udpClients.Delete(key)
 		return true
@@ -742,15 +761,25 @@ func (tc *tunnelConn) returnReadCredit(credit int) {
 }
 
 func (tc *tunnelConn) Close() error {
+	return tc.close(true)
+}
+
+func (tc *tunnelConn) closeLocal() {
+	_ = tc.close(false)
+}
+
+func (tc *tunnelConn) close(notifyPeer bool) error {
 	if tc.closed.CompareAndSwap(false, true) {
 		select {
 		case tc.rdy <- io.ErrClosedPipe:
 		default:
 		}
 		close(tc.closeCh)
-		tc.rb.send(tc.id, MsgClose, nil)
-		tc.rb.conns.Delete(tc.id)
-		tc.rb.updateRelayActive()
+		if tc.rb != nil && notifyPeer {
+			tc.rb.send(tc.id, MsgClose, nil)
+			tc.rb.conns.Delete(tc.id)
+			tc.rb.updateRelayActive()
+		}
 	}
 	tc.discardBuffered()
 	return nil
@@ -901,11 +930,21 @@ func (uc *creatorUDPConn) Write(b []byte) (int, error) {
 }
 
 func (uc *creatorUDPConn) Close() error {
+	return uc.close(true)
+}
+
+func (uc *creatorUDPConn) closeLocal() {
+	_ = uc.close(false)
+}
+
+func (uc *creatorUDPConn) close(notifyPeer bool) error {
 	if uc.closed.CompareAndSwap(false, true) {
 		close(uc.closeCh)
-		uc.rb.send(uc.id, MsgClose, nil)
-		uc.rb.udpClients.Delete(uc.id)
-		uc.rb.updateRelayActive()
+		if uc.rb != nil && notifyPeer {
+			uc.rb.send(uc.id, MsgClose, nil)
+			uc.rb.udpClients.Delete(uc.id)
+			uc.rb.updateRelayActive()
+		}
 	}
 	uc.discardBuffered()
 	return nil

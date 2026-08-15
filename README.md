@@ -34,7 +34,8 @@ HYDRA Ultimate  ->  encrypted subscription  ->  HydraBox  ->  HydraCore AAR
   the inherited routing/DNS runtime enabled by the published build tags.
 - Native VK Calls `vk_parasite`: O(1) user authentication, exactly four
   independent KCP lanes over VK/TURN/DTLS, and ordered relay-frame bonding
-  across all four calls, pre-KCP load control, and bounded relay flow credit.
+  across all four calls, queue-headroom admission without a fixed-rate pacer,
+  and bounded relay flow credit.
 
 Other build targets present in the source tree are not HydraCore release
 targets unless a HydraCore release explicitly includes them.

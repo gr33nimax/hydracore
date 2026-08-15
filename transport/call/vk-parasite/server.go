@@ -727,7 +727,10 @@ func (s *Server) releaseSessionAttach(session *serverSession) {
 
 func closeServerSessions(sessions []*serverSession) {
 	for _, session := range sessions {
-		_ = session.tunnel.Close()
+		// Admission of a fully authenticated replacement session must not wait
+		// for callbacks owned by the superseded relay. The old session has
+		// already been removed from both accounting maps, so cleanup is isolated.
+		go func(stale *serverSession) { _ = stale.tunnel.Close() }(session)
 	}
 }
 

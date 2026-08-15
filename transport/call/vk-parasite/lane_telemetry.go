@@ -27,11 +27,9 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 			l.kcpSent[sequence] = previous
 			l.metrics.AddHot(telemetry.KCPRetransSegmentsTotal, 1)
 			l.metrics.AddHot(telemetry.KCPRetransBytesTotal, uint64(size))
-			l.admission.observeOutput(size, true)
 			return
 		}
 		l.kcpSent[sequence] = kcpSentSegment{sentAt: now}
-		l.admission.observeOutput(size, false)
 	})
 }
 

@@ -2,6 +2,7 @@ package vkparasite
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -118,7 +119,7 @@ func TestParasiteBridgeManagerCloseCancelsReconnect(t *testing.T) {
 	}
 }
 
-func TestParasiteBridgeManagerWaitsForOldClientCleanupBeforeReconnect(t *testing.T) {
+func TestParasiteBridgeManagerReconnectDoesNotWaitForOldClientCleanup(t *testing.T) {
 	t.Parallel()
 	initial := newFakeManagedParasiteClient(t, 0x778899aa)
 	closeGate := make(chan struct{})
@@ -152,8 +153,8 @@ func TestParasiteBridgeManagerWaitsForOldClientCleanupBeforeReconnect(t *testing
 	}
 	select {
 	case <-connectCalled:
-		t.Fatal("manager reconnected before old client cleanup completed")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatal("manager waited for old client cleanup before reconnecting")
 	}
 	releaseCloseGate()
 	select {
@@ -161,9 +162,30 @@ func TestParasiteBridgeManagerWaitsForOldClientCleanupBeforeReconnect(t *testing
 	case <-time.After(2 * time.Second):
 		t.Fatal("initial client cleanup did not finish")
 	}
-	select {
-	case <-connectCalled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("manager did not reconnect after old client cleanup")
-	}
+	require.Eventually(t, func() bool {
+		manager.clientMu.Lock()
+		defer manager.clientMu.Unlock()
+		return manager.client == replacement
+	}, 2*time.Second, 10*time.Millisecond)
+}
+
+func TestInitialParasiteConnectRetriesTransientFailure(t *testing.T) {
+	t.Parallel()
+	replacement := newFakeManagedParasiteClient(t, 0x99aabbcc)
+	t.Cleanup(func() { _ = replacement.Close() })
+	var attempts atomic.Int32
+	client := connectParasiteClientWithRetry(
+		context.Background(),
+		func(context.Context) (managedParasiteClient, error) {
+			if attempts.Add(1) == 1 {
+				return nil, errors.New("transient setup failure")
+			}
+			return replacement, nil
+		},
+		logger.NOP(),
+		5*time.Millisecond,
+		10*time.Millisecond,
+	)
+	require.Equal(t, replacement, client)
+	require.Equal(t, int32(2), attempts.Load())
 }

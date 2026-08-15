@@ -17,6 +17,7 @@ import (
 )
 
 const parasiteReconnectMaxBackoff = 30 * time.Second
+const parasiteReconnectInitialBackoff = time.Second
 
 type managedParasiteClient interface {
 	Tunnel() *ParasiteTunnel
@@ -78,14 +79,25 @@ func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLog
 		InvalidateCredentials: provider.Invalidate,
 		Telemetry: metrics,
 	}
+	validatedOptions, err := validateClientOptions(options)
+	if err != nil {
+		return nil, nil, err
+	}
+	options = validatedOptions
 	managerCtx, cancel := context.WithCancel(ctx)
 	connector := func(connectCtx context.Context) (managedParasiteClient, error) {
 		return ConnectClient(connectCtx, options, log)
 	}
-	initial, err := connector(managerCtx)
-	if err != nil {
+	initial := connectParasiteClientWithRetry(
+		managerCtx,
+		connector,
+		log,
+		parasiteReconnectInitialBackoff,
+		parasiteReconnectMaxBackoff,
+	)
+	if initial == nil {
 		cancel()
-		return nil, nil, err
+		return nil, nil, managerCtx.Err()
 	}
 	relay := tunnel.NewRelayBridge(initial.Tunnel(), "joiner", cfg.ReadBuffer, cfg.Dialer, log)
 	relay.MarkReady()
@@ -123,10 +135,18 @@ func (m *parasiteBridgeManager) run(initial managedParasiteClient) {
 			return
 		case <-current.Done():
 		}
-		_ = current.Close()
 		if m.ctx.Err() != nil {
 			return
 		}
+		m.clientMu.Lock()
+		if m.client == current {
+			m.client = nil
+		}
+		m.clientMu.Unlock()
+		// Cleanup must never gate recovery. A transport callback or a third-party
+		// connection implementation can misbehave during Close; the replacement
+		// session still has to start and swap into the relay independently.
+		go func(stale managedParasiteClient) { _ = stale.Close() }(current)
 		next := m.reconnect()
 		if next == nil {
 			return
@@ -145,28 +165,44 @@ func (m *parasiteBridgeManager) run(initial managedParasiteClient) {
 }
 
 func (m *parasiteBridgeManager) reconnect() managedParasiteClient {
-	backoff := time.Second
+	return connectParasiteClientWithRetry(
+		m.ctx,
+		m.connect,
+		m.logger,
+		parasiteReconnectInitialBackoff,
+		parasiteReconnectMaxBackoff,
+	)
+}
+
+func connectParasiteClientWithRetry(
+	ctx context.Context,
+	connect parasiteConnector,
+	log logger.ContextLogger,
+	initialBackoff time.Duration,
+	maximumBackoff time.Duration,
+) managedParasiteClient {
+	backoff := initialBackoff
 	for {
-		if m.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return nil
 		}
-		client, err := m.connect(m.ctx)
+		client, err := connect(ctx)
 		if err == nil {
-			m.logger.Info("call vk_parasite: native session reconnected")
+			log.Info("call vk_parasite: native session connected")
 			return client
 		}
-		m.logger.Warn("call vk_parasite: reconnect failed, retrying: ", callcommon.MaskError(err))
+		log.Warn("call vk_parasite: session connect failed, retrying: ", callcommon.MaskError(err))
 		timer := time.NewTimer(backoff)
 		select {
 		case <-timer.C:
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			timer.Stop()
 			return nil
 		}
-		if backoff < parasiteReconnectMaxBackoff {
+		if backoff < maximumBackoff {
 			backoff *= 2
-			if backoff > parasiteReconnectMaxBackoff {
-				backoff = parasiteReconnectMaxBackoff
+			if backoff > maximumBackoff {
+				backoff = maximumBackoff
 			}
 		}
 	}

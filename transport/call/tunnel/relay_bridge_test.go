@@ -57,7 +57,7 @@ func (t *readyThenCloseDataTunnel) SendData(frame []byte) {
 	}
 	connectionID := binary.BigEndian.Uint32(frame[4:8])
 	t.relay.handleTunnelData(EncodeFrame(connectionID, MsgConnectOK, nil))
-	t.relay.closeAll()
+	t.relay.closeAll(false)
 }
 
 func (*readyThenCloseDataTunnel) SetOnData(func([]byte)) {}
@@ -70,7 +70,7 @@ func TestRelayBridgeCloseUnblocksPendingTunnelConnection(t *testing.T) {
 	connection := newTunnelConn(1, relay)
 	relay.conns.Store(uint32(1), connection)
 
-	relay.closeAll()
+	relay.closeAll(false)
 	select {
 	case err := <-connection.rdy:
 		require.ErrorIs(t, err, io.ErrClosedPipe)

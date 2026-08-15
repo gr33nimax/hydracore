@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.18
+
+- Removed the per-lane 320-800 kB/s token bucket that imposed an artificial
+  aggregate throughput ceiling. New relay data is now admitted from actual KCP
+  pending and physical worker-queue headroom.
+- Prevented a terminal lane send from synchronously re-entering the same relay
+  flow during close, eliminating the `lane_send_stalled` self-deadlock.
+- Made client reconnect and authenticated server takeover independent from
+  cleanup of a superseded session, and retry initial transient setup failures
+  instead of leaving the call outbound permanently uninitialized.
+- Added regression coverage for reentrant relay close, blocked old-session
+  cleanup, non-blocking client replacement and initial connection retry.
+
 ## v1.13.16-extended-hydracore.11-debug.17
 
 - Returned wire v5 to four physical VK/TURN calls and four independent KCP

@@ -196,6 +196,29 @@ func TestParasiteTunnelPinsAFlowAndPreservesOrder(t *testing.T) {
 	client.sendMu.Unlock()
 }
 
+func TestParasiteTunnelSpillsPinnedFlowToHealthyLaneUnderPressure(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x22334457, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	for laneID := uint16(0); laneID < 2; laneID++ {
+		connection, _ := newTestDatagramPair()
+		_, err = tunnel.reserveWorker(laneID, 1, connection)
+		require.NoError(t, err)
+	}
+	preferred := uint16(0)
+	tunnel.lanes[preferred].mu.Lock()
+	for index := 0; index < laneKCPPreferredPending; index++ {
+		require.GreaterOrEqual(t, tunnel.lanes[preferred].kcp.Send([]byte{byte(index)}), 0)
+	}
+	tunnel.lanes[preferred].mu.Unlock()
+
+	selected := tunnel.trySendEncoded([]byte("spill"), 1, &preferred)
+	require.NotNil(t, selected)
+	require.Equal(t, uint16(1), selected.id)
+}
+
 func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T) {
 	t.Parallel()
 	client, err := NewParasiteTunnel(0x22334456, logger.NOP())
@@ -391,6 +414,61 @@ func TestParasiteTunnelSendStallClosesLogicalSession(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("stalled logical session did not close")
 	}
+}
+
+func TestParasiteTunnelSendStallRecyclesOnlyBlockedLane(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x6677889c, logger.NOP())
+	require.NoError(t, err)
+	tunnel.sendStallTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	blockedConn, blockedPeer := newTestDatagramPair()
+	worker, err := tunnel.reserveWorker(0, 1, blockedConn)
+	require.NoError(t, err)
+	for len(worker.sendQueue) < cap(worker.sendQueue) {
+		worker.sendQueue <- queuedSegment{payload: []byte("blocked"), enqueuedAt: time.Now()}
+	}
+
+	events := make(chan telemetry.Event, 4)
+	tunnel.SetTelemetryEventHandler(func(event telemetry.Event) { events <- event })
+	sendDone := make(chan bool, 1)
+	preferred := uint16(0)
+	go func() {
+		_, sent := tunnel.sendEncoded([]byte("payload"), true, &preferred)
+		sendDone <- sent
+	}()
+
+	for {
+		select {
+		case event := <-events:
+			if event.Event == "lane_send_recovery" {
+				require.NotNil(t, event.WorkerID)
+				require.Equal(t, uint16(0), *event.WorkerID)
+				goto recovered
+			}
+		case <-time.After(time.Second):
+			t.Fatal("blocked lane was not recycled")
+		}
+	}
+
+recovered:
+	select {
+	case <-tunnel.Done():
+		t.Fatal("single-lane recovery closed the logical session")
+	default:
+	}
+	replacement, replacementPeer := newTestDatagramPair()
+	_, err = tunnel.reserveWorker(0, 2, replacement)
+	require.NoError(t, err)
+	select {
+	case sent := <-sendDone:
+		require.True(t, sent)
+	case <-time.After(time.Second):
+		t.Fatal("send did not resume on the replacement lane")
+	}
+	_ = blockedPeer.Close()
+	_ = replacementPeer.Close()
 }
 
 func TestRelayBridgeSendStallClosesWithoutReentrantDeadlock(t *testing.T) {

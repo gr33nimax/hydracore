@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.20
+
+- Kept ordered relay flows on their preferred KCP lane while it has headroom,
+  but allowed pressure spillover to the other three independent VK calls.
+- Replaced the affected TURN/DTLS worker on a send stall before escalating to a
+  full logical-session reconnect, preserving KCP state and the other calls.
+- Removed synchronous KCP flushing from RelayBridge's send path so a blocked
+  physical writer cannot hide the stall timer behind the lane mutex.
+
 ## v1.13.16-extended-hydracore.11-debug.19
 
 - Introduced incompatible VK parasite wire v6 with exactly four physical

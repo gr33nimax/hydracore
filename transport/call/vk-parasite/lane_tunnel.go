@@ -22,6 +22,7 @@ const (
 	laneKCPSendWindow        = 128
 	laneKCPReceiveWindow     = 128
 	laneKCPMaxPending        = 256
+	laneKCPPreferredPending  = laneKCPSendWindow / 2
 	laneKCPMaxFragments      = 255
 	laneKCPUpdateInterval    = 10 * time.Millisecond
 	laneKCPFastResend        = 2
@@ -30,6 +31,7 @@ const (
 	laneReorderFrameLimit    = 4096
 	laneSendRetryInterval    = 2 * time.Millisecond
 	laneSendStallTimeout     = 8 * time.Second
+	laneSendRecoveryLimit    = 2
 	laneReorderGapTimeout    = 15 * time.Second
 	laneReorderCheckInterval = time.Second
 	workerHeartbeatInterval  = 15 * time.Second
@@ -819,6 +821,7 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 		return nil, false
 	}
 	blockedAt := time.Now()
+	recoveryAttempts := 0
 	ticker := time.NewTicker(laneSendRetryInterval)
 	timer := time.NewTimer(t.sendStallTimeout)
 	defer ticker.Stop()
@@ -835,6 +838,15 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 		case <-timer.C:
 			t.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 			t.recordEvent("lane_send_stalled", "kcp", "pending_timeout", nil)
+			if recoveryAttempts < laneSendRecoveryLimit {
+				if workerID, recovered := t.recoverStalledLane(preferred); recovered {
+					recoveryAttempts++
+					t.recordEvent("lane_send_recovery", "lane", "worker_recycle", &workerID)
+					blockedAt = time.Now()
+					timer.Reset(t.sendStallTimeout)
+					continue
+				}
+			}
 			t.closeAsync()
 			return nil, false
 		}
@@ -850,22 +862,27 @@ func kcpSegmentsForPayload(size int) int {
 }
 
 func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, preferred *uint16) *kcpLane {
+	// Ordered relay flows normally stay on one KCP lane. Keep that fast path
+	// while it has reasonable headroom, but do not let one saturated VK call
+	// cap a flow while the other three independent calls are idle.
+	if preferred != nil && int(*preferred) < LaneCount {
+		if t.trySendEncodedOnLane(t.lanes[*preferred], encoded, required, laneKCPPreferredPending) {
+			return t.lanes[*preferred]
+		}
+	}
+
 	start := int((t.nextLane.Add(1) - 1) % LaneCount)
 	candidates := make([]laneCandidate, 0, LaneCount)
 	for offset := 0; offset < LaneCount; offset++ {
 		laneID := (start + offset) % LaneCount
-		if preferred != nil {
-			laneID = int(*preferred)
-			if offset > 0 || laneID >= LaneCount {
-				break
-			}
-		}
 		lane := t.lanes[laneID]
 		active, queueDepth := lane.workerState()
 		if !active {
 			continue
 		}
-		lane.mu.Lock()
+		if !lane.mu.TryLock() {
+			continue
+		}
 		waitSnd := lane.kcp.WaitSnd()
 		rtt := lane.kcpSRTTMS
 		lane.mu.Unlock()
@@ -878,19 +895,73 @@ func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, preferred 
 	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score < candidates[j].score })
 	for _, candidate := range candidates {
 		lane := candidate.lane
-		lane.mu.Lock()
-		active, queueDepth := lane.workerState()
-		if active &&
-			queueDepth+required <= laneSendQueueDepth &&
-			lane.kcp.WaitSnd()+required <= laneKCPMaxPending &&
-			lane.kcp.Send(encoded) >= 0 {
-			lane.kcp.Update()
-			lane.mu.Unlock()
+		if t.trySendEncodedOnLane(lane, encoded, required, laneKCPMaxPending) {
 			return lane
 		}
-		lane.mu.Unlock()
 	}
 	return nil
+}
+
+func (t *ParasiteTunnel) trySendEncodedOnLane(lane *kcpLane, encoded []byte, required int, pendingLimit int) bool {
+	active, queueDepth := lane.workerState()
+	if !active || queueDepth+required > laneSendQueueDepth || !lane.mu.TryLock() {
+		return false
+	}
+	defer lane.mu.Unlock()
+	if lane.kcp.WaitSnd()+required > pendingLimit {
+		return false
+	}
+	// The lane update loop flushes within 10 ms. Calling Update synchronously
+	// here lets a blocked TURN write hold both the KCP mutex and RelayBridge's
+	// per-flow send path, preventing the stall timer from recovering the lane.
+	return lane.kcp.Send(encoded) >= 0
+}
+
+func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, bool) {
+	if preferred != nil && int(*preferred) < LaneCount {
+		lane := t.lanes[*preferred]
+		lane.workerMu.RLock()
+		worker := lane.worker
+		lane.workerMu.RUnlock()
+		if worker != nil {
+			t.removeWorker(worker)
+			return lane.id, true
+		}
+	}
+
+	var selected *laneWorker
+	selectedPressure := -1
+	for _, lane := range t.lanes {
+		lane.workerMu.RLock()
+		worker := lane.worker
+		queueDepth := 0
+		if worker != nil {
+			queueDepth = len(worker.sendQueue)
+		}
+		lane.workerMu.RUnlock()
+		if worker == nil {
+			continue
+		}
+		pressure := queueDepth * 2
+		if lane.mu.TryLock() {
+			pressure += lane.kcp.WaitSnd() * 4
+			lane.mu.Unlock()
+		} else {
+			// A busy KCP mutex is itself evidence that this lane is the one
+			// blocking output; prefer it over an idle candidate.
+			pressure += laneKCPMaxPending * 4
+		}
+		if pressure > selectedPressure {
+			selected = worker
+			selectedPressure = pressure
+		}
+	}
+	if selected == nil {
+		return 0, false
+	}
+	workerID := selected.id
+	t.removeWorker(selected)
+	return workerID, true
 }
 
 func (l *kcpLane) workerState() (bool, int) {

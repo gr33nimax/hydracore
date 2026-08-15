@@ -1,4 +1,13 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.19
+# HydraCore v1.13.16-extended-hydracore.11-debug.20
+
+This build keeps wire v6 and exactly four VK calls. It adds pressure spillover
+for an ordered flow when its preferred KCP lane is saturated, recycles only the
+affected TURN/DTLS worker on the first send stalls, and keeps physical output
+blocking out of RelayBridge's synchronous send path. Both roles remain wire-v6
+compatible, but updating the client and VPS together is recommended for the
+same recovery behavior in both directions.
+
+## Previous debug.19 notes
 
 This debug release addresses the remaining failure modes measured in
 `vk-debug18.tar.gz`. It introduces incompatible wire v6: both the VPS and the

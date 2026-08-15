@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.23
+
+- Moved physical worker writes out of the KCP mutex and staged generated
+  segments in a bounded per-lane queue, so a saturated TURN writer cannot
+  block ACK/input processing and make its own retransmission backlog grow.
+- Replaced the fixed per-lane admission ceiling with bounded ACK-clocked
+  admission while reserving capacity for flow-control and heartbeat records.
+- Kept every ordered TCP flow on one KCP lane for its complete lifetime and
+  made a reorder timeout abort only that flow instead of the whole tunnel.
+- Ignored stale bridge callbacks after tunnel replacement and shortened worker
+  heartbeat/liveness intervals so dead transports are detected and replaced
+  without an old tunnel closing the new bridge.
+- Added output-backlog, admission-window, KCP-lock, worker-write and local
+  reorder-abort telemetry for the next throughput and reconnect comparison.
+
 ## v1.13.16-extended-hydracore.11-debug.22
 
 - Removed the debug.21 throughput clamp caused by applying KCP Reno congestion

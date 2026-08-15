@@ -1,4 +1,24 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.22
+# HydraCore v1.13.16-extended-hydracore.11-debug.23
+
+This build keeps wire v6 and exactly four VK calls. Each KCP lane now stages
+its generated segments in a bounded queue and performs the potentially
+blocking TURN/DTLS write outside the KCP mutex. ACKs and inbound data therefore
+continue to advance while a physical writer is congested, instead of creating
+the self-amplifying WaitSnd and retransmission collapse seen in the latest run.
+
+Admission is bounded but ACK-clocked, with reserved room for heartbeats and
+flow-control records. Ordered TCP flows remain on one lane for their lifetime;
+a terminal reorder gap closes only the affected flow. Tunnel replacement also
+uses generation-aware callbacks, preventing a late close from an old tunnel
+from tearing down its replacement, and the shorter liveness interval detects
+dead VK workers sooner.
+
+Telemetry now exposes the admission window, staged KCP output depth and
+capacity, update backpressure, KCP mutex blocking, physical worker write
+latency and flow-local reorder aborts. These counters distinguish path
+congestion from an internal output or locking bottleneck in the next test.
+
+## Previous debug.22 notes
 
 This build keeps wire v6 and exactly four VK calls. It removes the speed clamp
 seen in debug.21: KCP's Reno controller treated delayed or duplicated TURN

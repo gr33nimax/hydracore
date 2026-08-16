@@ -212,6 +212,7 @@ type kcpLane struct {
 	previousOutputDepth   int
 	resetInFlight         bool
 	pendingResetGeneration uint64
+	resetMigrationDone    bool
 	resetAck              chan uint64
 	resetStartedAt        time.Time
 	probeStartedAt        time.Time
@@ -876,28 +877,31 @@ func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, genera
 		lane.mu.Lock()
 		current := lane.generation
 		newPrepare := false
+		ackReady := generation == current
 		if generation > current+1 {
 			lane.mu.Unlock()
 			t.replaceSession("lane_generation_jump", &laneID)
 			return
 		}
-		if generation == current+1 {
+		if generation == current+1 && lane.pendingResetGeneration != generation {
 			newPrepare = true
 			lane.state = laneStateQuarantined
 			lane.pendingResetGeneration = generation
+			lane.resetMigrationDone = false
 			if lane.resetStartedAt.IsZero() {
 				lane.resetStartedAt = time.Now()
 			}
 			lane.metrics.AddHot(telemetry.LaneResetRequestTotal, 1)
+		} else if generation == current+1 {
+			ackReady = lane.resetMigrationDone
 		}
 		lane.mu.Unlock()
 		t.recoveryMu.Lock()
 		t.recoverySuggestedAt[laneID] = time.Time{}
 		t.recoveryMu.Unlock()
 		if newPrepare {
-			t.migrateLaneFlows(laneID, "peer_generation_reset")
-		}
-		if generation >= current {
+			go t.completePeerLaneResetPrepare(laneID, generation)
+		} else if ackReady {
 			t.broadcastLaneResetControl(laneResetACK, laneID, generation)
 			lane.metrics.AddHot(telemetry.LaneResetAckTotal, 1)
 		}
@@ -925,6 +929,21 @@ func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, genera
 			lane.metrics.AddHot(telemetry.LaneResetCommitTotal, 1)
 			t.resetLaneGeneration(laneID, generation, "peer_commit")
 		}
+	}
+}
+
+func (t *ParasiteTunnel) completePeerLaneResetPrepare(laneID uint16, generation uint64) {
+	t.migrateLaneFlows(laneID, "peer_generation_reset")
+	lane := t.lanes[laneID]
+	lane.mu.Lock()
+	valid := lane.generation+1 == generation && lane.pendingResetGeneration == generation
+	if valid {
+		lane.resetMigrationDone = true
+	}
+	lane.mu.Unlock()
+	if valid {
+		t.broadcastLaneResetControl(laneResetACK, laneID, generation)
+		lane.metrics.AddHot(telemetry.LaneResetAckTotal, 1)
 	}
 }
 
@@ -1765,9 +1784,12 @@ func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
 	ack := lane.resetAck
 	lane.metrics.AddHot(telemetry.LaneResetRequestTotal, 1)
 	lane.mu.Unlock()
-	t.migrateLaneFlows(laneID, reason)
 	t.recordEvent("lane_reset_requested", "lane", reason, &laneID)
-	go t.coordinateLaneReset(laneID, generation, ack, t.laneResetHandshakeDeadline(laneID))
+	handshakeDeadline := t.laneResetHandshakeDeadline(laneID)
+	go func() {
+		t.migrateLaneFlows(laneID, reason)
+		t.coordinateLaneReset(laneID, generation, ack, handshakeDeadline)
+	}()
 	return true
 }
 
@@ -1900,6 +1922,7 @@ func (t *ParasiteTunnel) resetLaneGeneration(laneID uint16, generation uint64, r
 	lane.probeReceived = false
 	lane.probeAcked = false
 	lane.pendingResetGeneration = 0
+	lane.resetMigrationDone = false
 	lane.resetInFlight = false
 	lane.resetAck = nil
 	lane.resetKCPLocked(generation)

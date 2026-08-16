@@ -26,6 +26,12 @@ func TestTURNCredentialProviderInvalidate(t *testing.T) {
 
 	provider.Invalidate(joinLink)
 	_, loaded = provider.cached(joinLink)
+	require.True(t, loaded)
+	provider.Invalidate(joinLink)
+	_, loaded = provider.cached(joinLink)
+	require.True(t, loaded)
+	provider.Invalidate(joinLink)
+	_, loaded = provider.cached(joinLink)
 	require.False(t, loaded)
 }
 
@@ -39,6 +45,8 @@ func TestTURNCredentialProviderKeepsFreshCredentials(t *testing.T) {
 		refreshAfter: time.Now().Add(time.Minute),
 	}
 
+	provider.Invalidate(joinLink)
+	provider.Invalidate(joinLink)
 	provider.Invalidate(joinLink)
 	server, loaded := provider.cached(joinLink)
 	require.True(t, loaded)

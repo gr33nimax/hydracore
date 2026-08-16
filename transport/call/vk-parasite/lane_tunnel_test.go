@@ -272,7 +272,9 @@ func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T
 	received := make(chan byte, 64)
 	server.SetOnData(func(frame []byte) { received <- frame[9] })
 	for sequence := byte(0); sequence < 64; sequence++ {
-		client.SendData(calltunnel.EncodeFrame(100, calltunnel.MsgUDPReply, []byte{sequence}))
+		payload := make([]byte, 4096)
+		payload[0] = sequence
+		client.SendData(calltunnel.EncodeFrame(100, calltunnel.MsgUDPReply, payload))
 	}
 	seen := make(map[byte]struct{}, 64)
 	for len(seen) < 64 {
@@ -285,7 +287,7 @@ func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T
 	}
 	client.sendMu.Lock()
 	require.Equal(t, uint8((1<<LaneCount)-1), client.sendFlows[100].laneMask)
-	require.False(t, client.sendFlows[100].laneAssigned)
+	require.True(t, client.sendFlows[100].laneAssigned)
 	client.sendMu.Unlock()
 }
 

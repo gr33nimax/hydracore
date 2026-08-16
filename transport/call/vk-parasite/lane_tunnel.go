@@ -124,6 +124,7 @@ type sendFlowState struct {
 	laneID       uint16
 	laneOwner    atomic.Uint32
 	abortStarted atomic.Bool
+	peerProgress atomic.Uint64
 	laneAssigned bool
 	initialized  bool
 	unordered    bool
@@ -403,6 +404,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 		return
 	}
 	state.initialize(msgType)
+	t.trimFlowReplayLocked(state, state.peerProgress.Load())
 	for _, fragment := range fragmentTCPRelayFrame(frame, msgType) {
 		if !state.unordered && !t.waitReplayCapacityLocked(state, len(fragment)) {
 			if state.abortStarted.CompareAndSwap(false, true) {
@@ -470,6 +472,7 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		return false
 	}
 	state.initialize(msgType)
+	t.trimFlowReplayLocked(state, state.peerProgress.Load())
 	for _, fragment := range fragmentTCPRelayFrame(frame, msgType) {
 		if !state.unordered && !t.replayCapacityAvailable(state, len(fragment)) {
 			return false
@@ -1377,6 +1380,7 @@ func (t *ParasiteTunnel) waitReplayCapacityLocked(state *sendFlowState, size int
 			return false
 		}
 		state.mu.Lock()
+		t.trimFlowReplayLocked(state, state.peerProgress.Load())
 		if state.closed || time.Now().After(deadline) {
 			return false
 		}

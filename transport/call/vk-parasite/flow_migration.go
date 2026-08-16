@@ -93,7 +93,24 @@ func (t *ParasiteTunnel) trimFlowReplay(connID uint32, nextSequence uint64) {
 	if state == nil {
 		return
 	}
-	state.mu.Lock()
+	for progress := state.peerProgress.Load(); nextSequence > progress; progress = state.peerProgress.Load() {
+		if state.peerProgress.CompareAndSwap(progress, nextSequence) {
+			break
+		}
+	}
+	// Flow progress arrives on the physical lane reader. Waiting here for a
+	// writer which itself needs the next ACK deadlocks the lane after two
+	// admission windows. Publish the monotonic watermark above and reclaim
+	// opportunistically; the writer applies any deferred watermark while it
+	// already owns the flow lock.
+	if !state.mu.TryLock() {
+		return
+	}
+	t.trimFlowReplayLocked(state, state.peerProgress.Load())
+	state.mu.Unlock()
+}
+
+func (t *ParasiteTunnel) trimFlowReplayLocked(state *sendFlowState, nextSequence uint64) {
 	trimmedBytes := 0
 	index := 0
 	for index < len(state.replay) && state.replay[index].sequence < nextSequence {
@@ -106,7 +123,6 @@ func (t *ParasiteTunnel) trimFlowReplay(connID uint32, nextSequence uint64) {
 		state.replayBytes -= trimmedBytes
 		t.replayBytes.Add(-int64(trimmedBytes))
 	}
-	state.mu.Unlock()
 }
 
 func (t *ParasiteTunnel) migrateLaneFlows(laneID uint16, reason string) {
@@ -139,6 +155,7 @@ func (t *ParasiteTunnel) migrateOrderedFlow(connID uint32, state *sendFlowState,
 	if state.closed || state.abortStarted.Load() || state.unordered || state.laneOwner.Load() != uint32(sourceLane)+1 {
 		return true
 	}
+	t.trimFlowReplayLocked(state, state.peerProgress.Load())
 	target := t.migrationTarget(sourceLane)
 	if target == nil {
 		return false

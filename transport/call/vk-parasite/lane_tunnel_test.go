@@ -1052,6 +1052,44 @@ func TestWireV9MigratesOrderedFlowWithBoundedReplay(t *testing.T) {
 	require.LessOrEqual(t, tunnel.replayBytes.Load(), int64(flowReplaySessionLimit))
 }
 
+func TestFlowProgressNeverBlocksThePhysicalLaneReader(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788b1, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	state := tunnel.sendFlow(203)
+	first := calltunnel.EncodeFrame(203, calltunnel.MsgData, []byte("first"))
+	second := calltunnel.EncodeFrame(203, calltunnel.MsgData, []byte("second"))
+	state.mu.Lock()
+	state.nextSequence = 2
+	state.replay = []flowReplayFrame{
+		{sequence: 0, frame: first},
+		{sequence: 1, frame: second},
+	}
+	state.replayBytes = len(first) + len(second)
+	tunnel.replayBytes.Store(int64(state.replayBytes))
+	defer state.mu.Unlock()
+
+	progressHandled := make(chan struct{})
+	go func() {
+		tunnel.trimFlowReplay(203, 2)
+		close(progressHandled)
+	}()
+	select {
+	case <-progressHandled:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("flow progress blocked the physical lane reader on the send-flow mutex")
+	}
+	require.Equal(t, uint64(2), state.peerProgress.Load())
+	require.Len(t, state.replay, 2, "the lock owner applies the deferred watermark")
+
+	tunnel.trimFlowReplayLocked(state, state.peerProgress.Load())
+	require.Empty(t, state.replay)
+	require.Zero(t, state.replayBytes)
+	require.Zero(t, tunnel.replayBytes.Load())
+}
+
 func TestParasiteTunnelTelemetryTrySendDoesNotWaitForControlFlow(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x6677889a, logger.NOP())

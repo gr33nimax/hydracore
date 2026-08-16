@@ -399,7 +399,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 	state := t.sendFlow(connID)
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.closed {
+	if state.closed || state.abortStarted.Load() {
 		return
 	}
 	state.initialize(msgType)
@@ -466,7 +466,7 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 		return false
 	}
 	defer state.mu.Unlock()
-	if state.closed {
+	if state.closed || state.abortStarted.Load() {
 		return false
 	}
 	state.initialize(msgType)
@@ -1412,6 +1412,22 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 	blockedAt := time.Now()
 	ticker := time.NewTicker(laneSendRetryInterval)
 	timer := time.NewTimer(t.sendStallTimeout)
+	progress := func() int64 {
+		if preferred != nil && int(*preferred) < LaneCount {
+			return t.lanes[*preferred].lastAckProgress.Load()
+		}
+		return t.lastAggregateProgress.Load()
+	}
+	lastProgress := progress()
+	resetStallTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(t.sendStallTimeout)
+	}
 	defer ticker.Stop()
 	defer timer.Stop()
 	for {
@@ -1423,7 +1439,20 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 				lane.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 				return lane, true
 			}
+			// A full admission window is backpressure, not a dead lane. Keep the
+			// bounded stall deadline relative to the latest ACK progress so a
+			// busy but healthy TURN call is never reset merely because one send
+			// waited longer than the fixed wall-clock interval.
+			if current := progress(); current > lastProgress {
+				lastProgress = current
+				resetStallTimer()
+			}
 		case <-timer.C:
+			if current := progress(); current > lastProgress {
+				lastProgress = current
+				timer.Reset(t.sendStallTimeout)
+				continue
+			}
 			t.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, time.Since(blockedAt).Seconds())
 			t.recordEvent("lane_send_stalled", "kcp", "pending_timeout", nil)
 			workerID, recovery := t.recoverStalledLane(preferred)

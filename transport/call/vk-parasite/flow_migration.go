@@ -136,7 +136,7 @@ func (t *ParasiteTunnel) migrateOrderedFlow(connID uint32, state *sendFlowState,
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.closed || state.unordered || state.laneOwner.Load() != uint32(sourceLane)+1 {
+	if state.closed || state.abortStarted.Load() || state.unordered || state.laneOwner.Load() != uint32(sourceLane)+1 {
 		return true
 	}
 	target := t.migrationTarget(sourceLane)

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.13.16-extended-hydracore.11-debug.39
 
 - Evaluated pacing probes by marginal goodput: a probe now compares the
   byte-measured delivered gain against the byte-measured offered gain and

@@ -1,4 +1,19 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.38
+# HydraCore v1.13.16-extended-hydracore.11-debug.39
+
+This build introduces marginal-goodput evaluation for VK parasite pacing probes
+and subtracts the smoothed retransmission rate from the fresh-data admission
+budget as retransmission debt.
+
+Pacing probes now evaluate measured delivered bytes against measured offered
+bytes over equal-length baseline and probe intervals, producing a three-way
+verdict (useful / harmful / inconclusive). Useful probes raise the loss
+compensation ceiling toward 1.5x, while harmful probes roll back the pacing
+rate and lower the ceiling after two consecutive occurrences with an exponential
+cooldown. Fresh data backs off under retransmission debt, preventing lossy
+policer plateaus. Byte-granular lane metrics and recovery attempt snapshot gauges
+enable reliable analyzer reconciliation.
+
+## Previous debug.38 notes
 
 Debug.37 telemetry showed stable 53-56 ms RTT, empty UDP/TURN writer queues and
 no drops while individual lanes with 16-29% KCP retries were held near

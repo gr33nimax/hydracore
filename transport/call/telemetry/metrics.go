@@ -115,6 +115,7 @@ const (
 	TelemetryRecordDropsTotal
 	TelemetryLeaseExpiredTotal
 	TelemetrySinkRotationsTotal
+	TelemetryPendingRecords
 	KCPMTUBytes
 	KCPSendWindowSegments
 	KCPReceiveWindowSegments
@@ -145,6 +146,8 @@ const (
 	LaneMinRTTMS
 	LaneInflightLimitSegments
 	LaneTokenStarvationTotal
+	LaneApplicationLimited
+	LaneRecoveryDeferredTotal
 	LaneAckAgeSeconds
 	LaneResetRequestTotal
 	LaneResetRetryTotal
@@ -269,6 +272,7 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "telemetry_record_drops_total", counter: true},
 	{name: "telemetry_lease_expired_total", counter: true},
 	{name: "telemetry_sink_rotations_total", counter: true},
+	{name: "telemetry_pending_records"},
 	{name: "kcp_mtu_bytes"},
 	{name: "kcp_send_window_segments"},
 	{name: "kcp_receive_window_segments"},
@@ -299,6 +303,8 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "lane_min_rtt_ms"},
 	{name: "lane_inflight_limit_segments"},
 	{name: "lane_token_starvation_total", counter: true},
+	{name: "lane_application_limited"},
+	{name: "lane_recovery_deferred_total", counter: true},
 	{name: "lane_ack_age_seconds"},
 	{name: "lane_reset_request_total", counter: true},
 	{name: "lane_reset_retry_total", counter: true},
@@ -339,7 +345,7 @@ var ServerRequired = []Metric{
 	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
 	FlowReorderAbortTotal, OuterRTPPayloadType,
 	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
-	LaneTokenStarvationTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
+	LaneTokenStarvationTotal, LaneApplicationLimited, LaneRecoveryDeferredTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
 	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
 	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
 	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
@@ -362,7 +368,7 @@ var ClientRequired = []Metric{
 	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
 	FlowReorderAbortTotal, OuterRTPPayloadType,
 	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
-	LaneTokenStarvationTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
+	LaneTokenStarvationTotal, LaneApplicationLimited, LaneRecoveryDeferredTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
 	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
 	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
 	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
@@ -376,7 +382,7 @@ var ClientRequired = []Metric{
 	OuterPayloadBytesInTotal, OuterPayloadBytesOutTotal, OuterOverheadBytesInTotal, OuterOverheadBytesOutTotal,
 	OuterAuthFailuresTotal,
 	RuntimeCPUPercent, RuntimeRSSBytes, RuntimeThermalState,
-	TelemetrySequence, TelemetryRecordDropsTotal, TelemetryLeaseExpiredTotal,
+	TelemetrySequence, TelemetryRecordDropsTotal, TelemetryLeaseExpiredTotal, TelemetryPendingRecords,
 }
 
 var TunnelMetrics = []Metric{
@@ -395,7 +401,7 @@ var TunnelMetrics = []Metric{
 	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
 	FlowReorderAbortTotal, OuterRTPPayloadType,
 	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
-	LaneTokenStarvationTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
+	LaneTokenStarvationTotal, LaneApplicationLimited, LaneRecoveryDeferredTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
 	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
 	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
 }

@@ -264,6 +264,8 @@ func serverWorkerSnapshotMetrics() []telemetry.Metric {
 		telemetry.LaneMinRTTMS,
 		telemetry.LaneInflightLimitSegments,
 		telemetry.LaneTokenStarvationTotal,
+		telemetry.LaneApplicationLimited,
+		telemetry.LaneRecoveryDeferredTotal,
 		telemetry.LaneAckAgeSeconds,
 		telemetry.LaneResetRequestTotal,
 		telemetry.LaneResetRetryTotal,

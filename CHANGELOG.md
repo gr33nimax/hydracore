@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.27
+
+- Serialized soft lane recovery before reset initiation and added a cooldown,
+  preventing simultaneous ACK stalls from starting multiple generation resets
+  and replacing the complete logical session.
+- Made the ACK-clocked controller application-limited aware, preserving the
+  last safe pacing rate and admission window during video and YouTube idle
+  intervals instead of learning a false low path capacity.
+- Buffered client telemetry across transient lane outages with bounded FIFO
+  event retention and latest-wins snapshots; added pending-record visibility.
+- Added per-lane application-limited and deferred-recovery telemetry plus
+  deterministic coverage for concurrent recovery, cooldown and burst resume.
+
 ## v1.13.16-extended-hydracore.11-debug.26
 
 - Introduced incompatible VK parasite wire v7 with generation-scoped worker

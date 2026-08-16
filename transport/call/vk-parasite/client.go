@@ -36,29 +36,32 @@ type ClientOptions struct {
 }
 
 type Client struct {
-	ctx            context.Context
-	cancel         context.CancelFunc
-	options        ClientOptions
-	logger         logger.ContextLogger
-	server         *net.UDPAddr
-	key            [wrapKeyLength]byte
-	sessionID      [16]byte
-	conv           uint32
-	tunnel         *ParasiteTunnel
-	metrics        *telemetry.Accumulator
-	telemetryLease atomic.Int64
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	options               ClientOptions
+	logger                logger.ContextLogger
+	server                *net.UDPAddr
+	key                   [wrapKeyLength]byte
+	sessionID             [16]byte
+	conv                  uint32
+	tunnel                *ParasiteTunnel
+	metrics               *telemetry.Accumulator
+	telemetryLease        atomic.Int64
 	telemetryLeaseExpired atomic.Bool
-	telemetrySequence atomic.Uint64
-	processSampler telemetry.ProcessSampler
-	ready          chan struct{}
-	readyOnce      sync.Once
-	generation     atomic.Uint64
-	errors         chan error
-	closeOnce      sync.Once
-	workers        []clientWorkerControl
-	workerReconnectMu sync.Mutex
-	rebindMu       sync.Mutex
-	rebindCancel   context.CancelFunc
+	telemetrySequence     atomic.Uint64
+	telemetryBacklogMu    sync.Mutex
+	telemetryEvents       [][]byte
+	telemetrySnapshots    map[int][]byte
+	processSampler        telemetry.ProcessSampler
+	ready                 chan struct{}
+	readyOnce             sync.Once
+	generation            atomic.Uint64
+	errors                chan error
+	closeOnce             sync.Once
+	workers               []clientWorkerControl
+	workerReconnectMu     sync.Mutex
+	rebindMu              sync.Mutex
+	rebindCancel          context.CancelFunc
 }
 
 type clientWorkerControl struct {
@@ -150,6 +153,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		conv:      conv,
 		tunnel:    tunnel,
 		metrics:   metrics,
+		telemetrySnapshots: make(map[int][]byte, options.Workers+1),
 		ready:     make(chan struct{}),
 		errors:    make(chan error, options.Workers),
 		workers:   make([]clientWorkerControl, options.Workers),

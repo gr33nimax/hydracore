@@ -46,7 +46,7 @@ func (e *deterministicLaneEmulator) deliver(rateBPS float64, interval time.Durat
 }
 
 func newControllerLane(now time.Time) *kcpLane {
-	return &kcpLane{
+	lane := &kcpLane{
 		metrics:          telemetry.NewAccumulator(),
 		admissionWindow:  laneKCPInitialAdmission,
 		deliverySampleAt: now,
@@ -57,6 +57,8 @@ func newControllerLane(now time.Time) *kcpLane {
 		pacingStartup:    true,
 		pacingNextProbe:  now.Add(lanePacingProbeInterval),
 	}
+	lane.applicationLimited = true
+	return lane
 }
 
 func TestWireV7FourLaneDeterministicSixtySecondLoad(t *testing.T) {
@@ -84,6 +86,7 @@ func TestWireV7FourLaneDeterministicSixtySecondLoad(t *testing.T) {
 			sent, delivered, retransmitted, rtt := emulators[laneID].deliver(lane.pacingRateBPS, interval)
 			lane.deliveryOutSegments = uint64(sent)
 			lane.deliveryRetrans = uint64(retransmitted)
+			lane.deliveryDemanded = true
 			lane.kcpSRTTMS = float64(rtt) / float64(time.Millisecond)
 			lane.updateDeliveryController(start.Add(time.Duration(step)*interval), delivered)
 			totalSent += sent
@@ -117,6 +120,35 @@ func TestWireV7FourLaneDeterministicSixtySecondLoad(t *testing.T) {
 		}
 		require.Positive(t, delivered, "load run %d lost the whole tunnel", run+1)
 	}
+}
+
+func TestWireV7ApplicationLimitedVideoPreservesBurstCapacity(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	lane.pacingRateBPS = 240_000
+	lane.deliveryRateBPS = 220_000
+	lane.admissionWindow = 32
+
+	for sample := 1; sample <= 40; sample++ {
+		lane.deliveryOutSegments = 2
+		lane.deliveryRetrans = 0
+		lane.deliveryDemanded = false
+		lane.updateDeliveryController(start.Add(time.Duration(sample)*laneDeliverySampleWindow), 2)
+	}
+
+	require.Equal(t, 240_000.0, lane.pacingRateBPS)
+	require.Equal(t, 220_000.0, lane.deliveryRateBPS)
+	require.Equal(t, 32, lane.admissionWindow)
+	require.True(t, lane.applicationLimited)
+
+	lane.deliveryOutSegments = 100
+	lane.deliveryRetrans = 0
+	lane.deliveryDemanded = true
+	lane.updateDeliveryController(start.Add(41*laneDeliverySampleWindow), 95)
+	require.False(t, lane.applicationLimited)
+	require.Greater(t, lane.pacingRateBPS, 0.9*240_000.0)
 }
 
 func TestWireV7BlackholeLeavesThreeLaneCapacity(t *testing.T) {

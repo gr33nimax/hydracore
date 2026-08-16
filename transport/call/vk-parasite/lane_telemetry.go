@@ -126,6 +126,9 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 		l.deliveryAckedSegments = uint64(ackedSegments)
 		l.deliveryOutSegments = 0
 		l.deliveryRetrans = 0
+		l.deliveryDemanded = false
+		l.applicationLimited = true
+		l.metrics.Set(telemetry.LaneApplicationLimited, 1)
 		return
 	}
 	l.deliveryAckedSegments += uint64(ackedSegments)
@@ -135,11 +138,9 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	}
 	mss := float64(laneKCPMTU - kcpHeaderSize)
 	instantRate := float64(l.deliveryAckedSegments) * mss / elapsed.Seconds()
-	if l.deliveryRateBPS == 0 {
-		l.deliveryRateBPS = instantRate
-	} else {
-		l.deliveryRateBPS = 0.75*l.deliveryRateBPS + 0.25*instantRate
-	}
+	applicationLimited := !l.deliveryDemanded
+	l.applicationLimited = applicationLimited
+	l.metrics.Set(telemetry.LaneApplicationLimited, boolFloat(applicationLimited))
 	retryRatio := 0.0
 	if l.deliveryOutSegments > 0 {
 		retryRatio = float64(l.deliveryRetrans) / float64(l.deliveryOutSegments)
@@ -147,42 +148,50 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	queueDepth := len(l.outputPending)
 	queueGrowing := queueDepth > l.previousOutputDepth && queueDepth >= lanePacingBucketSegments
 	rttInflated := l.minRTTMS > 0 && l.kcpSRTTMS > 1.5*l.minRTTMS
-	congested := retryRatio > 0.10 || rttInflated || queueGrowing
-	switch {
-	case congested:
-		l.pacingRateBPS *= lanePacingDecrease
-		l.pacingStartup = false
-		l.pacingProbeUntil = time.Time{}
-		l.pacingNextProbe = now.Add(lanePacingProbeInterval)
-	case l.pacingStartup && instantRate >= 0.80*l.pacingRateBPS && retryRatio < 0.10:
-		l.pacingRateBPS *= lanePacingStartupGain
-		if l.pacingRateBPS >= lanePacingMaximumBPS {
-			l.pacingStartup = false
-			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+	congested := !applicationLimited && (retryRatio > 0.10 || rttInflated || queueGrowing)
+	if !applicationLimited {
+		if l.deliveryRateBPS == 0 {
+			l.deliveryRateBPS = instantRate
+		} else {
+			l.deliveryRateBPS = 0.75*l.deliveryRateBPS + 0.25*instantRate
 		}
-	case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
-		l.pacingRateBPS = lanePacingSteadyGain * l.deliveryRateBPS
-		l.pacingProbeUntil = time.Time{}
-	case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
-		l.pacingRateBPS *= lanePacingProbeGain
-		l.pacingProbeUntil = now.Add(lanePacingProbeDuration)
-		l.pacingNextProbe = now.Add(lanePacingProbeInterval)
-	case !l.pacingStartup:
-		targetRate := lanePacingSteadyGain * l.deliveryRateBPS
-		l.pacingRateBPS = 0.75*l.pacingRateBPS + 0.25*targetRate
+		switch {
+		case congested:
+			l.pacingRateBPS *= lanePacingDecrease
+			l.pacingStartup = false
+			l.pacingProbeUntil = time.Time{}
+			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+		case l.pacingStartup && instantRate >= 0.80*l.pacingRateBPS && retryRatio < 0.10:
+			l.pacingRateBPS *= lanePacingStartupGain
+			if l.pacingRateBPS >= lanePacingMaximumBPS {
+				l.pacingStartup = false
+				l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+			}
+		case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
+			l.pacingRateBPS = lanePacingSteadyGain * l.deliveryRateBPS
+			l.pacingProbeUntil = time.Time{}
+		case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
+			l.pacingRateBPS *= lanePacingProbeGain
+			l.pacingProbeUntil = now.Add(lanePacingProbeDuration)
+			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+		case !l.pacingStartup:
+			targetRate := lanePacingSteadyGain * l.deliveryRateBPS
+			l.pacingRateBPS = 0.75*l.pacingRateBPS + 0.25*targetRate
+		}
+		l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))
+		windowRTTMS := l.minRTTMS
+		if windowRTTMS <= 0 {
+			windowRTTMS = 80
+		}
+		target := int(math.Ceil(l.deliveryRateBPS * (windowRTTMS / 1000) / mss))
+		l.admissionWindow = min(laneKCPMaximumAdmission, max(laneKCPMinimumAdmission, target))
 	}
-	l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))
-	windowRTTMS := l.minRTTMS
-	if windowRTTMS <= 0 {
-		windowRTTMS = 80
-	}
-	target := int(math.Ceil(l.deliveryRateBPS * (windowRTTMS / 1000) / mss))
-	l.admissionWindow = min(laneKCPMaximumAdmission, max(laneKCPMinimumAdmission, target))
 	l.previousOutputDepth = queueDepth
 	l.deliverySampleAt = now
 	l.deliveryAckedSegments = 0
 	l.deliveryOutSegments = 0
 	l.deliveryRetrans = 0
+	l.deliveryDemanded = false
 }
 
 func (l *kcpLane) updateKCPRTT(rtt float64) {

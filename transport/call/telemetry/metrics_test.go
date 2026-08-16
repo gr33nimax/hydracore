@@ -33,7 +33,7 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"lane_count", "lane_flow_count",
 		"lane_admission_bytes_per_second", "lane_admission_window_segments",
 		"lane_generation", "lane_state", "lane_pacing_bytes_per_second", "lane_delivered_bytes_per_second",
-		"lane_min_rtt_ms", "lane_inflight_limit_segments", "lane_token_starvation_total", "lane_ack_age_seconds",
+		"lane_min_rtt_ms", "lane_inflight_limit_segments", "lane_token_starvation_total", "lane_application_limited", "lane_recovery_deferred_total", "lane_ack_age_seconds",
 		"lane_reset_request_total", "lane_reset_retry_total", "lane_reset_ack_total", "lane_reset_commit_total",
 		"lane_reset_duration_ms", "lane_stale_generation_drops_total", "lane_probe_result",
 		"aggregate_progress_age_seconds", "quarantined_lanes", "session_replacement_total",
@@ -56,7 +56,7 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"lane_count", "lane_flow_count",
 		"lane_admission_bytes_per_second", "lane_admission_window_segments",
 		"lane_generation", "lane_state", "lane_pacing_bytes_per_second", "lane_delivered_bytes_per_second",
-		"lane_min_rtt_ms", "lane_inflight_limit_segments", "lane_token_starvation_total", "lane_ack_age_seconds",
+		"lane_min_rtt_ms", "lane_inflight_limit_segments", "lane_token_starvation_total", "lane_application_limited", "lane_recovery_deferred_total", "lane_ack_age_seconds",
 		"lane_reset_request_total", "lane_reset_retry_total", "lane_reset_ack_total", "lane_reset_commit_total",
 		"lane_reset_duration_ms", "lane_stale_generation_drops_total", "lane_probe_result",
 		"aggregate_progress_age_seconds", "quarantined_lanes", "session_replacement_total",
@@ -73,7 +73,7 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"outer_packets_in_total", "outer_packets_out_total", "outer_bytes_in_total", "outer_bytes_out_total",
 		"outer_payload_bytes_in_total", "outer_payload_bytes_out_total", "outer_overhead_bytes_in_total", "outer_overhead_bytes_out_total", "outer_auth_failures_total",
 		"runtime_cpu_percent", "runtime_rss_bytes", "runtime_thermal_state",
-		"telemetry_sequence", "telemetry_record_drops_total", "telemetry_lease_expired_total",
+		"telemetry_sequence", "telemetry_record_drops_total", "telemetry_lease_expired_total", "telemetry_pending_records",
 	}
 	accumulator := NewAccumulator()
 	require.ElementsMatch(t, serverExpected, metricNames(accumulator.Snapshot(ServerRequired)))

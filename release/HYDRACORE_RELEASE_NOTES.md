@@ -1,4 +1,22 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.26
+# HydraCore v1.13.16-extended-hydracore.11-debug.27
+
+This build hardens wire-v7 behavior observed across speed tests, video and
+YouTube. Soft recovery is reserved before reset begins and remains
+single-flight through a bounded cooldown, so several near-simultaneous lane
+stalls cannot launch competing generation resets or unnecessarily replace the
+logical session.
+
+The ACK-clocked pacer now distinguishes demand-limited congestion from an
+application-limited stream. Idle or low-rate media intervals preserve the last
+safe pacing rate, delivery estimate and inflight window, while real queue,
+retry and RTT pressure under demand still backs the affected lane down.
+
+Client telemetry now retains events in a bounded FIFO and coalesces snapshots
+to their latest value until a healthy lane can carry them. New gauges expose
+the pending telemetry backlog and application-limited state; a counter records
+soft recoveries deferred by the active recovery or cooldown.
+
+## Previous debug.26 notes
 
 This build introduces incompatible VK parasite wire v7. Client and VPS must be
 updated together; wire v6 is rejected. TCP data is fragmented to at most four

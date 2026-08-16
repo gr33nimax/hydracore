@@ -707,6 +707,96 @@ func TestParasiteTunnelRecycleControlCannotDropNewerWorkerEpoch(t *testing.T) {
 	}
 }
 
+func TestParasiteTunnelSerializesConcurrentSoftLaneRecovery(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788b1, logger.NOP())
+	require.NoError(t, err)
+	tunnel.SetTelemetryCollectionActive(true)
+	peers := make([]net.Conn, 0, LaneCount)
+	for laneID := uint16(0); laneID < LaneCount; laneID++ {
+		connection, peer := newTestDatagramPair()
+		_, err = tunnel.AddWorker(laneID, connection)
+		require.NoError(t, err)
+		peers = append(peers, peer)
+	}
+	t.Cleanup(func() {
+		_ = tunnel.Close()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	start := make(chan struct{})
+	results := make(chan laneRecoveryResult, 32)
+	var group sync.WaitGroup
+	for attempt := 0; attempt < cap(results); attempt++ {
+		laneID := uint16(attempt % LaneCount)
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			_, result := tunnel.recoverStalledLane(&laneID)
+			results <- result
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+
+	started := 0
+	for result := range results {
+		if result == laneRecoveryStarted {
+			started++
+		}
+	}
+	require.Equal(t, 1, started)
+	require.Equal(t, 1, tunnel.quarantinedLaneCount())
+	require.Equal(t, float64(LaneCount-1), tunnel.metrics.Value(telemetry.LaneRecoveryDeferredTotal))
+	select {
+	case <-tunnel.Done():
+		t.Fatal("concurrent soft recovery replaced the logical session")
+	default:
+	}
+}
+
+func TestParasiteTunnelSoftRecoveryHonorsCooldown(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788b2, logger.NOP())
+	require.NoError(t, err)
+	tunnel.recoveryCooldown = time.Second
+	peers := make([]net.Conn, 0, LaneCount)
+	for laneID := uint16(0); laneID < LaneCount; laneID++ {
+		connection, peer := newTestDatagramPair()
+		_, err = tunnel.AddWorker(laneID, connection)
+		require.NoError(t, err)
+		peers = append(peers, peer)
+	}
+	t.Cleanup(func() {
+		_ = tunnel.Close()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	first := uint16(0)
+	_, result := tunnel.recoverStalledLane(&first)
+	require.Equal(t, laneRecoveryStarted, result)
+	tunnel.completeLaneRecovery(first)
+
+	second := uint16(1)
+	_, result = tunnel.recoverStalledLane(&second)
+	require.Equal(t, laneRecoveryInProgress, result)
+	tunnel.lanes[second].mu.Lock()
+	require.Equal(t, laneStateActive, tunnel.lanes[second].state)
+	tunnel.lanes[second].mu.Unlock()
+
+	tunnel.recoveryMu.Lock()
+	tunnel.recoveryReadyAt = time.Now().Add(-time.Millisecond)
+	tunnel.recoveryMu.Unlock()
+	_, result = tunnel.recoverStalledLane(&second)
+	require.Equal(t, laneRecoveryStarted, result)
+}
+
 func TestParasiteTunnelRejectsDataWhileLaneIsQuarantined(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x667788a3, logger.NOP())

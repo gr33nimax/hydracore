@@ -7,8 +7,10 @@ import (
 )
 
 const (
-	clientTelemetryInterval = 2 * time.Second
-	clientEventsPerInterval  = 16
+	clientTelemetryInterval     = 2 * time.Second
+	clientEventsPerInterval     = 16
+	clientTelemetryEventBacklog = 64
+	clientTelemetryFlushBudget  = 16
 )
 
 func (c *Client) enableTelemetry(lease time.Duration) {
@@ -80,6 +82,7 @@ func (c *Client) emitTelemetry() {
 		workerRecord.WorkerID = &workerID
 		c.sendTelemetryRecord(workerRecord)
 	}
+	c.flushTelemetryRecords()
 }
 
 func mergeWorkerNetworkGauges(
@@ -98,9 +101,78 @@ func mergeWorkerNetworkGauges(
 
 func (c *Client) sendTelemetryRecord(record telemetry.Record) {
 	payload, err := telemetry.Marshal(record)
-	if err != nil || !c.tunnel.SendClientTelemetry(payload) {
+	if err != nil {
 		c.metrics.Add(telemetry.TelemetryRecordDropsTotal, 1)
+		return
 	}
+	c.telemetryBacklogMu.Lock()
+	if record.Kind == "event" {
+		if len(c.telemetryEvents) == clientTelemetryEventBacklog {
+			copy(c.telemetryEvents, c.telemetryEvents[1:])
+			c.telemetryEvents = c.telemetryEvents[:clientTelemetryEventBacklog-1]
+			c.metrics.Add(telemetry.TelemetryRecordDropsTotal, 1)
+		}
+		c.telemetryEvents = append(c.telemetryEvents, payload)
+	} else {
+		key := -1
+		if record.WorkerID != nil {
+			key = int(*record.WorkerID)
+		}
+		if c.telemetrySnapshots == nil {
+			c.telemetrySnapshots = make(map[int][]byte, c.options.Workers+1)
+		}
+		c.telemetrySnapshots[key] = payload
+	}
+	c.updateTelemetryPendingLocked()
+	c.telemetryBacklogMu.Unlock()
+}
+
+func (c *Client) flushTelemetryRecords() {
+	c.telemetryBacklogMu.Lock()
+	defer c.telemetryBacklogMu.Unlock()
+	for sent := 0; sent < clientTelemetryFlushBudget; sent++ {
+		if len(c.telemetryEvents) > 0 {
+			if !c.tunnel.SendClientTelemetry(c.telemetryEvents[0]) {
+				c.updateTelemetryPendingLocked()
+				return
+			}
+			copy(c.telemetryEvents, c.telemetryEvents[1:])
+			c.telemetryEvents = c.telemetryEvents[:len(c.telemetryEvents)-1]
+			continue
+		}
+		key, payload, ok := c.nextTelemetrySnapshotLocked()
+		if !ok {
+			break
+		}
+		if !c.tunnel.SendClientTelemetry(payload) {
+			c.updateTelemetryPendingLocked()
+			return
+		}
+		delete(c.telemetrySnapshots, key)
+	}
+	c.updateTelemetryPendingLocked()
+}
+
+func (c *Client) nextTelemetrySnapshotLocked() (int, []byte, bool) {
+	if payload, exists := c.telemetrySnapshots[-1]; exists {
+		return -1, payload, true
+	}
+	for workerID := 0; workerID < c.options.Workers; workerID++ {
+		if payload, exists := c.telemetrySnapshots[workerID]; exists {
+			return workerID, payload, true
+		}
+	}
+	for key, payload := range c.telemetrySnapshots {
+		return key, payload, true
+	}
+	return 0, nil, false
+}
+
+func (c *Client) updateTelemetryPendingLocked() {
+	c.metrics.Set(
+		telemetry.TelemetryPendingRecords,
+		float64(len(c.telemetryEvents)+len(c.telemetrySnapshots)),
+	)
 }
 
 func clientSnapshotMetrics() []telemetry.Metric {
@@ -179,6 +251,8 @@ func clientWorkerSnapshotMetrics() []telemetry.Metric {
 		telemetry.LaneMinRTTMS,
 		telemetry.LaneInflightLimitSegments,
 		telemetry.LaneTokenStarvationTotal,
+		telemetry.LaneApplicationLimited,
+		telemetry.LaneRecoveryDeferredTotal,
 		telemetry.LaneAckAgeSeconds,
 		telemetry.LaneResetRequestTotal,
 		telemetry.LaneResetRetryTotal,

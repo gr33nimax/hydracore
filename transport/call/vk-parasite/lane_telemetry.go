@@ -156,9 +156,19 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 		retryRatio = float64(l.deliveryRetrans) / float64(l.deliveryOutSegments)
 	}
 	queueGrowing := queueDepth > l.previousOutputDepth && queueDepth >= lanePacingBucketSegments
+	queuePressured := queueDepth >= 3*laneKCPOutputBacklog/4
+	windowPressure := waitSnd >= max(lanePacingBucketSegments, 3*l.admissionLimitLocked(false)/4)
 	rttInflated := l.minRTTMS > 0 && l.kcpSRTTMS > 2*l.minRTTMS
 	severeRetry := retryRatio > 0.15
-	congestionSignal := !applicationLimited && (severeRetry || rttInflated && queueGrowing)
+	previousDeliveryRate := l.deliveryRateBPS
+	deliveryCollapsed := previousDeliveryRate > 0 && instantRate < 0.70*previousDeliveryRate
+	transportPressure := queueGrowing || queuePressured || windowPressure
+	// VK media paths can sustain useful throughput with double-digit random or
+	// policer loss. Retransmissions alone therefore describe a lossy path, not
+	// congestion. Back off only when delay or collapsing delivery is accompanied
+	// by persistent transport pressure.
+	congestionSignal := !applicationLimited && transportPressure && (rttInflated || (severeRetry && deliveryCollapsed))
+	lossCompensation := min(1.5, 1/max(0.67, 1-retryRatio))
 	if !applicationLimited {
 		if l.deliveryRateBPS == 0 {
 			l.deliveryRateBPS = instantRate
@@ -184,21 +194,28 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 			l.pacingProbeUntil = time.Time{}
 			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 			l.congestionSamples = 0
-		case l.pacingStartup && instantRate >= 0.55*l.pacingRateBPS && retryRatio < 0.15:
+		case l.pacingStartup && !congestionSignal && instantRate >= 0.55*l.pacingRateBPS:
 			l.pacingRateBPS *= lanePacingStartupGain
 			if l.pacingRateBPS >= lanePacingMaximumBPS {
 				l.pacingStartup = false
 				l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 			}
+		case l.pacingStartup:
+			// Delivery stopped following the startup ramp. Enter the measured
+			// loss-aware steady state instead of remaining forever at the last
+			// startup step or treating the retry ratio alone as congestion.
+			l.pacingRateBPS = lanePacingSteadyGain * lossCompensation * l.deliveryCapacityBPS
+			l.pacingStartup = false
+			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 		case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
-			l.pacingRateBPS = lanePacingSteadyGain * l.deliveryCapacityBPS
+			l.pacingRateBPS = lanePacingSteadyGain * lossCompensation * l.deliveryCapacityBPS
 			l.pacingProbeUntil = time.Time{}
 		case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
 			l.pacingRateBPS *= lanePacingProbeGain
 			l.pacingProbeUntil = now.Add(lanePacingProbeDuration)
 			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 		case !l.pacingStartup:
-			targetRate := lanePacingSteadyGain * l.deliveryCapacityBPS
+			targetRate := lanePacingSteadyGain * lossCompensation * l.deliveryCapacityBPS
 			l.pacingRateBPS = 0.75*l.pacingRateBPS + 0.25*targetRate
 		}
 		l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))

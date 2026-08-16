@@ -1,4 +1,24 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.37
+# HydraCore v1.13.16-extended-hydracore.11-debug.38
+
+Debug.37 telemetry showed stable 53-56 ms RTT, empty UDP/TURN writer queues and
+no drops while individual lanes with 16-29% KCP retries were held near
+1-1.7 Mbit/s. This build no longer treats that retry ratio alone as congestion.
+Backoff now requires transport pressure together with RTT inflation or a real
+delivery collapse, while bounded loss compensation keeps steady pacing above
+goodput on naturally lossy VK media paths.
+
+Startup exits into the same loss-aware steady state and continues bounded
+capacity probes, restoring the ability of four calls to exceed the artificial
+5-6.5 Mbit/s equilibrium without removing the maximum pacing and admission
+limits.
+
+Lane reset also starts local flow migration at the same time as the peer
+PREPARE transaction. The generation commit still waits for both ordering
+barriers, but the two sides no longer consume their migration budgets
+sequentially. This targets the 8.373-second recovery p95 and the associated TCP
+flow aborts observed in debug.37.
+
+## Previous debug.37 notes
 
 This build closes the reset cascade seen after reconnect in debug.36. A
 serialized recovery now records the lane's ACK-progress watermark and checks

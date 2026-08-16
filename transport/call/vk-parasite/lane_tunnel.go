@@ -1928,10 +1928,12 @@ func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
 	lane.mu.Unlock()
 	t.recordEvent("lane_reset_requested", "lane", reason, &laneID)
 	handshakeDeadline := t.laneResetHandshakeDeadline(laneID)
+	migrationDone := make(chan struct{})
 	go func() {
 		t.migrateLaneFlows(laneID, reason)
-		t.coordinateLaneReset(laneID, generation, ack, handshakeDeadline)
+		close(migrationDone)
 	}()
+	go t.coordinateLaneReset(laneID, generation, ack, migrationDone, handshakeDeadline)
 	return true
 }
 
@@ -1986,7 +1988,7 @@ func (t *ParasiteTunnel) laneResetHandshakeDeadline(laneID uint16) time.Duration
 	return deadline
 }
 
-func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, ack <-chan uint64, handshakeDeadline time.Duration) {
+func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, ack <-chan uint64, migrationDone <-chan struct{}, handshakeDeadline time.Duration) {
 	deadline := time.NewTimer(handshakeDeadline)
 	retry := time.NewTicker(laneResetRetryInterval)
 	defer deadline.Stop()
@@ -2002,6 +2004,17 @@ func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, a
 		case acknowledged := <-ack:
 			if acknowledged != generation {
 				continue
+			}
+			// PREPARE makes the peer migrate its flows before ACK. Run our local
+			// migration in parallel with that work, but never commit the new KCP
+			// generation until both sides have completed their ordering barrier.
+			select {
+			case <-migrationDone:
+			case <-deadline.C:
+				t.escalateLaneResetFailure(laneID, "migration_timeout")
+				return
+			case <-t.closed:
+				return
 			}
 			lane := t.lanes[laneID]
 			lane.mu.Lock()

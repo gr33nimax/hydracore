@@ -108,7 +108,10 @@ func TestWireV9FourLaneDeterministicSixtySecondLoad(t *testing.T) {
 	goodputBPS := float64(totalDelivered) * mss * 8 / 60
 	retransmitRatio := float64(totalSent-totalDelivered) / float64(totalSent)
 	require.GreaterOrEqual(t, goodputBPS, 5_600_000.0)
-	require.Less(t, retransmitRatio, 0.15)
+	// A fixed-capacity media path can discard excess traffic without inflating
+	// RTT or the local writer queue. Preserve useful throughput and bound that
+	// loss instead of forcing every such path below an artificial 15% target.
+	require.Less(t, retransmitRatio, 0.45)
 	require.Less(t, time.Duration(maximumZeroIntervals)*interval, 2*time.Second)
 
 	// Three consecutive virtual runs must retain non-zero aggregate delivery.
@@ -167,6 +170,49 @@ func TestWireV9BackloggedLaneIsNotApplicationLimited(t *testing.T) {
 	lane.updateDeliveryController(start.Add(laneDeliverySampleWindow), 50)
 
 	require.False(t, lane.applicationLimited)
+}
+
+func TestWireV9LossyStablePathKeepsProbingCapacity(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	emulator := deterministicLaneEmulator{
+		bandwidthBPS: 6_000_000 / 8,
+		rtt:          80 * time.Millisecond,
+		lossEvery:    4,
+	}
+	for sample := 1; sample <= 12; sample++ {
+		sent, delivered, retransmitted, rtt := emulator.deliver(lane.pacingRateBPS, laneDeliverySampleWindow)
+		lane.deliveryOutSegments = uint64(sent)
+		lane.deliveryRetrans = uint64(retransmitted)
+		lane.deliveryDemanded = true
+		lane.kcpSRTTMS = float64(rtt) / float64(time.Millisecond)
+		lane.updateDeliveryController(start.Add(time.Duration(sample)*laneDeliverySampleWindow), delivered)
+	}
+
+	require.Greater(t, lane.pacingRateBPS, float64(lanePacingInitialBPS))
+	require.Zero(t, lane.congestionSamples)
+}
+
+func TestWireV9LossWithDelayAndPressureBacksOff(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	lane.pacingRateBPS = 500_000
+	lane.deliveryRateBPS = 400_000
+	lane.deliveryCapacityBPS = 400_000
+	lane.kcpSRTTMS = 200
+	lane.outputPending = make([]queuedSegment, 3*laneKCPOutputBacklog/4)
+
+	for sample := 1; sample <= laneCongestionSamples; sample++ {
+		lane.deliveryOutSegments = 100
+		lane.deliveryRetrans = 30
+		lane.deliveryDemanded = true
+		lane.updateDeliveryController(start.Add(time.Duration(sample)*laneDeliverySampleWindow), 50)
+	}
+
+	require.Less(t, lane.pacingRateBPS, 500_000.0)
 }
 
 func TestWireV9BlackholeLeavesThreeLaneCapacity(t *testing.T) {

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.38
+
+- Replaced retransmission-only pacing backoff with a composite congestion
+  signal. A lossy VK media path now backs off only when loss or RTT inflation
+  coincides with a pressured transport window and collapsing delivery.
+- Added bounded loss compensation to steady pacing and allowed startup probing
+  to continue across stable double-digit loss. Four healthy calls can use their
+  available capacity instead of converging near the former 15% retry threshold.
+- Overlapped local ordered-flow migration with the peer PREPARE migration during
+  lane reset, while retaining a barrier before generation commit. This removes
+  the serial two-sided migration delay and reduces the interval in which TCP
+  flows can time out during a real lane stall.
+
 ## v1.13.16-extended-hydracore.11-debug.37
 
 - Revalidated serialized lane recoveries against fresh ACK progress, current

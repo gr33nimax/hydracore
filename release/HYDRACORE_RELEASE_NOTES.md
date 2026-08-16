@@ -1,4 +1,13 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.30
+# HydraCore v1.13.16-extended-hydracore.11-debug.31
+
+This build closes the VK authentication storm observed immediately after an
+Android VPN network handover. Planned lane replacement preserves reusable TURN
+credentials, overlapping interface notifications are coalesced into the active
+staged rebind, and credential acquisition is serialized across all four join
+links. VK API error 9 now opens a shared two-minute circuit breaker and does
+not fall through to legacy authentication.
+
+## Previous debug.30 notes
 
 This build starts each staged network-handover reset while the remaining lanes
 can still carry its control handshake. Planned worker replacement therefore

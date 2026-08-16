@@ -128,6 +128,9 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 		}
 		if errObj, hasErr := callResp["error"].(map[string]interface{}); hasErr {
 			errCode, _ := errObj["error_code"].(float64)
+			if int(errCode) == 9 {
+				return "", fmt.Errorf("%w (legacy error_code=9)", ErrVKFloodControl)
+			}
 			if int(errCode) == 14 {
 				captchaErr := parseVKCaptchaError(errObj)
 				if captchaErr == nil {

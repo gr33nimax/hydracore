@@ -261,7 +261,6 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 			c.readyOnce.Do(func() { close(c.ready) })
 			select {
 			case <-done:
-				c.invalidateCredentials(joinLink)
 			case <-c.ctx.Done():
 				return
 			}
@@ -301,14 +300,13 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	if err != nil {
 		return nil, err
 	}
-	attached := false
-	defer func() {
-		if !attached {
-			c.invalidateCredentials(joinLink)
-		}
-	}()
 	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), metrics, workerID)
 	if err != nil {
+		// A cancelled allocation belongs to a planned network handover. Its
+		// credentials remain valid and must not trigger another VK API join.
+		if ctx.Err() == nil {
+			c.invalidateCredentials(joinLink)
+		}
 		return nil, err
 	}
 	codec, err := newRTPCodec(c.key)
@@ -402,7 +400,6 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	}
 	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
 	metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
-	attached = true
 	return done, nil
 }
 
@@ -457,12 +454,22 @@ func (c *Client) RebindNetwork() {
 	c.metrics.RecordEvent("network_changed", "network", "default_interface", nil)
 	c.rebindMu.Lock()
 	if c.rebindCancel != nil {
-		c.rebindCancel()
+		c.rebindMu.Unlock()
+		c.metrics.RecordEvent("network_rebind_coalesced", "network", "handover_active", nil)
+		c.logger.Info("call vk_parasite: network change coalesced into active worker handover")
+		return
 	}
 	rebindContext, cancel := context.WithCancel(c.ctx)
 	c.rebindCancel = cancel
 	c.rebindMu.Unlock()
-	go c.rebindWorkers(rebindContext)
+	go func() {
+		defer func() {
+			c.rebindMu.Lock()
+			c.rebindCancel = nil
+			c.rebindMu.Unlock()
+		}()
+		c.rebindWorkers(rebindContext)
+	}()
 	c.logger.Info("call vk_parasite: network changed, staging worker transport rebinds")
 }
 

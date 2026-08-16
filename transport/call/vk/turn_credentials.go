@@ -19,20 +19,27 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const turnCredentialCacheTTL = 8 * time.Minute
+const (
+	turnCredentialCacheTTL     = 8 * time.Minute
+	turnCredentialMinimumReuse = 30 * time.Second
+	vkFloodControlCooldown     = 2 * time.Minute
+)
 
 type cachedTURNCredentials struct {
-	server  TurnServer
-	expires time.Time
+	server       TurnServer
+	expires      time.Time
+	refreshAfter time.Time
 }
 
 type TURNCredentialProvider struct {
-	dialer  N.Dialer
-	logger  logger.ContextLogger
-	mu      sync.Mutex
-	cache   map[string]cachedTURNCredentials
-	group   singleflight.Group
-	metrics *telemetry.Accumulator
+	dialer     N.Dialer
+	logger     logger.ContextLogger
+	mu         sync.Mutex
+	cache      map[string]cachedTURNCredentials
+	group      singleflight.Group
+	metrics    *telemetry.Accumulator
+	fetchGate  chan struct{}
+	floodUntil time.Time
 }
 
 func (p *TURNCredentialProvider) SetTelemetry(metrics *telemetry.Accumulator) {
@@ -43,11 +50,14 @@ func NewTURNCredentialProvider(dialer N.Dialer, log logger.ContextLogger) *TURNC
 	if log == nil {
 		log = logger.NOP()
 	}
-	return &TURNCredentialProvider{
-		dialer: dialer,
-		logger: log,
-		cache:  make(map[string]cachedTURNCredentials),
+	provider := &TURNCredentialProvider{
+		dialer:    dialer,
+		logger:    log,
+		cache:     make(map[string]cachedTURNCredentials),
+		fetchGate: make(chan struct{}, 1),
 	}
+	provider.fetchGate <- struct{}{}
+	return provider
 }
 
 func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (TurnServer, error) {
@@ -60,19 +70,43 @@ func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (Tu
 		metrics.Add(telemetry.VKCredentialCacheHitTotal, 1)
 		return server, nil
 	}
+	if err := p.floodControlError(time.Now()); err != nil {
+		return TurnServer{}, err
+	}
 	result := p.group.DoChan(joinLink, func() (any, error) {
 		if server, loaded := p.cached(joinLink); loaded {
 			metrics.Add(telemetry.VKCredentialCacheHitTotal, 1)
 			return server, nil
 		}
+		select {
+		case <-ctx.Done():
+			return TurnServer{}, ctx.Err()
+		case <-p.fetchGate:
+		}
+		defer func() { p.fetchGate <- struct{}{} }()
+		if server, loaded := p.cached(joinLink); loaded {
+			metrics.Add(telemetry.VKCredentialCacheHitTotal, 1)
+			return server, nil
+		}
+		if err := p.floodControlError(time.Now()); err != nil {
+			return TurnServer{}, err
+		}
 		metrics.Add(telemetry.VKCredentialFetchTotal, 1)
 		fetchContext := telemetry.ContextWithAccumulator(ctx, metrics)
 		server, err := FetchTURNCredentials(fetchContext, p.dialer, joinLink, "HydraCore", p.logger)
 		if err != nil {
+			if errors.Is(err, ErrVKFloodControl) {
+				p.activateFloodControl(time.Now())
+			}
 			return TurnServer{}, err
 		}
+		now := time.Now()
 		p.mu.Lock()
-		p.cache[joinLink] = cachedTURNCredentials{server: cloneTurnServer(server), expires: time.Now().Add(turnCredentialCacheTTL)}
+		p.cache[joinLink] = cachedTURNCredentials{
+			server:       cloneTurnServer(server),
+			expires:      now.Add(turnCredentialCacheTTL),
+			refreshAfter: now.Add(turnCredentialMinimumReuse),
+		}
 		p.mu.Unlock()
 		return server, nil
 	})
@@ -87,12 +121,36 @@ func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (Tu
 	}
 }
 
-// Invalidate forces the next physical TURN connection for this VK call to
-// obtain a new allocation identity. A successful TURN Allocate does not prove
-// that a cached VK credential still carries return traffic, so DTLS or inner
-// authentication failures must not keep retrying it for the full cache TTL.
+func (p *TURNCredentialProvider) activateFloodControl(now time.Time) {
+	p.mu.Lock()
+	until := now.Add(vkFloodControlCooldown)
+	if until.After(p.floodUntil) {
+		p.floodUntil = until
+	}
+	p.mu.Unlock()
+}
+
+func (p *TURNCredentialProvider) floodControlError(now time.Time) error {
+	p.mu.Lock()
+	until := p.floodUntil
+	p.mu.Unlock()
+	if !until.After(now) {
+		return nil
+	}
+	remaining := until.Sub(now).Round(time.Second)
+	return fmt.Errorf("%w: retry after %s", ErrVKFloodControl, remaining)
+}
+
+// Invalidate lets the next physical TURN connection obtain a new allocation
+// identity after a minimum reuse window. The window prevents several lanes
+// observing the same network handover from turning one transport failure into
+// a burst of VK control-plane joins.
 func (p *TURNCredentialProvider) Invalidate(joinLink string) {
 	p.mu.Lock()
+	if entry, loaded := p.cache[joinLink]; loaded && time.Now().Before(entry.refreshAfter) {
+		p.mu.Unlock()
+		return
+	}
 	delete(p.cache, joinLink)
 	p.mu.Unlock()
 	p.group.Forget(joinLink)

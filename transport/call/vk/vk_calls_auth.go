@@ -31,6 +31,7 @@ const (
 var (
 	vkCallsAPIBaseURL = "https://api.vk.me/method"
 	vkCallsOKBaseURL  = "https://calls.okcdn.ru/fb.do"
+	ErrVKFloodControl = errors.New("VK API flood control")
 )
 
 // RunVKAuth first uses the anonymous VK Calls flow used by current VK clients.
@@ -49,6 +50,11 @@ func RunVKAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayNam
 	}
 	if ctx.Err() != nil {
 		return "", ctx.Err()
+	}
+	// Legacy auth cannot bypass an account-wide VK rate limit and would add
+	// another control-plane request to an already throttled credential set.
+	if errors.Is(err, ErrVKFloodControl) {
+		return "", err
 	}
 	log.Warn(fmt.Sprintf("vk-auth: VK Calls path failed, falling back to legacy: %v", err))
 	return runVKLegacyAuthContext(ctx, dialer, joinLink, displayName, log)
@@ -252,6 +258,9 @@ func vkCallsResponseError(response map[string]interface{}) error {
 	message, _ := errorObject["error_msg"].(string)
 	if code == "14" {
 		return fmt.Errorf("captcha required (error_code=14)")
+	}
+	if code == "9" {
+		return fmt.Errorf("%w (error_code=9): %s", ErrVKFloodControl, message)
 	}
 	if code == "" && message == "" {
 		return nil

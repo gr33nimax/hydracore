@@ -28,3 +28,36 @@ func TestTURNCredentialProviderInvalidate(t *testing.T) {
 	_, loaded = provider.cached(joinLink)
 	require.False(t, loaded)
 }
+
+func TestTURNCredentialProviderKeepsFreshCredentials(t *testing.T) {
+	t.Parallel()
+	provider := NewTURNCredentialProvider(nil, nil)
+	joinLink := "https://vk.com/call/join/fresh"
+	provider.cache[joinLink] = cachedTURNCredentials{
+		server:       TurnServer{Username: "fresh-user"},
+		expires:      time.Now().Add(time.Minute),
+		refreshAfter: time.Now().Add(time.Minute),
+	}
+
+	provider.Invalidate(joinLink)
+	server, loaded := provider.cached(joinLink)
+	require.True(t, loaded)
+	require.Equal(t, "fresh-user", server.Username)
+}
+
+func TestTURNCredentialProviderFloodControlCooldown(t *testing.T) {
+	t.Parallel()
+	provider := NewTURNCredentialProvider(nil, nil)
+	now := time.Now()
+	provider.activateFloodControl(now)
+	require.ErrorIs(t, provider.floodControlError(now.Add(time.Second)), ErrVKFloodControl)
+	require.NoError(t, provider.floodControlError(now.Add(vkFloodControlCooldown)))
+	provider.cache["cached"] = cachedTURNCredentials{
+		server: TurnServer{Username: "still-valid"},
+		expires: now.Add(time.Minute),
+	}
+	server, loaded := provider.cached("cached")
+	require.True(t, loaded)
+	require.Equal(t, "still-valid", server.Username)
+	require.ErrorIs(t, provider.floodControlError(now.Add(time.Second)), ErrVKFloodControl)
+}

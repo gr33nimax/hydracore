@@ -1,6 +1,9 @@
 package vk
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestVKCallsNestedValues(t *testing.T) {
 	response := map[string]interface{}{
@@ -16,6 +19,18 @@ func TestVKCallsNestedValues(t *testing.T) {
 	userID, ok := vkCallsNestedNumberString(response, "response", "user_id")
 	if !ok || userID != "123456" {
 		t.Fatalf("unexpected user id: %q, %v", userID, ok)
+	}
+}
+
+func TestVKCallsResponseErrorDetectsFloodControl(t *testing.T) {
+	err := vkCallsResponseError(map[string]interface{}{
+		"error": map[string]interface{}{
+			"error_code": float64(9),
+			"error_msg":  "Flood control",
+		},
+	})
+	if !errors.Is(err, ErrVKFloodControl) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.31
+
+- Prevented Android network handover from invalidating reusable VK TURN
+  credentials or restarting an already active staged rebind.
+- Serialized VK credential acquisition across all four join links and added a
+  shared two-minute circuit breaker for VK API error 9. Flood control no
+  longer falls through to the legacy auth path or creates an auth retry storm.
+
 ## v1.13.16-extended-hydracore.11-debug.30
 
 - Start each planned network-rebind generation reset before detaching its

@@ -1,4 +1,14 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.28
+# HydraCore v1.13.16-extended-hydracore.11-debug.29
+
+This build corrects the debug.28 CI failure and one real lifecycle boundary it
+exposed. The fast three-worker detach escalation is armed only after a tunnel
+has reached all four physical workers. A single-lane recycle during initial
+attach or staged network rebind therefore remains lane-local, while an
+established four-line session still closes immediately after three transports
+disappear. Verified runtime capability gates and emulator selection now use
+wire v8.
+
+## Previous debug.28 notes
 
 This build closes the failure chain captured in the debug.27 speed-test and
 streaming run and introduces incompatible wire v8. Client and VPS must be

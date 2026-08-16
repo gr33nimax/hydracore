@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.29
+
+- Limited three-worker detach escalation to sessions which previously reached
+  all four physical workers, so initial attach, focused lane tests and staged
+  network rebind cannot be mistaken for a collapsed established session.
+- Updated verified runtime capability gates and the deterministic emulator job
+  selector from wire v7 to wire v8.
+
 ## v1.13.16-extended-hydracore.11-debug.28
 
 - Introduced incompatible VK parasite wire v8 so the coordinator-only recovery

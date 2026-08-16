@@ -229,6 +229,7 @@ type ParasiteTunnel struct {
 	lastProgress          atomic.Int64
 	lastAggregateProgress atomic.Int64
 	lastApplicationDemand atomic.Int64
+	fullyAttached         atomic.Bool
 	metrics               *telemetry.Accumulator
 
 	sendStallTimeout  time.Duration
@@ -634,6 +635,9 @@ func (t *ParasiteTunnel) reserveWorkerGeneration(id uint16, generation, epoch ui
 	lane.worker = worker
 	lane.availabilityEpoch.Add(1)
 	lane.workerMu.Unlock()
+	if t.ActiveWorkers() == LaneCount {
+		t.fullyAttached.Store(true)
+	}
 	lane.mu.Lock()
 	lane.pressureSince = time.Time{}
 	lane.lastAckProgress.Store(time.Now().UnixNano())
@@ -2043,7 +2047,7 @@ func (t *ParasiteTunnel) removeWorker(worker *laneWorker) {
 	if removed {
 		workerID := worker.id
 		t.recordEvent("lane_worker_detached", "lane", "transport_closed", &workerID)
-		if t.ActiveWorkers() <= 1 {
+		if t.fullyAttached.Load() && t.ActiveWorkers() <= 1 {
 			t.replaceSession("three_unavailable_lanes", &workerID)
 			return
 		}

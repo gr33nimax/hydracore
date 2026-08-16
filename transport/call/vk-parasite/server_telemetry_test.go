@@ -81,6 +81,8 @@ func TestServerTelemetryWritesUltimateCompatibleSnapshot(t *testing.T) {
 	require.Equal(t, "alice", record.User)
 	require.NotEmpty(t, record.SessionID)
 	require.Greater(t, record.Timestamp, float64(1))
+	require.Equal(t, float64(1), record.OriginTimestamp)
+	require.Equal(t, session.generation, record.SessionGeneration)
 	for _, metric := range telemetry.ClientRequired {
 		require.Contains(t, record.Metrics, telemetry.Name(metric))
 	}

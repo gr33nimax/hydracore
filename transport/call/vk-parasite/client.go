@@ -141,6 +141,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	if err != nil {
 		return nil, err
 	}
+	tunnel.SetRecoveryCoordinator(true)
 	ctx, cancel := context.WithCancel(parent)
 	client := &Client{
 		ctx:       ctx,

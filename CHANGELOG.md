@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.28
+
+- Introduced incompatible VK parasite wire v8 so the coordinator-only recovery
+  control cannot be silently mixed with a debug.27 wire-v7 peer.
+- Assigned lane-reset initiation to the client endpoint; the VPS now sends a
+  reset suggestion, eliminating independent cross-endpoint recovery of
+  different lanes and draining deferred lanes serially after cooldown.
+- Made reset handshakes adaptive to measured KCP RTO with a bounded 3-10 second
+  deadline, so high-latency TURN paths are not declared dead before an ACK can
+  physically return.
+- Required fresh application demand before aggregate no-progress can replace a
+  session, preventing an idle residual KCP tail from destroying a healthy
+  video session.
+- Bounded reconnect attempts to ten seconds with a five-second maximum retry
+  backoff, avoiding the measured minute-scale recovery gap.
+- Preserved the client event timestamp, stamped every received client record
+  with the authoritative server-session generation, and counted coalesced
+  snapshots separately from telemetry record drops.
+
 ## v1.13.16-extended-hydracore.11-debug.27
 
 - Serialized soft lane recovery before reset initiation and added a cooldown,

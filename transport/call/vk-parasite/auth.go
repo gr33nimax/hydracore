@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	authProtocolVersion   = 7
+	authProtocolVersion   = 8
 	maximumUserLength     = 64
 	maximumPasswordLen    = 256
 	maximumAuthFrameLen   = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen

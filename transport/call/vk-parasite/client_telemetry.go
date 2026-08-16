@@ -121,6 +121,9 @@ func (c *Client) sendTelemetryRecord(record telemetry.Record) {
 		if c.telemetrySnapshots == nil {
 			c.telemetrySnapshots = make(map[int][]byte, c.options.Workers+1)
 		}
+		if _, coalesced := c.telemetrySnapshots[key]; coalesced {
+			c.metrics.Add(telemetry.TelemetrySnapshotCoalescedTotal, 1)
+		}
 		c.telemetrySnapshots[key] = payload
 	}
 	c.updateTelemetryPendingLocked()

@@ -73,7 +73,7 @@ func TestRequiredMetricContractMatchesHydraUltimate(t *testing.T) {
 		"outer_packets_in_total", "outer_packets_out_total", "outer_bytes_in_total", "outer_bytes_out_total",
 		"outer_payload_bytes_in_total", "outer_payload_bytes_out_total", "outer_overhead_bytes_in_total", "outer_overhead_bytes_out_total", "outer_auth_failures_total",
 		"runtime_cpu_percent", "runtime_rss_bytes", "runtime_thermal_state",
-		"telemetry_sequence", "telemetry_record_drops_total", "telemetry_lease_expired_total", "telemetry_pending_records",
+		"telemetry_sequence", "telemetry_record_drops_total", "telemetry_lease_expired_total", "telemetry_pending_records", "telemetry_snapshot_coalesced_total",
 	}
 	accumulator := NewAccumulator()
 	require.ElementsMatch(t, serverExpected, metricNames(accumulator.Snapshot(ServerRequired)))

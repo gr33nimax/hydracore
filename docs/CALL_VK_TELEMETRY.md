@@ -9,12 +9,16 @@ timer and records only while Ultimate's active session marker is present.
 The VPS watches `/var/lib/hydra/calls/vk/telemetry/active.json`, writes schema-v1
 JSONL to `/run/hydra/calls-telemetry.jsonl`, and rotates 64 MiB handoff parts.
 Ultimate drains them into its compressed bounded timeline. Client snapshots
-travel inside authenticated wire-v7 control frames; no extra listener or
+travel inside authenticated wire-v8 control frames; no extra listener or
 credential is exposed.
 
-The VPS overwrites client identity and timestamp with the authenticated user,
-native session and receipt time. It validates record size, schema, scalar
-values and lane IDs, rate-limits records, and records continuity counters.
+The VPS overwrites client identity and the primary timestamp with the
+authenticated user, native session and receipt time. It also preserves the
+client event time as `origin_timestamp` and stamps the authoritative
+`session_generation`. It validates record size, schema, scalar values and lane
+IDs, rate-limits records, and records continuity counters. Latest-wins snapshot
+replacement is exposed as `telemetry_snapshot_coalesced_total`, separately from
+actual record drops.
 
 ## Record scopes
 
@@ -50,7 +54,7 @@ quarantined lanes, the session-replacement counter/reason events and
 backpressure. Process records add UDP ingress/socket buffers, listener drops,
 CPU, RSS, thermal state and handshake capacity.
 
-The four independent KCP records are the critical difference in wire v7: RTT,
+The four independent KCP records are the critical difference in wire v8: RTT,
 RTO and retransmission pressure can be attributed to the exact VK call instead
 of inferred from a shared reliable session. Comparing lane goodput, WaitSnd,
 RTT/RTO, physical loss and queue delay reveals whether the next optimization

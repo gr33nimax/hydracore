@@ -524,7 +524,7 @@ recovered:
 	tunnel.lanes[0].mu.Lock()
 	require.Equal(t, laneStateQuarantined, tunnel.lanes[0].state)
 	tunnel.lanes[0].mu.Unlock()
-	require.Equal(t, 1, tunnel.ActiveWorkers(), "wire v7 waits for RESET_ACK before detaching the physical lane")
+	require.Equal(t, 1, tunnel.ActiveWorkers(), "wire v8 waits for RESET_ACK before detaching the physical lane")
 	_ = blockedPeer.Close()
 	select {
 	case <-sendDone:
@@ -559,6 +559,34 @@ func TestParasiteTunnelAllowsTwoQuarantinesAndEscalatesTheThird(t *testing.T) {
 	case <-tunnel.Done():
 	case <-time.After(time.Second):
 		t.Fatal("three quarantined lanes did not trigger full session replacement")
+	}
+}
+
+func TestParasiteTunnelReplacesSessionWhenThreeWorkersDetach(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x6677889f, logger.NOP())
+	require.NoError(t, err)
+	peers := make([]net.Conn, 0, LaneCount)
+	for laneID := uint16(0); laneID < LaneCount; laneID++ {
+		workerConn, peerConn := newTestDatagramPair()
+		_, err = tunnel.AddWorkerEpoch(laneID, 1, workerConn)
+		require.NoError(t, err)
+		peers = append(peers, peerConn)
+	}
+	t.Cleanup(func() {
+		_ = tunnel.Close()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	tunnel.DropWorker(0)
+	tunnel.DropWorker(1)
+	tunnel.DropWorker(2)
+	select {
+	case <-tunnel.Done():
+	case <-time.After(time.Second):
+		t.Fatal("three detached workers did not trigger full session replacement")
 	}
 }
 
@@ -827,6 +855,71 @@ func TestLaneAckStallTimeoutTracksMeasuredRTO(t *testing.T) {
 	lane.mu.Unlock()
 }
 
+func TestLaneResetHandshakeDeadlineTracksMeasuredRTO(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788a5, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+	require.Equal(t, laneResetMinimumDeadline, tunnel.laneResetHandshakeDeadline(0))
+	lane := tunnel.lanes[0]
+	lane.mu.Lock()
+	lane.kcpSRTTMS = 600
+	lane.kcpRTTVARMS = 200
+	lane.mu.Unlock()
+	require.Equal(t, 8400*time.Millisecond, tunnel.laneResetHandshakeDeadline(0))
+	lane.mu.Lock()
+	lane.kcpSRTTMS = 2000
+	lane.kcpRTTVARMS = 1000
+	lane.mu.Unlock()
+	require.Equal(t, laneResetMaximumDeadline, tunnel.laneResetHandshakeDeadline(0))
+}
+
+func TestParasiteTunnelOnlyCoordinatorAcceptsRecoverySuggestion(t *testing.T) {
+	t.Parallel()
+	coordinator, err := NewParasiteTunnel(0x667788a6, logger.NOP())
+	require.NoError(t, err)
+	responder, err := NewParasiteTunnel(0x667788a6, logger.NOP())
+	require.NoError(t, err)
+	coordinator.SetRecoveryCoordinator(true)
+	responder.SetRecoveryCoordinator(false)
+	coordinatorConn, coordinatorPeer := newTestDatagramPair()
+	responderConn, responderPeer := newTestDatagramPair()
+	_, err = coordinator.AddWorkerEpoch(0, 1, coordinatorConn)
+	require.NoError(t, err)
+	_, err = responder.AddWorkerEpoch(0, 1, responderConn)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = coordinator.Close()
+		_ = responder.Close()
+		_ = coordinatorPeer.Close()
+		_ = responderPeer.Close()
+	})
+
+	coordinator.handleLaneResetControl(laneResetSuggest, 0, 2)
+	responder.handleLaneResetControl(laneResetSuggest, 0, 2)
+	require.Eventually(t, func() bool {
+		coordinator.lanes[0].mu.Lock()
+		defer coordinator.lanes[0].mu.Unlock()
+		return coordinator.lanes[0].state == laneStateQuarantined
+	}, time.Second, 10*time.Millisecond)
+	responder.lanes[0].mu.Lock()
+	require.Equal(t, laneStateActive, responder.lanes[0].state)
+	responder.lanes[0].mu.Unlock()
+}
+
+func TestParasiteTunnelNoProgressRequiresFreshApplicationDemand(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788a7, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+	now := time.Now()
+	require.False(t, tunnel.hasFreshApplicationDemand(now, 5*time.Second))
+	tunnel.lastApplicationDemand.Store(now.Add(-6 * time.Second).UnixNano())
+	require.False(t, tunnel.hasFreshApplicationDemand(now, 5*time.Second))
+	tunnel.lastApplicationDemand.Store(now.Add(-time.Second).UnixNano())
+	require.True(t, tunnel.hasFreshApplicationDemand(now, 5*time.Second))
+}
+
 func TestParasiteTunnelUnavailableLaneAbortsOnlyItsFlows(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x6677889f, logger.NOP())
@@ -869,7 +962,7 @@ func TestParasiteTunnelUnavailableLaneAbortsOnlyItsFlows(t *testing.T) {
 	}
 }
 
-func TestParasiteTunnelMissingPreferredLaneDoesNotRecycleHealthyLane(t *testing.T) {
+func TestParasiteTunnelMissingPreferredLaneResetsOnlyThatLane(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x667788a0, logger.NOP())
 	require.NoError(t, err)
@@ -881,9 +974,15 @@ func TestParasiteTunnelMissingPreferredLaneDoesNotRecycleHealthyLane(t *testing.
 	t.Cleanup(func() { _ = peer.Close() })
 	missing := uint16(0)
 	workerID, result := tunnel.recoverStalledLane(&missing)
-	require.Equal(t, laneRecoveryUnavailable, result)
+	require.Equal(t, laneRecoveryStarted, result)
 	require.Equal(t, missing, workerID)
 	require.Equal(t, 1, tunnel.ActiveWorkers())
+	tunnel.lanes[0].mu.Lock()
+	require.Equal(t, laneStateQuarantined, tunnel.lanes[0].state)
+	tunnel.lanes[0].mu.Unlock()
+	tunnel.lanes[1].mu.Lock()
+	require.Equal(t, laneStateActive, tunnel.lanes[1].state)
+	tunnel.lanes[1].mu.Unlock()
 }
 
 func TestParasiteTunnelTelemetryTrySendDoesNotWaitForControlFlow(t *testing.T) {

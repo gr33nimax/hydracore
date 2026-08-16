@@ -1,4 +1,24 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.27
+# HydraCore v1.13.16-extended-hydracore.11-debug.28
+
+This build closes the failure chain captured in the debug.27 speed-test and
+streaming run and introduces incompatible wire v8. Client and VPS must be
+updated together. Lane recovery now has one cross-endpoint coordinator: the VPS
+suggests the affected lane and the client serializes generation resets, so the
+two ends cannot independently quarantine different calls. Deferred lanes are
+revisited after cooldown instead of being lost.
+
+Reset handshakes use the measured KCP RTO with a bounded three-to-ten-second
+deadline. Complete-session no-progress replacement now also requires recent
+application demand, which leaves an idle residual KCP tail alone while still
+recovering a genuinely blocked active flow. Reconnect attempts are capped at
+ten seconds and retry backoff at five seconds to prevent minute-scale outages.
+
+Client telemetry retains its original event timestamp alongside server receive
+time and carries the authoritative server-session generation. Snapshot
+coalescing has its own counter, so sequence gaps caused by latest-wins buffering
+are no longer indistinguishable from actual record loss.
+
+## Previous debug.27 notes
 
 This build hardens wire-v7 behavior observed across speed tests, video and
 YouTube. Soft recovery is reserved before reset begins and remains

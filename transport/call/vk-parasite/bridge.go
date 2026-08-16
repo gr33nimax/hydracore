@@ -16,8 +16,9 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-const parasiteReconnectMaxBackoff = 30 * time.Second
+const parasiteReconnectMaxBackoff = 5 * time.Second
 const parasiteReconnectInitialBackoff = time.Second
+const parasiteReconnectAttemptTimeout = 10 * time.Second
 
 type managedParasiteClient interface {
 	Tunnel() *ParasiteTunnel
@@ -86,7 +87,9 @@ func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLog
 	options = validatedOptions
 	managerCtx, cancel := context.WithCancel(ctx)
 	connector := func(connectCtx context.Context) (managedParasiteClient, error) {
-		return ConnectClient(connectCtx, options, log)
+		attemptCtx, attemptCancel := context.WithTimeout(connectCtx, parasiteReconnectAttemptTimeout)
+		defer attemptCancel()
+		return ConnectClient(attemptCtx, options, log)
 	}
 	initial := connectParasiteClientWithRetry(
 		managerCtx,

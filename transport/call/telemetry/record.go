@@ -18,17 +18,19 @@ const (
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 
 type Record struct {
-	Schema    int            `json:"schema"`
-	Timestamp float64        `json:"timestamp"`
-	Scope     string         `json:"scope"`
-	Kind      string         `json:"kind"`
-	User      string         `json:"user,omitempty"`
-	SessionID string         `json:"session_id,omitempty"`
-	WorkerID  *uint16        `json:"worker_id,omitempty"`
-	Event     string         `json:"event,omitempty"`
-	Stage     string         `json:"stage,omitempty"`
-	Reason    string         `json:"reason,omitempty"`
-	Metrics   map[string]any `json:"metrics"`
+	Schema            int            `json:"schema"`
+	Timestamp         float64        `json:"timestamp"`
+	OriginTimestamp   float64        `json:"origin_timestamp,omitempty"`
+	Scope             string         `json:"scope"`
+	Kind              string         `json:"kind"`
+	User              string         `json:"user,omitempty"`
+	SessionID         string         `json:"session_id,omitempty"`
+	SessionGeneration uint64         `json:"session_generation,omitempty"`
+	WorkerID          *uint16        `json:"worker_id,omitempty"`
+	Event             string         `json:"event,omitempty"`
+	Stage             string         `json:"stage,omitempty"`
+	Reason            string         `json:"reason,omitempty"`
+	Metrics           map[string]any `json:"metrics"`
 }
 
 func Snapshot(scope, user, sessionID string, metrics map[string]any) Record {
@@ -72,8 +74,8 @@ func DecodeClientRecord(payload []byte) (Record, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return Record{}, errors.New("call telemetry: trailing client record")
 	}
-	if record.Scope != "client" || record.User != "" || record.SessionID != "" {
-		return Record{}, errors.New("call telemetry: client supplied an identity")
+	if record.Scope != "client" || record.User != "" || record.SessionID != "" || record.SessionGeneration != 0 || record.OriginTimestamp != 0 {
+		return Record{}, errors.New("call telemetry: client supplied server-owned fields")
 	}
 	if err := ValidateRecord(record); err != nil {
 		return Record{}, err
@@ -90,6 +92,9 @@ func ValidateRecord(record Record) error {
 	}
 	if math.IsNaN(record.Timestamp) || math.IsInf(record.Timestamp, 0) || record.Timestamp < 0 {
 		return errors.New("call telemetry: invalid timestamp")
+	}
+	if math.IsNaN(record.OriginTimestamp) || math.IsInf(record.OriginTimestamp, 0) || record.OriginTimestamp < 0 {
+		return errors.New("call telemetry: invalid origin timestamp")
 	}
 	if len(record.Metrics) > 128 {
 		return errors.New("call telemetry: too many metrics")

@@ -47,7 +47,8 @@ const (
 	lanePacingProbeInterval   = 8 * time.Second
 	lanePacingProbeDuration   = time.Second
 	laneResetRetryInterval    = 250 * time.Millisecond
-	laneResetDeadline         = 2 * time.Second
+	laneResetMinimumDeadline  = 3 * time.Second
+	laneResetMaximumDeadline  = 10 * time.Second
 	laneProbeInterval         = 250 * time.Millisecond
 	laneProbeDeadline         = 10 * time.Second
 	laneFrameHeaderSize       = 32
@@ -65,9 +66,9 @@ const (
 )
 
 var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 2, 0}
-var laneResetControlMagic = [8]byte{'H', 'C', 'V', 'K', 'R', 'S', 7, 0}
-var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 7, 0}
-var laneProbeMagic = [8]byte{'H', 'C', 'V', 'K', 'P', 'R', 7, 0}
+var laneResetControlMagic = [8]byte{'H', 'C', 'V', 'K', 'R', 'S', 8, 0}
+var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 8, 0}
+var laneProbeMagic = [8]byte{'H', 'C', 'V', 'K', 'P', 'R', 8, 0}
 
 type laneState uint8
 
@@ -82,6 +83,7 @@ const (
 	laneResetPrepare byte = 1
 	laneResetACK     byte = 2
 	laneResetCommit  byte = 3
+	laneResetSuggest byte = 4
 	laneProbeRequest byte = 1
 	laneProbeACK     byte = 2
 )
@@ -223,10 +225,11 @@ type ParasiteTunnel struct {
 	onData     func([]byte)
 	onClose    func()
 
-	lastActivity atomic.Int64
-	lastProgress atomic.Int64
+	lastActivity          atomic.Int64
+	lastProgress          atomic.Int64
 	lastAggregateProgress atomic.Int64
-	metrics      *telemetry.Accumulator
+	lastApplicationDemand atomic.Int64
+	metrics               *telemetry.Accumulator
 
 	sendStallTimeout  time.Duration
 	laneRecoveryGrace time.Duration
@@ -236,10 +239,13 @@ type ParasiteTunnel struct {
 	recoveryLane      uint16
 	recoveryDeadline  time.Time
 	recoveryStartedAt  time.Time
-	recoveryCooldown   time.Duration
-	recoveryReadyAt    time.Time
-	recoveryDeferred   uint8
-	sessionReplaceOnce sync.Once
+	recoveryCooldown    time.Duration
+	recoveryReadyAt     time.Time
+	recoveryDeferred    uint8
+	recoveryPending     uint8
+	recoverySuggestedAt [LaneCount]time.Time
+	recoveryCoordinator atomic.Bool
+	sessionReplaceOnce  sync.Once
 
 	telemetryMu             sync.RWMutex
 	telemetryCollectionMu   sync.Mutex
@@ -276,6 +282,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 	tunnel.lastActivity.Store(now)
 	tunnel.lastProgress.Store(now)
 	tunnel.lastAggregateProgress.Store(now)
+	tunnel.recoveryCoordinator.Store(true)
 	tunnel.sendStallTimeout = laneSendStallTimeout
 	tunnel.laneRecoveryGrace = defaultLaneRecoveryGrace
 	tunnel.recoveryCooldown = laneSendStallTimeout
@@ -364,6 +371,9 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 			t.touch()
 		}
 		return
+	}
+	if !priorityRelayMessage(msgType) {
+		t.markApplicationDemand()
 	}
 	state := t.sendFlow(connID)
 	state.mu.Lock()
@@ -476,6 +486,13 @@ func (t *ParasiteTunnel) SetOnClose(callback func()) {
 	t.callbackMu.Lock()
 	t.onClose = callback
 	t.callbackMu.Unlock()
+}
+
+// SetRecoveryCoordinator selects the endpoint which is allowed to initiate a
+// generation reset. The peer only suggests a lane, preventing the two ends
+// from quarantining different lanes at the same time.
+func (t *ParasiteTunnel) SetRecoveryCoordinator(coordinator bool) {
+	t.recoveryCoordinator.Store(coordinator)
 }
 
 func (t *ParasiteTunnel) Reconfigure(_, _ int) {}
@@ -764,7 +781,7 @@ func decodeLaneResetControl(payload []byte) (byte, uint16, uint64, bool) {
 	kind := payload[8]
 	laneID := binary.BigEndian.Uint16(payload[9:11])
 	generation := binary.BigEndian.Uint64(payload[11:19])
-	if laneID >= LaneCount || generation == 0 || kind < laneResetPrepare || kind > laneResetCommit {
+	if laneID >= LaneCount || generation == 0 || kind < laneResetPrepare || kind > laneResetSuggest {
 		return 0, 0, 0, false
 	}
 	return kind, laneID, generation, true
@@ -811,6 +828,16 @@ func (t *ParasiteTunnel) broadcastLaneResetControl(kind byte, laneID uint16, gen
 func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, generation uint64) {
 	lane := t.lanes[laneID]
 	switch kind {
+	case laneResetSuggest:
+		if !t.recoveryCoordinator.Load() {
+			return
+		}
+		lane.mu.Lock()
+		valid := lane.state == laneStateActive && generation == lane.generation+1
+		lane.mu.Unlock()
+		if valid {
+			go t.recoverStalledLane(&laneID)
+		}
 	case laneResetPrepare:
 		lane.mu.Lock()
 		current := lane.generation
@@ -830,6 +857,9 @@ func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, genera
 			lane.metrics.AddHot(telemetry.LaneResetRequestTotal, 1)
 		}
 		lane.mu.Unlock()
+		t.recoveryMu.Lock()
+		t.recoverySuggestedAt[laneID] = time.Time{}
+		t.recoveryMu.Unlock()
 		if newPrepare {
 			t.abortLaneFlows(laneID, "lane_reset_prepare")
 		}
@@ -876,7 +906,7 @@ func (t *ParasiteTunnel) recyclePeerWorker(workerID uint16, epoch uint64) {
 	valid := worker != nil && worker.epoch <= epoch
 	lane.workerMu.RUnlock()
 	if valid {
-		t.initiateLaneReset(workerID, "legacy_recycle")
+		t.recoverStalledLane(&workerID)
 	}
 }
 
@@ -1480,7 +1510,6 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 			if state != laneStateActive {
 				return selected.id, laneRecoveryInProgress
 			}
-			return selected.id, laneRecoveryUnavailable
 		}
 	}
 
@@ -1523,10 +1552,17 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 	if state != laneStateActive {
 		return workerID, laneRecoveryInProgress
 	}
+	if !t.recoveryCoordinator.Load() {
+		if t.suggestLaneReset(workerID) {
+			return workerID, laneRecoveryInProgress
+		}
+		return workerID, laneRecoveryUnavailable
+	}
 	now := time.Now()
 	deferredReason := ""
 	deferredDuplicate := false
 	recordDeferred := false
+	deferredDelay := time.Duration(0)
 	t.recoveryMu.Lock()
 	switch {
 	case t.recoveryActive:
@@ -1534,15 +1570,18 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 		deferredDuplicate = t.recoveryLane == workerID
 	case now.Before(t.recoveryReadyAt):
 		deferredReason = "recovery_cooldown"
+		deferredDelay = time.Until(t.recoveryReadyAt)
 	default:
 		t.recoveryActive = true
 		t.recoveryLane = workerID
 		t.recoveryStartedAt = now
-		t.recoveryDeadline = now.Add(laneResetDeadline + t.laneRecoveryGrace)
-		t.recoveryDeferred = 0
+		t.recoveryDeadline = now.Add(t.laneResetHandshakeDeadline(workerID) + t.laneRecoveryGrace)
+		t.recoveryPending &^= uint8(1 << workerID)
+		t.recoveryDeferred = t.recoveryPending
 	}
 	if deferredReason != "" && !deferredDuplicate && t.recoveryDeferred&uint8(1<<workerID) == 0 {
 		t.recoveryDeferred |= uint8(1 << workerID)
+		t.recoveryPending |= uint8(1 << workerID)
 		recordDeferred = true
 	}
 	t.recoveryMu.Unlock()
@@ -1550,6 +1589,9 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 		if recordDeferred {
 			selected.metrics.AddHot(telemetry.LaneRecoveryDeferredTotal, 1)
 			t.recordEvent("lane_send_recovery_deferred", "lane", deferredReason, &workerID)
+			if deferredDelay > 0 {
+				t.scheduleLaneRecovery(workerID, deferredDelay)
+			}
 		}
 		return workerID, laneRecoveryInProgress
 	}
@@ -1574,22 +1616,51 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 func (t *ParasiteTunnel) completeLaneRecovery(laneID uint16) {
 	t.recoveryMu.Lock()
 	recovered := t.recoveryActive && t.recoveryLane == laneID
+	var nextLane uint16
+	hasNext := false
+	delay := time.Duration(0)
 	if recovered {
 		t.recoveryActive = false
 		t.recoveryDeadline = time.Time{}
 		t.recoveryStartedAt = time.Time{}
 		t.recoveryReadyAt = time.Now().Add(t.recoveryCooldown)
-		t.recoveryDeferred = 0
+		t.recoveryDeferred = t.recoveryPending
+		for candidate := uint16(0); candidate < LaneCount; candidate++ {
+			if t.recoveryPending&uint8(1<<candidate) != 0 {
+				nextLane = candidate
+				hasNext = true
+				delay = time.Until(t.recoveryReadyAt)
+				break
+			}
+		}
 	}
 	t.recoveryMu.Unlock()
 	if recovered {
 		t.recordEvent("lane_send_recovered", "lane", "probe_ack_progress", &laneID)
 	}
+	if hasNext {
+		t.scheduleLaneRecovery(nextLane, delay)
+	}
+}
+
+func (t *ParasiteTunnel) scheduleLaneRecovery(laneID uint16, delay time.Duration) {
+	go func() {
+		timer := time.NewTimer(max(delay, 0))
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			t.recoverStalledLane(&laneID)
+		case <-t.closed:
+		}
+	}()
 }
 
 func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
 	if laneID >= LaneCount {
 		return false
+	}
+	if !t.recoveryCoordinator.Load() {
+		return t.suggestLaneReset(laneID)
 	}
 	lane := t.lanes[laneID]
 	lane.mu.Lock()
@@ -1612,12 +1683,58 @@ func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
 		t.replaceSession("three_quarantined_lanes", &laneID)
 		return true
 	}
-	go t.coordinateLaneReset(laneID, generation, ack)
+	go t.coordinateLaneReset(laneID, generation, ack, t.laneResetHandshakeDeadline(laneID))
 	return true
 }
 
-func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, ack <-chan uint64) {
-	deadline := time.NewTimer(laneResetDeadline)
+func (t *ParasiteTunnel) suggestLaneReset(laneID uint16) bool {
+	if laneID >= LaneCount {
+		return false
+	}
+	lane := t.lanes[laneID]
+	lane.mu.Lock()
+	if lane.state != laneStateActive {
+		lane.mu.Unlock()
+		return false
+	}
+	generation := lane.generation + 1
+	lane.mu.Unlock()
+	now := time.Now()
+	t.recoveryMu.Lock()
+	last := t.recoverySuggestedAt[laneID]
+	if !last.IsZero() && now.Sub(last) < laneResetRetryInterval {
+		t.recoveryMu.Unlock()
+		return true
+	}
+	first := last.IsZero()
+	t.recoverySuggestedAt[laneID] = now
+	t.recoveryMu.Unlock()
+	if first {
+		lane.metrics.AddHot(telemetry.LaneRecoveryDeferredTotal, 1)
+		t.recordEvent("lane_send_recovery_deferred", "lane", "peer_coordinator", &laneID)
+	}
+	return t.broadcastLaneResetControl(laneResetSuggest, laneID, generation) > 0
+}
+
+func (t *ParasiteTunnel) laneResetHandshakeDeadline(laneID uint16) time.Duration {
+	if laneID >= LaneCount {
+		return laneResetMinimumDeadline
+	}
+	lane := t.lanes[laneID]
+	lane.mu.Lock()
+	deadline := 6 * lane.estimatedKCPRTO()
+	lane.mu.Unlock()
+	if deadline < laneResetMinimumDeadline {
+		return laneResetMinimumDeadline
+	}
+	if deadline > laneResetMaximumDeadline {
+		return laneResetMaximumDeadline
+	}
+	return deadline
+}
+
+func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, ack <-chan uint64, handshakeDeadline time.Duration) {
+	deadline := time.NewTimer(handshakeDeadline)
 	retry := time.NewTicker(laneResetRetryInterval)
 	defer deadline.Stop()
 	defer retry.Stop()
@@ -1926,11 +2043,15 @@ func (t *ParasiteTunnel) removeWorker(worker *laneWorker) {
 	if removed {
 		workerID := worker.id
 		t.recordEvent("lane_worker_detached", "lane", "transport_closed", &workerID)
+		if t.ActiveWorkers() <= 1 {
+			t.replaceSession("three_unavailable_lanes", &workerID)
+			return
+		}
 		lane.mu.Lock()
 		shouldReset := lane.state == laneStateActive
 		lane.mu.Unlock()
 		if shouldReset {
-			t.initiateLaneReset(workerID, "worker_detached")
+			t.recoverStalledLane(&workerID)
 		}
 		go t.abortLaneFlowsIfUnavailable(workerID, availabilityEpoch)
 	}
@@ -2214,6 +2335,15 @@ func (t *ParasiteTunnel) markAggregateProgress() {
 	t.lastAggregateProgress.Store(time.Now().UnixNano())
 }
 
+func (t *ParasiteTunnel) markApplicationDemand() {
+	t.lastApplicationDemand.Store(time.Now().UnixNano())
+}
+
+func (t *ParasiteTunnel) hasFreshApplicationDemand(now time.Time, window time.Duration) bool {
+	lastDemand := t.lastApplicationDemand.Load()
+	return lastDemand != 0 && now.Sub(time.Unix(0, lastDemand)) <= window
+}
+
 func (t *ParasiteTunnel) replaceSession(reason string, laneID *uint16) {
 	t.sessionReplaceOnce.Do(func() {
 		t.metrics.AddHot(telemetry.SessionReplacementTotal, 1)
@@ -2245,6 +2375,10 @@ func (t *ParasiteTunnel) noProgressWatchLoop() {
 				continue
 			}
 			threshold := sessionNoProgressThreshold(medianRTO)
+			if !t.hasFreshApplicationDemand(now, threshold) {
+				pendingSince = time.Time{}
+				continue
+			}
 			progressReference := time.Unix(0, t.lastAggregateProgress.Load())
 			if pendingSince.After(progressReference) {
 				progressReference = pendingSince
@@ -2318,6 +2452,8 @@ func (t *ParasiteTunnel) Close() error {
 		t.recoveryStartedAt = time.Time{}
 		t.recoveryReadyAt = time.Time{}
 		t.recoveryDeferred = 0
+		t.recoveryPending = 0
+		t.recoverySuggestedAt = [LaneCount]time.Time{}
 		t.recoveryMu.Unlock()
 		if recoveryActive {
 			t.recordEvent("lane_send_recovery_escalated", "session", "session_close", &recoveryLane)

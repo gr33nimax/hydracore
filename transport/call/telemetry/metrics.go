@@ -116,6 +116,7 @@ const (
 	TelemetryLeaseExpiredTotal
 	TelemetrySinkRotationsTotal
 	TelemetryPendingRecords
+	TelemetrySnapshotCoalescedTotal
 	KCPMTUBytes
 	KCPSendWindowSegments
 	KCPReceiveWindowSegments
@@ -273,6 +274,7 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "telemetry_lease_expired_total", counter: true},
 	{name: "telemetry_sink_rotations_total", counter: true},
 	{name: "telemetry_pending_records"},
+	{name: "telemetry_snapshot_coalesced_total", counter: true},
 	{name: "kcp_mtu_bytes"},
 	{name: "kcp_send_window_segments"},
 	{name: "kcp_receive_window_segments"},
@@ -382,7 +384,7 @@ var ClientRequired = []Metric{
 	OuterPayloadBytesInTotal, OuterPayloadBytesOutTotal, OuterOverheadBytesInTotal, OuterOverheadBytesOutTotal,
 	OuterAuthFailuresTotal,
 	RuntimeCPUPercent, RuntimeRSSBytes, RuntimeThermalState,
-	TelemetrySequence, TelemetryRecordDropsTotal, TelemetryLeaseExpiredTotal, TelemetryPendingRecords,
+	TelemetrySequence, TelemetryRecordDropsTotal, TelemetryLeaseExpiredTotal, TelemetryPendingRecords, TelemetrySnapshotCoalescedTotal,
 }
 
 var TunnelMetrics = []Metric{

@@ -44,6 +44,7 @@ func TestClientTelemetryBacklogRetriesEventsAndCoalescesSnapshots(t *testing.T) 
 	client.flushTelemetryRecords()
 	require.Equal(t, 2.0, metrics.Value(telemetry.TelemetryPendingRecords))
 	require.Zero(t, metrics.Value(telemetry.TelemetryRecordDropsTotal))
+	require.Equal(t, 1.0, metrics.Value(telemetry.TelemetrySnapshotCoalescedTotal))
 
 	received := make(chan []byte, 2)
 	serverTunnel.SetTelemetryClientRecordHandler(func(payload []byte) {

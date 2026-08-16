@@ -383,9 +383,11 @@ func (t *serverTelemetry) clientRecord(session *serverSession, payload []byte) {
 		t.event("client_record_rejected", "telemetry", "worker_id", session.user, session.id, nil)
 		return
 	}
+	record.OriginTimestamp = record.Timestamp
 	record.Timestamp = float64(receivedAt.UnixNano()) / 1e9
 	record.User = session.user
 	record.SessionID = hex.EncodeToString(session.id[:])
+	record.SessionGeneration = session.generation
 	if err = t.sink.Write(record); err != nil {
 		t.logger.Warn("call telemetry: write client record: ", err)
 	}

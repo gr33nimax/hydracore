@@ -15,6 +15,7 @@ import (
 	"github.com/pion/dtls/v3"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/telemetry"
+	callvk "github.com/sagernet/sing-box/transport/call/vk"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -175,6 +176,10 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 			return client, nil
 		case err = <-client.errors:
 			lastErr = err
+			if errors.Is(err, callvk.ErrVKFloodControl) {
+				_ = client.Close()
+				return nil, fmt.Errorf("call vk_parasite: VK credentials unavailable: %w", err)
+			}
 		case <-timer.C:
 			_ = client.Close()
 			if lastErr != nil {
@@ -183,6 +188,9 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 			return nil, errors.New("call vk_parasite: no VK TURN worker connected before timeout")
 		case <-parent.Done():
 			_ = client.Close()
+			if lastErr != nil {
+				return nil, fmt.Errorf("call vk_parasite: connection attempt ended after worker failure: %w", lastErr)
+			}
 			return nil, parent.Err()
 		}
 	}
@@ -298,7 +306,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	ctx = telemetry.ContextWithAccumulator(ctx, metrics)
 	credentials, err := c.options.Credentials(ctx, joinLink)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("worker %d VK credentials: %w", workerID, err)
 	}
 	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), metrics, workerID)
 	if err != nil {
@@ -307,12 +315,12 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		if ctx.Err() == nil {
 			c.invalidateCredentials(joinLink)
 		}
-		return nil, err
+		return nil, fmt.Errorf("worker %d TURN allocate: %w", workerID, err)
 	}
 	codec, err := newRTPCodec(c.key)
 	if err != nil {
 		_ = allocation.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d RTP codec: %w", workerID, err)
 	}
 	packetConn := newObfsPacketConn(allocation, c.server, codec, metrics)
 	conn, err := dtls.Client(packetConn, c.server, &dtls.Config{
@@ -325,7 +333,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
 		metrics.RecordEvent("dtls_handshake_failed", "dtls", "initialize", &workerID)
 		_ = packetConn.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d DTLS initialize: %w", workerID, err)
 	}
 	handshakeStarted := time.Now()
 	if err = conn.HandshakeContext(ctx); err != nil {
@@ -338,7 +346,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 			metrics.RecordEvent("dtls_handshake_failed", "dtls", reason, &workerID)
 		}
 		_ = conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d DTLS handshake: %w", workerID, err)
 	}
 	metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 	metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
@@ -359,26 +367,26 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	if err != nil {
 		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "encode")
 		_ = conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d inner auth encode: %w", workerID, err)
 	}
 	_ = conn.SetDeadline(time.Now().Add(c.options.WorkerConnectTimeout))
 	if _, err = conn.Write(request); err != nil {
 		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "write")
 		_ = conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d inner auth write: %w", workerID, err)
 	}
 	ack := make([]byte, 14)
 	n, err := conn.Read(ack)
 	if err != nil {
 		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "read")
 		_ = conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d inner auth read: %w", workerID, err)
 	}
 	generation, err := decodeAuthAck(ack[:n])
 	if err != nil {
 		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "rejected")
 		_ = conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d inner auth rejected: %w", workerID, err)
 	}
 	expectedGeneration := c.generation.Load()
 	if expectedGeneration == 0 {
@@ -396,7 +404,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	if err != nil {
 		c.recordInnerAuthFailure(metrics, ctx, innerAuthStarted, workerID, "attach")
 		_ = conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("worker %d attach: %w", workerID, err)
 	}
 	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
 	metrics.Add(telemetry.InnerAuthSuccessTotal, 1)

@@ -31,15 +31,28 @@ type cachedTURNCredentials struct {
 	refreshAfter time.Time
 }
 
-type TURNCredentialProvider struct {
-	dialer     N.Dialer
-	logger     logger.ContextLogger
+type vkControlPlaneLimiter struct {
 	mu         sync.Mutex
-	cache      map[string]cachedTURNCredentials
-	group      singleflight.Group
-	metrics    *telemetry.Accumulator
 	fetchGate  chan struct{}
 	floodUntil time.Time
+}
+
+func newVKControlPlaneLimiter() *vkControlPlaneLimiter {
+	limiter := &vkControlPlaneLimiter{fetchGate: make(chan struct{}, 1)}
+	limiter.fetchGate <- struct{}{}
+	return limiter
+}
+
+var sharedVKControlPlaneLimiter = newVKControlPlaneLimiter()
+
+type TURNCredentialProvider struct {
+	dialer  N.Dialer
+	logger  logger.ContextLogger
+	mu      sync.Mutex
+	cache   map[string]cachedTURNCredentials
+	group   singleflight.Group
+	metrics *telemetry.Accumulator
+	limiter *vkControlPlaneLimiter
 }
 
 func (p *TURNCredentialProvider) SetTelemetry(metrics *telemetry.Accumulator) {
@@ -51,12 +64,11 @@ func NewTURNCredentialProvider(dialer N.Dialer, log logger.ContextLogger) *TURNC
 		log = logger.NOP()
 	}
 	provider := &TURNCredentialProvider{
-		dialer:    dialer,
-		logger:    log,
-		cache:     make(map[string]cachedTURNCredentials),
-		fetchGate: make(chan struct{}, 1),
+		dialer:  dialer,
+		logger:  log,
+		cache:   make(map[string]cachedTURNCredentials),
+		limiter: sharedVKControlPlaneLimiter,
 	}
-	provider.fetchGate <- struct{}{}
 	return provider
 }
 
@@ -81,9 +93,9 @@ func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (Tu
 		select {
 		case <-ctx.Done():
 			return TurnServer{}, ctx.Err()
-		case <-p.fetchGate:
+		case <-p.limiter.fetchGate:
 		}
-		defer func() { p.fetchGate <- struct{}{} }()
+		defer func() { p.limiter.fetchGate <- struct{}{} }()
 		if server, loaded := p.cached(joinLink); loaded {
 			metrics.Add(telemetry.VKCredentialCacheHitTotal, 1)
 			return server, nil
@@ -122,18 +134,18 @@ func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (Tu
 }
 
 func (p *TURNCredentialProvider) activateFloodControl(now time.Time) {
-	p.mu.Lock()
+	p.limiter.mu.Lock()
 	until := now.Add(vkFloodControlCooldown)
-	if until.After(p.floodUntil) {
-		p.floodUntil = until
+	if until.After(p.limiter.floodUntil) {
+		p.limiter.floodUntil = until
 	}
-	p.mu.Unlock()
+	p.limiter.mu.Unlock()
 }
 
 func (p *TURNCredentialProvider) floodControlError(now time.Time) error {
-	p.mu.Lock()
-	until := p.floodUntil
-	p.mu.Unlock()
+	p.limiter.mu.Lock()
+	until := p.limiter.floodUntil
+	p.limiter.mu.Unlock()
 	if !until.After(now) {
 		return nil
 	}

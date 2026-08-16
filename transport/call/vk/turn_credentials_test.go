@@ -48,6 +48,7 @@ func TestTURNCredentialProviderKeepsFreshCredentials(t *testing.T) {
 func TestTURNCredentialProviderFloodControlCooldown(t *testing.T) {
 	t.Parallel()
 	provider := NewTURNCredentialProvider(nil, nil)
+	provider.limiter = newVKControlPlaneLimiter()
 	now := time.Now()
 	provider.activateFloodControl(now)
 	require.ErrorIs(t, provider.floodControlError(now.Add(time.Second)), ErrVKFloodControl)

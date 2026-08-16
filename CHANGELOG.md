@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.32
+
+- Kept VK API flood-control state process-wide so restarting the VPN runtime
+  cannot immediately repeat a blocked control-plane join.
+- Preserved the last worker failure at reconnect boundaries and labeled the
+  failing VK credentials, TURN, DTLS or inner-auth stage instead of replacing
+  it with an uninformative context deadline.
+- Derived the outer reconnect deadline from the worker connection budget so a
+  valid TURN/DTLS setup is no longer cut off by the old ten-second wrapper.
+
 ## v1.13.16-extended-hydracore.11-debug.31
 
 - Prevented Android network handover from invalidating reusable VK TURN

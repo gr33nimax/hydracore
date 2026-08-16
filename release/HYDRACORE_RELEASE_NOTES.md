@@ -1,4 +1,12 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.31
+# HydraCore v1.13.16-extended-hydracore.11-debug.32
+
+This build makes VK flood control survive an Android VPN runtime restart and
+stops the reconnect wrapper from hiding the worker's actual failure. Connection
+errors now identify the VK credentials, TURN allocation, DTLS, or inner-auth
+stage, while the outer attempt allows the configured worker setup window to
+finish instead of cancelling it after ten seconds.
+
+## Previous debug.31 notes
 
 This build closes the VK authentication storm observed immediately after an
 Android VPN network handover. Planned lane replacement preserves reusable TURN

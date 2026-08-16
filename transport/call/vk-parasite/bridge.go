@@ -18,7 +18,6 @@ import (
 
 const parasiteReconnectMaxBackoff = 5 * time.Second
 const parasiteReconnectInitialBackoff = time.Second
-const parasiteReconnectAttemptTimeout = 10 * time.Second
 
 type managedParasiteClient interface {
 	Tunnel() *ParasiteTunnel
@@ -86,8 +85,14 @@ func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLog
 	}
 	options = validatedOptions
 	managerCtx, cancel := context.WithCancel(ctx)
+	attemptTimeout := options.WorkerConnectTimeout + 5*time.Second
+	if attemptTimeout < 15*time.Second {
+		attemptTimeout = 15 * time.Second
+	} else if attemptTimeout > 45*time.Second {
+		attemptTimeout = 45 * time.Second
+	}
 	connector := func(connectCtx context.Context) (managedParasiteClient, error) {
-		attemptCtx, attemptCancel := context.WithTimeout(connectCtx, parasiteReconnectAttemptTimeout)
+		attemptCtx, attemptCancel := context.WithTimeout(connectCtx, attemptTimeout)
 		defer attemptCancel()
 		return ConnectClient(attemptCtx, options, log)
 	}

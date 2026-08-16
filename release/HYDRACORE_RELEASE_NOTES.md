@@ -1,4 +1,12 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.35
+# HydraCore v1.13.16-extended-hydracore.11-debug.36
+
+This build corrects the deterministic-load retransmission regression found by
+CI in debug.35. Per-lane pacing now starts at 4 Mbit/s, requires two
+consecutive congestion samples, and uses 1.10 steady and 1.15 probe gains. The
+controller therefore leaves overload quickly without restoring the original
+self-limited delivered-rate ceiling.
+
+## Previous debug.35 notes
 
 This build closes the reset and throughput failures observed in debug.34. A
 lane that cannot finish reset acknowledgement, commit, or bidirectional probe

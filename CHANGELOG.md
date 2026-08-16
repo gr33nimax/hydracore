@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.36
+
+- Corrected the debug.35 deterministic-load regression: the capacity-based
+  controller now starts at 4 Mbit/s per lane, confirms overload across two
+  samples, and uses bounded 1.10 steady and 1.15 probe gains. This preserves
+  the anti-collapse admission changes without spending prolonged intervals
+  above a 2 Mbit/s path and turning the excess into retransmissions.
+
 ## v1.13.16-extended-hydracore.11-debug.35
 
 - Replaced a permanently quarantined VK lane with a bounded full-session

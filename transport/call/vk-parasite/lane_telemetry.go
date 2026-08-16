@@ -148,7 +148,7 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	queueDepth := len(l.outputPending)
 	queueGrowing := queueDepth > l.previousOutputDepth && queueDepth >= lanePacingBucketSegments
 	rttInflated := l.minRTTMS > 0 && l.kcpSRTTMS > 2*l.minRTTMS
-	severeRetry := retryRatio > 0.20
+	severeRetry := retryRatio > 0.15
 	congestionSignal := !applicationLimited && (severeRetry || rttInflated && queueGrowing)
 	if !applicationLimited {
 		if l.deliveryRateBPS == 0 {
@@ -175,7 +175,7 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 			l.pacingProbeUntil = time.Time{}
 			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 			l.congestionSamples = 0
-		case l.pacingStartup && instantRate >= 0.55*l.pacingRateBPS && retryRatio < 0.20:
+		case l.pacingStartup && instantRate >= 0.55*l.pacingRateBPS && retryRatio < 0.15:
 			l.pacingRateBPS *= lanePacingStartupGain
 			if l.pacingRateBPS >= lanePacingMaximumBPS {
 				l.pacingStartup = false

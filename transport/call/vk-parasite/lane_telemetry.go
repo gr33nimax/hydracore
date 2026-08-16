@@ -147,43 +147,58 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	}
 	queueDepth := len(l.outputPending)
 	queueGrowing := queueDepth > l.previousOutputDepth && queueDepth >= lanePacingBucketSegments
-	rttInflated := l.minRTTMS > 0 && l.kcpSRTTMS > 1.5*l.minRTTMS
-	congested := !applicationLimited && (retryRatio > 0.10 || rttInflated || queueGrowing)
+	rttInflated := l.minRTTMS > 0 && l.kcpSRTTMS > 2*l.minRTTMS
+	severeRetry := retryRatio > 0.20
+	congestionSignal := !applicationLimited && (severeRetry || rttInflated && queueGrowing)
 	if !applicationLimited {
 		if l.deliveryRateBPS == 0 {
 			l.deliveryRateBPS = instantRate
 		} else {
 			l.deliveryRateBPS = 0.75*l.deliveryRateBPS + 0.25*instantRate
 		}
+		if l.deliveryCapacityBPS == 0 || instantRate > l.deliveryCapacityBPS {
+			l.deliveryCapacityBPS = instantRate
+		} else {
+			l.deliveryCapacityBPS = max(instantRate, 0.98*l.deliveryCapacityBPS)
+		}
+		if congestionSignal {
+			l.congestionSamples++
+		} else {
+			l.congestionSamples = 0
+		}
+		congested := l.congestionSamples >= laneCongestionSamples
 		switch {
 		case congested:
 			l.pacingRateBPS *= lanePacingDecrease
+			l.deliveryCapacityBPS = max(instantRate, lanePacingDecrease*l.deliveryCapacityBPS)
 			l.pacingStartup = false
 			l.pacingProbeUntil = time.Time{}
 			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
-		case l.pacingStartup && instantRate >= 0.80*l.pacingRateBPS && retryRatio < 0.10:
+			l.congestionSamples = 0
+		case l.pacingStartup && instantRate >= 0.55*l.pacingRateBPS && retryRatio < 0.20:
 			l.pacingRateBPS *= lanePacingStartupGain
 			if l.pacingRateBPS >= lanePacingMaximumBPS {
 				l.pacingStartup = false
 				l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 			}
 		case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
-			l.pacingRateBPS = lanePacingSteadyGain * l.deliveryRateBPS
+			l.pacingRateBPS = lanePacingSteadyGain * l.deliveryCapacityBPS
 			l.pacingProbeUntil = time.Time{}
 		case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
 			l.pacingRateBPS *= lanePacingProbeGain
 			l.pacingProbeUntil = now.Add(lanePacingProbeDuration)
 			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 		case !l.pacingStartup:
-			targetRate := lanePacingSteadyGain * l.deliveryRateBPS
+			targetRate := lanePacingSteadyGain * l.deliveryCapacityBPS
 			l.pacingRateBPS = 0.75*l.pacingRateBPS + 0.25*targetRate
 		}
 		l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))
-		windowRTTMS := l.minRTTMS
-		if windowRTTMS <= 0 {
+		windowRTTMS := max(80, l.minRTTMS)
+		if l.minRTTMS <= 0 {
 			windowRTTMS = 80
 		}
-		target := int(math.Ceil(l.deliveryRateBPS * (windowRTTMS / 1000) / mss))
+		windowRate := max(l.pacingRateBPS, l.deliveryCapacityBPS)
+		target := int(math.Ceil(1.5 * windowRate * (windowRTTMS / 1000) / mss))
 		l.admissionWindow = min(laneKCPMaximumAdmission, max(laneKCPMinimumAdmission, target))
 	}
 	l.previousOutputDepth = queueDepth

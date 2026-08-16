@@ -31,7 +31,7 @@ func newTransportSupervisor() *transportSupervisor {
 		turnGate:      make(chan struct{}, 1),
 		dtlsGate:      make(chan struct{}, 2),
 		recoveryGate:  make(chan struct{}, 1),
-		migrationGate: make(chan struct{}, 2),
+		migrationGate: make(chan struct{}, laneFlowMigrationConcurrency),
 	}
 }
 

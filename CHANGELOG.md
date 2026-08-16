@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.35
+
+- Replaced a permanently quarantined VK lane with a bounded full-session
+  reconnect when reset acknowledgement, commit, or bidirectional probing does
+  not complete. Both reset peers now have a watchdog, so a lost control frame
+  cannot leave a physically attached but unusable lane indefinitely.
+- Migrated affected ordered flows concurrently with eight bounded slots and a
+  flow-count-aware reset deadline. A reset no longer serializes every TCP flow
+  behind one four-second budget or announces readiness before failed flows are
+  closed.
+- Raised the initial KCP admission window and per-lane pacing baseline, retained
+  a decaying delivery-capacity estimate, and require persistent congestion
+  evidence before reducing rate. Admission is now derived from pacing capacity
+  and RTT instead of the already self-limited delivered rate.
+- Reported only active-generation lanes with an attached worker as usable
+  transport lanes; quarantined, resetting, and probing lanes no longer make a
+  degraded tunnel appear healthy.
+
 ## v1.13.16-extended-hydracore.11-debug.34
 
 - Kept a successfully connected VK parasite client on the bridge manager's

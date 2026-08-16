@@ -3,6 +3,8 @@ package vkparasite
 import (
 	"context"
 	"encoding/binary"
+	"sync"
+	"time"
 
 	calltunnel "github.com/sagernet/sing-box/transport/call/tunnel"
 )
@@ -134,23 +136,46 @@ func (t *ParasiteTunnel) migrateLaneFlows(laneID uint16, reason string) {
 		}
 	}
 	t.sendMu.Unlock()
-	for connID, state := range flows {
-		if !t.migrateOrderedFlow(connID, state, laneID, reason) && state.abortStarted.CompareAndSwap(false, true) {
-			go t.finishOrderedFlowAbort(connID, "lane_flow_migration_failed")
-		}
+	migrationBudget := t.laneResetHandshakeDeadline(laneID) - time.Second
+	if migrationBudget < t.sendStallTimeout {
+		migrationBudget = t.sendStallTimeout
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), migrationBudget)
+	defer cancel()
+	var migrationGroup sync.WaitGroup
+	migrationGroup.Add(len(flows))
+	for connID, state := range flows {
+		go func(connID uint32, state *sendFlowState) {
+			defer migrationGroup.Done()
+			if !t.migrateOrderedFlowContext(ctx, connID, state, laneID, reason) && state.abortStarted.CompareAndSwap(false, true) {
+				t.finishOrderedFlowAbort(connID, "lane_flow_migration_failed")
+			}
+		}(connID, state)
+	}
+	migrationGroup.Wait()
 }
 
 func (t *ParasiteTunnel) migrateOrderedFlow(connID uint32, state *sendFlowState, sourceLane uint16, reason string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), t.sendStallTimeout)
 	defer cancel()
+	return t.migrateOrderedFlowContext(ctx, connID, state, sourceLane, reason)
+}
+
+func (t *ParasiteTunnel) migrateOrderedFlowContext(ctx context.Context, connID uint32, state *sendFlowState, sourceLane uint16, reason string) bool {
 	release, err := sharedTransportSupervisor.acquireMigration(ctx)
 	if err != nil {
 		return false
 	}
 	defer release()
-
-	state.mu.Lock()
+	for !state.mu.TryLock() {
+		timer := time.NewTimer(laneSendRetryInterval)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return false
+		}
+	}
 	defer state.mu.Unlock()
 	if state.closed || state.abortStarted.Load() || state.unordered || state.laneOwner.Load() != uint32(sourceLane)+1 {
 		return true

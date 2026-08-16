@@ -24,8 +24,8 @@ const (
 	laneKCPReceiveWindow     = 512
 	laneKCPMaxPending        = 1024
 	laneKCPControlReserve    = 8
-	laneKCPInitialAdmission  = 16
-	laneKCPMinimumAdmission  = 8
+	laneKCPInitialAdmission  = 64
+	laneKCPMinimumAdmission  = 32
 	laneKCPMaximumAdmission  = 512
 	laneKCPOutputBacklog     = laneKCPSendWindow
 	laneKCPMaxFragments      = 255
@@ -37,22 +37,24 @@ const (
 	laneReorderFrameLimit    = 4096
 	laneSendRetryInterval    = 2 * time.Millisecond
 	laneDeliverySampleWindow = 500 * time.Millisecond
-	lanePacingInitialBPS      = 1_500_000 / 8
-	lanePacingMinimumBPS      = 256_000 / 8
-	lanePacingMaximumBPS      = 25_000_000 / 8
-	lanePacingBucketSegments  = 4
-	lanePacingStartupGain     = 1.25
-	lanePacingDecrease        = 0.80
-	lanePacingSteadyGain      = 1.10
-	lanePacingProbeGain       = 1.125
-	lanePacingProbeInterval   = 8 * time.Second
-	lanePacingProbeDuration   = time.Second
-	laneResetRetryInterval    = 250 * time.Millisecond
-	laneResetMinimumDeadline  = 4 * time.Second
-	laneResetMaximumDeadline  = 12 * time.Second
-	laneProbeInterval         = 250 * time.Millisecond
-	laneProbeDeadline         = 10 * time.Second
-	laneFrameHeaderSize       = 32
+	lanePacingInitialBPS          = 6_000_000 / 8
+	lanePacingMinimumBPS          = 1_000_000 / 8
+	lanePacingMaximumBPS          = 25_000_000 / 8
+	lanePacingBucketSegments      = 16
+	lanePacingStartupGain         = 1.50
+	lanePacingDecrease            = 0.85
+	lanePacingSteadyGain          = 1.15
+	lanePacingProbeGain           = 1.25
+	lanePacingProbeInterval       = 4 * time.Second
+	lanePacingProbeDuration       = time.Second
+	laneCongestionSamples         = 3
+	laneResetRetryInterval        = 250 * time.Millisecond
+	laneResetMinimumDeadline      = 4 * time.Second
+	laneResetMaximumDeadline      = 30 * time.Second
+	laneFlowMigrationConcurrency = 8
+	laneProbeInterval             = 250 * time.Millisecond
+	laneProbeDeadline             = 10 * time.Second
+	laneFrameHeaderSize           = 32
 	laneSendStallTimeout     = 4 * time.Second
 	laneAckStallTimeout       = 4 * time.Second
 	laneAckStallMaximum       = 12 * time.Second
@@ -197,6 +199,7 @@ type kcpLane struct {
 
 	admissionWindow       int
 	deliveryRateBPS       float64
+	deliveryCapacityBPS   float64
 	deliverySampleAt      time.Time
 	deliveryAckedSegments uint64
 	deliveryOutSegments   uint64
@@ -210,6 +213,7 @@ type kcpLane struct {
 	pacingStartup         bool
 	pacingNextProbe       time.Time
 	pacingProbeUntil      time.Time
+	congestionSamples     int
 	previousOutputDepth   int
 	resetInFlight         bool
 	pendingResetGeneration uint64
@@ -904,6 +908,7 @@ func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, genera
 		t.recoverySuggestedAt[laneID] = time.Time{}
 		t.recoveryMu.Unlock()
 		if newPrepare {
+			go t.awaitPeerLaneResetCommit(laneID, generation)
 			go t.completePeerLaneResetPrepare(laneID, generation)
 		} else if ackReady {
 			t.broadcastLaneResetControl(laneResetACK, laneID, generation)
@@ -948,6 +953,23 @@ func (t *ParasiteTunnel) completePeerLaneResetPrepare(laneID uint16, generation 
 	if valid {
 		t.broadcastLaneResetControl(laneResetACK, laneID, generation)
 		lane.metrics.AddHot(telemetry.LaneResetAckTotal, 1)
+	}
+}
+
+func (t *ParasiteTunnel) awaitPeerLaneResetCommit(laneID uint16, generation uint64) {
+	timer := time.NewTimer(t.laneResetHandshakeDeadline(laneID) + 2*laneResetRetryInterval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-t.closed:
+		return
+	}
+	lane := t.lanes[laneID]
+	lane.mu.Lock()
+	stalled := lane.generation+1 == generation && lane.pendingResetGeneration == generation && lane.state == laneStateQuarantined
+	lane.mu.Unlock()
+	if stalled {
+		t.escalateLaneResetFailure(laneID, "peer_commit_timeout")
 	}
 }
 
@@ -1863,7 +1885,12 @@ func (t *ParasiteTunnel) laneResetHandshakeDeadline(laneID uint16) time.Duration
 	lane := t.lanes[laneID]
 	lane.mu.Lock()
 	deadline := 8 * lane.estimatedKCPRTO()
+	flowCount := lane.flowCount.Load()
 	lane.mu.Unlock()
+	if flowCount > 0 {
+		batches := (flowCount + laneFlowMigrationConcurrency - 1) / laneFlowMigrationConcurrency
+		deadline = max(deadline, time.Duration(batches)*t.sendStallTimeout+2*time.Second)
+	}
 	if deadline < laneResetMinimumDeadline {
 		return laneResetMinimumDeadline
 	}
@@ -1912,12 +1939,28 @@ func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, a
 		case <-retry.C:
 			continue
 		case <-deadline.C:
-			t.recordEvent("lane_reset_failed", "lane", "handshake_timeout", &laneID)
+			t.escalateLaneResetFailure(laneID, "handshake_timeout")
 			return
 		case <-t.closed:
 			return
 		}
 	}
+}
+
+func (t *ParasiteTunnel) escalateLaneResetFailure(laneID uint16, reason string) {
+	t.recordEvent("lane_reset_failed", "lane", reason, &laneID)
+	t.recoveryMu.Lock()
+	recoveryActive := t.recoveryActive && t.recoveryLane == laneID
+	if recoveryActive {
+		t.recoveryActive = false
+		t.recoveryDeadline = time.Time{}
+		t.recoveryStartedAt = time.Time{}
+	}
+	t.recoveryMu.Unlock()
+	if recoveryActive {
+		t.recordEvent("lane_send_recovery_escalated", "session", reason, &laneID)
+	}
+	t.replaceSession("lane_reset_"+reason, &laneID)
 }
 
 func (t *ParasiteTunnel) resetLaneGeneration(laneID uint16, generation uint64, reason string) {
@@ -1935,6 +1978,7 @@ func (t *ParasiteTunnel) resetLaneGeneration(laneID uint16, generation uint64, r
 	lane.kcpLastUNA = 0
 	lane.kcpHasUNA = false
 	lane.deliveryRateBPS = 0
+	lane.deliveryCapacityBPS = 0
 	lane.deliverySampleAt = time.Now()
 	lane.deliveryAckedSegments = 0
 	lane.deliveryOutSegments = 0
@@ -1949,6 +1993,7 @@ func (t *ParasiteTunnel) resetLaneGeneration(laneID uint16, generation uint64, r
 	lane.pacingStartup = true
 	lane.pacingNextProbe = time.Now().Add(lanePacingProbeInterval)
 	lane.pacingProbeUntil = time.Time{}
+	lane.congestionSamples = 0
 	lane.previousOutputDepth = 0
 	lane.pressureSince = time.Time{}
 	lane.probeStartedAt = time.Now()
@@ -1986,7 +2031,7 @@ func (t *ParasiteTunnel) awaitLaneProbe(laneID uint16, generation uint64) {
 	failed := lane.generation == generation && lane.state == laneStateProbing
 	lane.mu.Unlock()
 	if failed {
-		t.recordEvent("lane_reset_failed", "lane", "probe_timeout", &laneID)
+		t.escalateLaneResetFailure(laneID, "probe_timeout")
 	}
 }
 
@@ -2242,6 +2287,22 @@ func (t *ParasiteTunnel) ActiveWorkers() int {
 	return active
 }
 
+func (t *ParasiteTunnel) UsableLanes() int {
+	usable := 0
+	for _, lane := range t.lanes {
+		lane.mu.Lock()
+		active := lane.state == laneStateActive
+		lane.mu.Unlock()
+		lane.workerMu.RLock()
+		hasWorker := lane.worker != nil
+		lane.workerMu.RUnlock()
+		if active && hasWorker {
+			usable++
+		}
+	}
+	return usable
+}
+
 func (t *ParasiteTunnel) WorkerEpoch(id uint16) (uint64, bool) {
 	if id >= LaneCount {
 		return 0, false
@@ -2468,7 +2529,7 @@ func (t *ParasiteTunnel) transportHealthSnapshot() HC.TransportHealthSnapshot {
 	}
 	lastDemand := t.lastApplicationDemand.Load()
 	return HC.TransportHealthSnapshot{
-		ActiveLanes:             int32(t.ActiveWorkers()),
+		ActiveLanes:             int32(t.UsableLanes()),
 		TotalLanes:              LaneCount,
 		Demand:                  lastDemand != 0 && now.Sub(time.Unix(0, lastDemand)) <= transportFailureLimit,
 		LastProgressAt:          time.Unix(0, t.lastProgress.Load()).UnixMilli(),

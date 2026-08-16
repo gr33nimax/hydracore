@@ -1,4 +1,19 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.34
+# HydraCore v1.13.16-extended-hydracore.11-debug.35
+
+This build closes the reset and throughput failures observed in debug.34. A
+lane that cannot finish reset acknowledgement, commit, or bidirectional probe
+now causes a bounded logical-session reconnect instead of remaining
+quarantined forever. Both reset peers watch the transaction through commit.
+
+Ordered flows on the affected lane migrate concurrently through eight bounded
+slots, and the handshake budget scales with the number of flow batches. The
+delivery controller starts with a 64-segment admission window and 6 Mbit/s per
+lane, keeps a decaying capacity estimate, waits for persistent congestion
+evidence before backing off, and sizes admission from pacing capacity rather
+than its own restricted goodput. Health reports count only active lanes with
+an attached worker.
+
+## Previous debug.34 notes
 
 This hotfix separates a VK parasite connection attempt from the lifetime of
 the connected client. A successful TURN/DTLS/inner-auth session now remains

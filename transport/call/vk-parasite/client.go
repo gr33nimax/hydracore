@@ -471,6 +471,10 @@ func (c *Client) rebindWorkers(ctx context.Context) {
 		id := uint16(workerID)
 		previousEpoch, _ := c.tunnel.WorkerEpoch(id)
 		c.tunnel.recordEvent("network_rebind_lane_started", "network", "staged", &id)
+		// A planned handover must not inherit the cooldown used to suppress
+		// repeated automatic stall recovery. Start its generation reset while
+		// the other physical lanes can still carry the control handshake.
+		c.tunnel.initiateLaneReset(id, "network_rebind")
 		c.workers[workerID].interrupt()
 		c.tunnel.DropWorker(id)
 		if !c.waitWorkerReplacement(ctx, id, previousEpoch) {

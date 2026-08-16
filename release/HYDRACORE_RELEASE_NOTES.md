@@ -1,4 +1,12 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.29
+# HydraCore v1.13.16-extended-hydracore.11-debug.30
+
+This build starts each staged network-handover reset while the remaining lanes
+can still carry its control handshake. Planned worker replacement therefore
+does not wait behind the four-second cooldown used for repeated automatic
+stall recovery, while the client still replaces and validates one lane at a
+time.
+
+## Previous debug.29 notes
 
 This build corrects the debug.28 CI failure and one real lifecycle boundary it
 exposed. The fast three-worker detach escalation is armed only after a tunnel

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.30
+
+- Start each planned network-rebind generation reset before detaching its
+  worker, so staged handover does not inherit the four-second cooldown reserved
+  for repeated automatic stall recovery.
+
 ## v1.13.16-extended-hydracore.11-debug.29
 
 - Limited three-worker detach escalation to sessions which previously reached

@@ -26,6 +26,7 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 		l.deliveryOutSegments++
 		if previous, exists := l.kcpSent[sequence]; exists {
 			l.deliveryRetrans++
+			l.deliveryRetransBytes += uint64(size)
 			if isEstimatedRTO(now.Sub(previous.lastSentAt), l.estimatedKCPRTO()) {
 				l.metrics.AddHot(telemetry.KCPRTORetransEstimateSegmentsTotal, 1)
 				l.metrics.AddHot(telemetry.KCPRTORetransEstimateBytesTotal, uint64(size))
@@ -43,6 +44,7 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 		l.kcpSent[sequence] = kcpSentSegment{
 			lastSentAt: now,
 			attempts:   []kcpSendAttempt{{timestamp: timestamp, sentAt: now}},
+			size:       size,
 		}
 	})
 }
@@ -89,6 +91,8 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 			continue
 		}
 		delete(l.kcpSent, ack.sequence)
+		l.ackedBytesTotal += uint64(sent.size)
+		l.metrics.AddHot(telemetry.KCPAckedBytesTotal, uint64(sent.size))
 		l.metrics.AddHot(telemetry.KCPAckProgressSegmentsTotal, 1)
 		ackedProgress++
 		// Karn's algorithm: an ACK for a retransmitted segment is ambiguous and
@@ -126,6 +130,7 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 		l.deliveryAckedSegments = uint64(ackedSegments)
 		l.deliveryOutSegments = 0
 		l.deliveryRetrans = 0
+		l.deliveryRetransBytes = 0
 		l.deliveryDemanded = false
 		l.applicationLimited = true
 		l.metrics.Set(telemetry.LaneApplicationLimited, 1)
@@ -151,9 +156,46 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	applicationLimited := !l.deliveryDemanded && !backlogged
 	l.applicationLimited = applicationLimited
 	l.metrics.Set(telemetry.LaneApplicationLimited, boolFloat(applicationLimited))
+	// Byte-granular window deltas drive the marginal-goodput probe evaluation.
+	// The pacing knob position is not the offered load: admission spends
+	// tokens only when the application actually supplies data, and the steady
+	// branch blends probe bumps down within the probe itself, so the probe
+	// compares measured bytes instead.
+	ackedDelta := l.ackedBytesTotal - l.lastAckedBytes
+	admittedDelta := l.admittedBytesTotal - l.lastAdmittedBytes
+	l.lastAckedBytes = l.ackedBytesTotal
+	l.lastAdmittedBytes = l.admittedBytesTotal
+	l.windowAckedBytes[0] = l.windowAckedBytes[1]
+	l.windowAckedBytes[1] = ackedDelta
+	l.windowAdmittedBytes[0] = l.windowAdmittedBytes[1]
+	l.windowAdmittedBytes[1] = admittedDelta
+	demand := l.deliveryDemanded || backlogged
+	l.windowDemandBits = (l.windowDemandBits << 1 | boolBit(demand)) & 0b11
+	if !l.pacingProbeUntil.IsZero() {
+		l.probeWindows++
+		l.probeAckedBytes += ackedDelta
+		l.probeAdmittedBytes += admittedDelta
+		if demand {
+			l.probeDemandWindows++
+		}
+	}
 	retryRatio := 0.0
 	if l.deliveryOutSegments > 0 {
 		retryRatio = float64(l.deliveryRetrans) / float64(l.deliveryOutSegments)
+	}
+	// Compensation reacts to the smoothed retry ratio, not to a single window:
+	// one lossy burst must not swing the offered rate, and one clean window
+	// on a degraded path must not restore it.
+	if l.retryRatioSmooth == 0 {
+		l.retryRatioSmooth = retryRatio
+	} else {
+		l.retryRatioSmooth += laneRetryRatioSmoothing * (retryRatio - l.retryRatioSmooth)
+	}
+	instantRetxRate := float64(l.deliveryRetransBytes) / elapsed.Seconds()
+	if l.retxRateBPS == 0 {
+		l.retxRateBPS = instantRetxRate
+	} else {
+		l.retxRateBPS += laneRetransmitRateSmoothing * (instantRetxRate - l.retxRateBPS)
 	}
 	queueGrowing := queueDepth > l.previousOutputDepth && queueDepth >= lanePacingBucketSegments
 	queuePressured := queueDepth >= 3*laneKCPOutputBacklog/4
@@ -168,7 +210,6 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	// congestion. Back off only when delay or collapsing delivery is accompanied
 	// by persistent transport pressure.
 	congestionSignal := !applicationLimited && transportPressure && (rttInflated || (severeRetry && deliveryCollapsed))
-	lossCompensation := min(1.5, 1/max(0.67, 1-retryRatio))
 	if !applicationLimited {
 		if l.deliveryRateBPS == 0 {
 			l.deliveryRateBPS = instantRate
@@ -204,18 +245,35 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 			// Delivery stopped following the startup ramp. Enter the measured
 			// loss-aware steady state instead of remaining forever at the last
 			// startup step or treating the retry ratio alone as congestion.
-			l.pacingRateBPS = lanePacingSteadyGain * lossCompensation * l.deliveryCapacityBPS
+			l.pacingRateBPS = l.steadyPacingTargetLocked()
 			l.pacingStartup = false
 			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 		case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
-			l.pacingRateBPS = lanePacingSteadyGain * lossCompensation * l.deliveryCapacityBPS
-			l.pacingProbeUntil = time.Time{}
+			l.evaluateProbeLocked(now)
 		case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
+			// A probe is a marginal-goodput experiment. The baseline is the
+			// measured byte rate of the previous two delivery windows, not
+			// the pacing knob: the steady branch blends probe bumps down
+			// within the probe itself, and admission never spends tokens the
+			// application does not supply.
+			l.probeBaselinePacing = l.pacingRateBPS
+			l.probeBaselineAckedBPS = float64(l.windowAckedBytes[0]+l.windowAckedBytes[1]) / (2 * laneDeliverySampleWindow.Seconds())
+			l.probeBaselineAdmittedBPS = float64(l.windowAdmittedBytes[0]+l.windowAdmittedBytes[1]) / (2 * laneDeliverySampleWindow.Seconds())
+			l.probeBaselineDemandOK = l.windowDemandBits == 0b11
+			l.probeBaselineRetrySmooth = l.retryRatioSmooth
+			// A previous probe may have been aborted without evaluation
+			// (congestion backoff or a generation reset clears pacingProbeUntil
+			// without running evaluateProbeLocked). Start the experiment from
+			// clean accumulators.
+			l.probeAckedBytes = 0
+			l.probeAdmittedBytes = 0
+			l.probeWindows = 0
+			l.probeDemandWindows = 0
 			l.pacingRateBPS *= lanePacingProbeGain
 			l.pacingProbeUntil = now.Add(lanePacingProbeDuration)
 			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
 		case !l.pacingStartup:
-			targetRate := lanePacingSteadyGain * lossCompensation * l.deliveryCapacityBPS
+			targetRate := l.steadyPacingTargetLocked()
 			l.pacingRateBPS = 0.75*l.pacingRateBPS + 0.25*targetRate
 		}
 		l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))
@@ -232,7 +290,121 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	l.deliveryAckedSegments = 0
 	l.deliveryOutSegments = 0
 	l.deliveryRetrans = 0
+	l.deliveryRetransBytes = 0
 	l.deliveryDemanded = false
+}
+
+func boolBit(value bool) uint8 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+// lossCompensationLocked converts the smoothed retransmission ratio into an
+// over-offering factor for the measured delivery capacity. The ceiling starts
+// conservative and is raised only after a pacing probe has proven that extra
+// offered rate becomes extra delivered goodput; unproven compensation feeds
+// the retransmission plateau (offered ~= 1.65x delivered) instead of useful
+// throughput. The defensive floor treats an uninitialized ceiling as the
+// default instead of collapsing the target to zero.
+func (l *kcpLane) lossCompensationLocked() float64 {
+	ceiling := l.compensationCeiling
+	if ceiling <= 0 {
+		ceiling = laneCompensationInitialCeiling
+	}
+	compensation := 1 / max(0.67, 1-l.retryRatioSmooth)
+	return min(ceiling, compensation)
+}
+
+func (l *kcpLane) steadyPacingTargetLocked() float64 {
+	return lanePacingSteadyGain * l.lossCompensationLocked() * l.deliveryCapacityBPS
+}
+
+// evaluateProbeLocked closes a pacing probe by comparing delivered goodput
+// gain against the measured offered gain. A path which converts the probe
+// into delivery keeps the elevated rate and earns a higher compensation
+// ceiling; a path which converts it mostly into retransmissions is rolled
+// back, gets a lower ceiling after two consecutive harmful probes and a
+// doubling cooldown. Inconclusive probes (no demand, no measurable baseline,
+// or no clear signal) change nothing.
+func (l *kcpLane) evaluateProbeLocked(now time.Time) {
+	l.pacingProbeUntil = time.Time{}
+	baselinePacing := l.probeBaselinePacing
+	baselineAcked := l.probeBaselineAckedBPS
+	baselineAdmitted := l.probeBaselineAdmittedBPS
+	baselineDemand := l.probeBaselineDemandOK
+	baselineRetry := l.probeBaselineRetrySmooth
+	probeAcked := l.probeAckedBytes
+	probeAdmitted := l.probeAdmittedBytes
+	probeWindows := l.probeWindows
+	probeDemandWindows := l.probeDemandWindows
+	l.probeBaselinePacing = 0
+	l.probeBaselineAckedBPS = 0
+	l.probeBaselineAdmittedBPS = 0
+	l.probeBaselineDemandOK = false
+	l.probeBaselineRetrySmooth = 0
+	l.probeAckedBytes = 0
+	l.probeAdmittedBytes = 0
+	l.probeWindows = 0
+	l.probeDemandWindows = 0
+	laneID := l.id
+
+	if now.Sub(l.probeLastVerdictAt) > laneProbeStreakExpiry {
+		l.probeHarmfulStreak = 0
+	}
+	l.probeLastVerdictAt = now
+
+	valid := baselineDemand && probeWindows >= 2 && probeDemandWindows >= 1 &&
+		baselineAcked >= float64(laneProbeMinWindowBytes)/laneDeliverySampleWindow.Seconds() &&
+		baselineAdmitted > 0 && probeAdmitted > 0 && probeAcked > 0
+	if !valid {
+		l.metrics.RecordEvent("lane_pacing_probe_inconclusive", "pacing", "invalid_baseline", &laneID)
+		l.pacingRateBPS = l.steadyPacingTargetLocked()
+		return
+	}
+	probeAckedBPS := float64(probeAcked) / (float64(probeWindows) * laneDeliverySampleWindow.Seconds())
+	probeAdmittedBPS := float64(probeAdmitted) / (float64(probeWindows) * laneDeliverySampleWindow.Seconds())
+	deliveredGain := probeAckedBPS/baselineAcked - 1
+	offeredGain := probeAdmittedBPS/baselineAdmitted - 1
+	switch {
+	case offeredGain > 0 && deliveredGain >= lanePacingProbeUsefulRatio*offeredGain:
+		l.probeHarmfulStreak = 0
+		l.probeCooldownShift = 0
+		l.compensationCeiling = min(laneCompensationMaximum, l.compensationCeiling+laneCompensationStepUp)
+		l.metrics.RecordEvent("lane_pacing_probe_useful", "pacing", "marginal_goodput", &laneID)
+		l.pacingRateBPS = l.steadyPacingTargetLocked()
+	case offeredGain > 0 && deliveredGain <= lanePacingProbeHarmfulRatio*offeredGain && l.retryRatioSmooth >= baselineRetry:
+		l.probeHarmfulStreak++
+		if l.probeHarmfulStreak >= laneProbeHarmfulStreakLimit {
+			l.compensationCeiling = max(laneCompensationMinimum, l.compensationCeiling-laneCompensationStepDown)
+			l.probeCooldownShift = min(l.probeCooldownShift+1, laneProbeCooldownMaxShift)
+			l.probeHarmfulStreak = 0
+			target := l.steadyPacingTargetLocked()
+			if baselinePacing > 0 && target > baselinePacing {
+				target = baselinePacing
+			}
+			l.pacingRateBPS = target
+			l.pacingNextProbe = now.Add(lanePacingProbeInterval << l.probeCooldownShift)
+		} else {
+			l.pacingRateBPS = l.steadyPacingTargetLocked()
+		}
+		l.metrics.RecordEvent("lane_pacing_probe_harmful", "pacing", "marginal_goodput", &laneID)
+	default:
+		l.metrics.RecordEvent("lane_pacing_probe_inconclusive", "pacing", "no_signal", &laneID)
+		l.pacingRateBPS = l.steadyPacingTargetLocked()
+	}
+}
+
+// newDataBudgetBPSLocked is the pacing rate available for fresh application
+// data after the retransmission debt: the smoothed KCP retransmit rate is
+// subtracted so retransmits consume a share of the measured path instead of
+// inflating the total offered load. The floor sits deliberately below
+// lanePacingMinimumBPS, otherwise the debt becomes a no-op exactly when the
+// target is already clamped at its floor during a retransmission storm; it
+// keeps only the ACK clock, probes and small interactive flows alive.
+func (l *kcpLane) newDataBudgetBPSLocked() float64 {
+	return max(laneNewDataFloorBPS, l.pacingRateBPS-l.retxRateBPS)
 }
 
 func (l *kcpLane) updateKCPRTT(rtt float64) {
@@ -258,6 +430,7 @@ func (l *kcpLane) updateKCPRTT(rtt float64) {
 
 func (l *kcpLane) pruneKCPSentBefore(una uint32) int {
 	removed := 0
+	var removedBytes uint64
 	if !l.kcpHasUNA {
 		removed = l.pruneKCPSentFallback(una)
 		l.kcpLastUNA = una
@@ -272,11 +445,13 @@ func (l *kcpLane) pruneKCPSentBefore(una uint32) int {
 		removed = l.pruneKCPSentFallback(una)
 	} else {
 		for sequence := l.kcpLastUNA; sequence != una; sequence++ {
-			if _, exists := l.kcpSent[sequence]; exists {
+			if segment, exists := l.kcpSent[sequence]; exists {
+				removedBytes += uint64(segment.size)
 				delete(l.kcpSent, sequence)
 				removed++
 			}
 		}
+		l.recordAckedPruneBytes(removedBytes)
 	}
 	l.kcpLastUNA = una
 	return removed
@@ -284,13 +459,27 @@ func (l *kcpLane) pruneKCPSentBefore(una uint32) int {
 
 func (l *kcpLane) pruneKCPSentFallback(una uint32) int {
 	removed := 0
-	for sequence := range l.kcpSent {
+	var removedBytes uint64
+	for sequence, segment := range l.kcpSent {
 		if kcpSequenceBefore(sequence, una) {
+			removedBytes += uint64(segment.size)
 			delete(l.kcpSent, sequence)
 			removed++
 		}
 	}
+	l.recordAckedPruneBytes(removedBytes)
 	return removed
+}
+
+// recordAckedPruneBytes folds cumulative-UNA pruning into the uniquely-acked
+// byte accounting. Without it, byte-accurate delivery would be blind to every
+// ACK that arrives as an aggregate window instead of a per-segment record.
+func (l *kcpLane) recordAckedPruneBytes(bytes uint64) {
+	if bytes == 0 {
+		return
+	}
+	l.ackedBytesTotal += bytes
+	l.metrics.AddHot(telemetry.KCPAckedBytesTotal, bytes)
 }
 
 func forEachKCPSegment(packet []byte, callback func(command byte, sequence, timestamp uint32, size int)) {

@@ -1422,3 +1422,25 @@ func TestServerTakeoverDoesNotWaitForSupersededSessionCleanup(t *testing.T) {
 	}
 	releaseCloseGate()
 }
+
+func TestLaneRecoveryAttemptStateGauges(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x88776655, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+	lane := tunnel.lanes[0]
+
+	require.True(t, tunnel.initiateLaneReset(0, "test_gauge"))
+	lane.mu.Lock()
+	attemptID := lane.recoveryAttemptID
+	lane.mu.Unlock()
+	// The reset generation doubles as the recovery attempt id: generation 1
+	// plus one reset attempt.
+	require.Equal(t, uint64(2), attemptID)
+	require.Equal(t, float64(2), lane.metrics.Value(telemetry.LaneRecoveryAttemptID))
+	require.Equal(t, float64(1), lane.metrics.Value(telemetry.LaneRecoveryLastOutcome))
+
+	tunnel.escalateLaneResetFailure(0, "test_failure")
+	require.Equal(t, float64(3), lane.metrics.Value(telemetry.LaneRecoveryLastOutcome))
+	require.Equal(t, float64(2), lane.metrics.Value(telemetry.LaneRecoveryAttemptID))
+}

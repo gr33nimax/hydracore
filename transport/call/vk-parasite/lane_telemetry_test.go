@@ -91,3 +91,84 @@ func testKCPSegment(command byte, sequence, timestamp, una uint32) []byte {
 	binary.LittleEndian.PutUint32(segment[16:20], una)
 	return segment
 }
+
+func TestAckedBytesCountedIncludingUNAPrune(t *testing.T) {
+	t.Parallel()
+	lane := &kcpLane{
+		metrics: telemetry.NewAccumulator(),
+		kcpSent: make(map[uint32]kcpSentSegment),
+	}
+	lane.metrics.SetCollectionActive(true)
+	lane.observeKCPOutput(testKCPSegment(kcpCommandPush, 7, 100, 0))
+	lane.observeKCPOutput(testKCPSegment(kcpCommandPush, 9, 101, 0))
+
+	// Explicit per-segment ACK for sequence 7.
+	lane.observeKCPInput(testKCPSegment(kcpCommandACK, 7, 101, 8))
+	require.Equal(t, uint64(kcpHeaderSize), lane.ackedBytesTotal)
+
+	// A cumulative ACK advances una past sequence 9 without a per-segment
+	// record; the prune path must still fold its bytes into the delivery
+	// accounting.
+	lane.observeKCPInput(testKCPSegment(kcpCommandACK, 0, 102, 10))
+	require.Equal(t, uint64(2*kcpHeaderSize), lane.ackedBytesTotal)
+	require.Empty(t, lane.kcpSent)
+}
+
+func TestAdmittedBytesCountedOnPacing(t *testing.T) {
+	t.Parallel()
+	lane := &kcpLane{
+		metrics:          telemetry.NewAccumulator(),
+		pacingRateBPS:    1_000_000,
+		pacingTokens:     0,
+		pacingLastRefill: time.Unix(1, 0),
+	}
+	now := time.Unix(1, 0)
+	admitted := 0
+	for step := 0; step < 100; step++ {
+		now = now.Add(10 * time.Millisecond)
+		for lane.admitPacingLocked(976, false, now) {
+			admitted++
+			if admitted > 4000 {
+				break
+			}
+		}
+	}
+	require.InDelta(t, 1024, admitted, 120)
+	require.Equal(t, uint64(admitted)*976, lane.admittedBytesTotal)
+}
+
+func TestRetransmissionDebtShrinksNewDataBudget(t *testing.T) {
+	t.Parallel()
+	lane := &kcpLane{
+		metrics:          telemetry.NewAccumulator(),
+		pacingRateBPS:    1_000_000,
+		retxRateBPS:      400_000,
+		pacingTokens:     0,
+		pacingLastRefill: time.Unix(1, 0),
+	}
+	require.Equal(t, 600_000.0, lane.newDataBudgetBPSLocked())
+	// The floor sits below lanePacingMinimumBPS so the debt stays effective
+	// while the target is clamped at its own floor.
+	require.Less(t, laneNewDataFloorBPS, lanePacingMinimumBPS)
+
+	now := time.Unix(1, 0)
+	admitted := 0
+	for step := 0; step < 100; step++ {
+		now = now.Add(10 * time.Millisecond)
+		for lane.admitPacingLocked(976, false, now) {
+			admitted++
+			if admitted > 4000 {
+				break
+			}
+		}
+	}
+	// The 600 KB/s debt-limited budget admits roughly 615 segments of 976
+	// bytes per simulated second, well below the 1024 of the debt-free run.
+	require.InDelta(t, 615, admitted, 120)
+
+	// A retransmission storm larger than the total target clamps the budget
+	// to the small floor instead of starving the lane completely.
+	lane.pacingRateBPS = 400_000
+	lane.retxRateBPS = 900_000
+	require.Equal(t, float64(laneNewDataFloorBPS), lane.newDataBudgetBPSLocked())
+}

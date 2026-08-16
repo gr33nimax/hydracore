@@ -157,6 +157,10 @@ const (
 	LaneResetDurationMS
 	LaneStaleGenerationDropsTotal
 	LaneProbeResult
+	LaneAdmittedBytesTotal
+	KCPAckedBytesTotal
+	LaneRecoveryAttemptID
+	LaneRecoveryLastOutcome
 	AggregateProgressAgeSeconds
 	QuarantinedLanes
 	SessionReplacementTotal
@@ -315,6 +319,10 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "lane_reset_duration_ms"},
 	{name: "lane_stale_generation_drops_total", counter: true},
 	{name: "lane_probe_result"},
+	{name: "lane_admitted_bytes_total", counter: true},
+	{name: "kcp_acked_bytes_total", counter: true},
+	{name: "lane_recovery_attempt_id"},
+	{name: "lane_recovery_last_outcome"},
 	{name: "aggregate_progress_age_seconds"},
 	{name: "quarantined_lanes"},
 	{name: "session_replacement_total", counter: true},

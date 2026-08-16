@@ -11,10 +11,16 @@ versions are rejected during worker authentication.
 
 The native mode is `vk_parasite` and uses exactly four VK calls. Each call is
 one independent KCP lane with its own conversation, RTT/RTO, windows, queues,
-retransmission state and TURN/DTLS lifecycle. Incompatible wire v8 pins each
-ordered TCP flow to one reliable lane, stripes unordered UDP/QUIC datagrams over all four,
-fragments TCP data to at most four MSS before KCP, and admits user data through
-an ACK-clocked 256 Kbit/s-4 Mbit/s pacer per lane. Each reset advances a lane
+retransmission state and TURN/DTLS lifecycle. Incompatible wire v9 pins each
+ordered TCP flow to one reliable lane, stripes unordered UDP/QUIC datagrams
+over all four, fragments TCP data to at most four MSS before KCP, and admits
+user data through an ACK-clocked 1-25 Mbit/s pacer per lane. The pacer probes
+for headroom and keeps the raised rate only when delivered goodput follows
+the byte-measured offered gain; harmful probes roll back with a doubling
+cooldown, the loss-compensation ceiling starts at 1.25x and rises toward 1.5x
+only after proven probes, and the smoothed KCP retransmit rate is subtracted
+from the new-data admission budget as retransmission debt. Each reset advances
+a lane
 generation carried by worker auth, KCP conversation IDs and lane frames. The
 VPS suggests recovery to the client-side coordinator; the two endpoints then
 exchange `RESET_PREPARE`, `RESET_ACK` and `RESET_COMMIT`, discard the old KCP
@@ -39,7 +45,7 @@ The role contract is:
 - VPS: `identity.role="vps"`, `call_vk_parasite_server=true`;
 - both: `call_vk_four_lane_kcp=true`, `call_vk_pre_kcp_admission=true`,
   `call_vk_relay_flow_control=true`, `call_vk_telemetry=true`,
-  `call_vk_parasite_wire={"min":8,"max":8}` and
+  `call_vk_parasite_wire={"min":9,"max":9}` and
   `call_modes=["vk_parasite"]`.
 
 Example VPS inbound:
@@ -81,8 +87,8 @@ Example client outbound:
 `workers` and `max_workers_per_session` default to four and every other value is
 rejected. One to four distinct join links are accepted; links are reused to
 create the fixed four calls when fewer than four are supplied. The legacy-named
-`call_vk_pre_kcp_admission` capability now covers the wire-v8 ACK-clocked lane
-pacer and its BDP-derived 8-64 segment inflight limit.
+`call_vk_pre_kcp_admission` capability now covers the wire-v9 ACK-clocked lane
+pacer and its BDP-derived 32-512 segment inflight limit.
 
 ## Verification and publication
 

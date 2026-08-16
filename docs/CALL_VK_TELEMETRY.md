@@ -9,7 +9,7 @@ timer and records only while Ultimate's active session marker is present.
 The VPS watches `/var/lib/hydra/calls/vk/telemetry/active.json`, writes schema-v1
 JSONL to `/run/hydra/calls-telemetry.jsonl`, and rotates 64 MiB handoff parts.
 Ultimate drains them into its compressed bounded timeline. Client snapshots
-travel inside authenticated wire-v8 control frames; no extra listener or
+travel inside authenticated wire-v9 control frames; no extra listener or
 credential is exposed.
 
 The VPS overwrites client identity and the primary timestamp with the
@@ -45,6 +45,12 @@ Every lane reports independently:
 - output and peer-read queue depth, delay, late packets and drops;
 - generation and state (`active`, `quarantined`, `resetting`, `probing`);
 - pacing/delivered rate, minRTT, inflight limit, token starvation and ACK age;
+- admitted and uniquely-acked KCP bytes, used by the marginal-goodput probe
+  verdicts (`useful` / `harmful` / `inconclusive`) to evaluate pacing probes;
+- the recovery attempt id (the shared lane generation) and the last recovery
+  outcome (0 none / 1 in_progress / 2 recovered / 3 failed). Analyzers must
+  reconcile the attempt lifecycle from these snapshot gauges instead of
+  relying on terminal events, which can be lost with the dying session;
 - reset request/retry/ACK/commit counts, duration, stale-generation drops and
   the bidirectional probe result.
 

@@ -17,8 +17,23 @@ type deterministicLaneEmulator struct {
 	rtt          time.Duration
 	lossEvery    int
 	delayEvery   int
+	ackLossEvery int
+	reorderEvery int
 	blackhole    bool
+	demand       []bool
 	packet       int
+	acks         int
+	carried      int
+}
+
+// wantDemand reports whether the application supplies data during the given
+// delivery interval. A nil schedule means sustained demand, matching the
+// legacy scenarios.
+func (e *deterministicLaneEmulator) wantDemand(interval int) bool {
+	if len(e.demand) == 0 {
+		return true
+	}
+	return e.demand[interval%len(e.demand)]
 }
 
 func (e *deterministicLaneEmulator) deliver(rateBPS float64, interval time.Duration) (sent, delivered, retransmitted int, rtt time.Duration) {
@@ -30,18 +45,51 @@ func (e *deterministicLaneEmulator) deliver(rateBPS float64, interval time.Durat
 		delivered = 0
 	}
 	lost := 0
+	delayed := 0
 	for packet := 0; packet < delivered; packet++ {
 		e.packet++
+		if e.reorderEvery > 0 && e.packet%e.reorderEvery == 0 {
+			// Reordered packets land in the next delivery interval.
+			delayed++
+			continue
+		}
 		if e.lossEvery > 0 && e.packet%e.lossEvery == 0 {
+			lost++
+			continue
+		}
+		// ACK loss models the reverse path: the segment arrived but its
+		// acknowledgement did not, so the sender will retransmit it even
+		// though the forward path is clean.
+		e.acks++
+		if e.ackLossEvery > 0 && e.acks%e.ackLossEvery == 0 {
 			lost++
 		}
 	}
-	delivered -= lost
-	retransmitted = sent - delivered
+	delivered = delivered - lost - delayed + e.carried
+	e.carried = delayed
+	retransmitted = max(0, sent-delivered)
 	rtt = e.rtt
 	if e.delayEvery > 0 && e.packet%e.delayEvery == 0 {
 		rtt += e.rtt / 2
 	}
+	return
+}
+
+// driveByteWindow runs one delivery window against the controller while
+// mirroring the production byte accounting: admitted bytes track the sent
+// segments and uniquely-acked bytes track the delivered segments, so the
+// marginal-goodput probes have real byte signals instead of pacing knob
+// positions.
+func driveByteWindow(lane *kcpLane, emulator *deterministicLaneEmulator, now time.Time, intervalIndex int, mss float64) (sent, delivered, retransmitted int) {
+	sent, delivered, retransmitted, rtt := emulator.deliver(lane.pacingRateBPS, laneDeliverySampleWindow)
+	lane.deliveryOutSegments = uint64(sent)
+	lane.deliveryRetrans = uint64(retransmitted)
+	lane.deliveryRetransBytes = uint64(retransmitted) * uint64(mss)
+	lane.deliveryDemanded = emulator.wantDemand(intervalIndex)
+	lane.kcpSRTTMS = float64(rtt) / float64(time.Millisecond)
+	lane.ackedBytesTotal += uint64(delivered) * uint64(mss)
+	lane.admittedBytesTotal += uint64(sent) * uint64(mss)
+	lane.updateDeliveryController(now, delivered)
 	return
 }
 
@@ -58,6 +106,7 @@ func newControllerLane(now time.Time) *kcpLane {
 		pacingNextProbe:  now.Add(lanePacingProbeInterval),
 	}
 	lane.applicationLimited = true
+	lane.compensationCeiling = laneCompensationInitialCeiling
 	return lane
 }
 
@@ -312,4 +361,100 @@ func TestWireV9SessionNoProgressDeadlineIsBounded(t *testing.T) {
 	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(200*time.Millisecond))
 	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(2*time.Second))
 	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(35*time.Second))
+}
+
+func TestWireV9PolicerPlateauIsHarmfulAndRollsBack(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	// The lane sits at a healthy steady state before the test drives it into
+	// a 6 Mbit/s policer with 4% random loss on the delivered path.
+	lane.pacingRateBPS = 750_000
+	lane.deliveryRateBPS = 720_000
+	lane.deliveryCapacityBPS = 720_000
+	emulator := deterministicLaneEmulator{bandwidthBPS: 6_000_000 / 8, rtt: 80 * time.Millisecond, lossEvery: 25}
+	mss := float64(laneKCPMTU - kcpHeaderSize)
+	for sample := 0; sample < 60; sample++ {
+		driveByteWindow(lane, &emulator, start.Add(time.Duration(sample+1)*laneDeliverySampleWindow), sample, mss)
+	}
+	// The path cannot convert probes into delivery: after two harmful
+	// verdicts the ceiling drops below the default, the next probe is
+	// postponed by the doubling cooldown and the offered rate no longer
+	// chases the legacy 1.65x target.
+	require.LessOrEqual(t, lane.compensationCeiling, laneCompensationInitialCeiling-laneCompensationStepDown)
+	require.GreaterOrEqual(t, lane.compensationCeiling, laneCompensationMinimum)
+	require.Greater(t, lane.probeCooldownShift, 0)
+	require.LessOrEqual(t, lane.pacingRateBPS, 1.25*emulator.bandwidthBPS)
+}
+
+func TestWireV9UsefulProbeRaisesCeiling(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	// The path has headroom: 4 Mbit/s of pacing into a 12 Mbit/s pipe with
+	// 4% loss. A probe step converts into delivered goodput.
+	lane.pacingRateBPS = 500_000
+	lane.deliveryRateBPS = 480_000
+	lane.deliveryCapacityBPS = 480_000
+	emulator := deterministicLaneEmulator{bandwidthBPS: 12_000_000 / 8, rtt: 80 * time.Millisecond, lossEvery: 25}
+	mss := float64(laneKCPMTU - kcpHeaderSize)
+	preProbePacing := 0.0
+	for sample := 0; sample < 12; sample++ {
+		driveByteWindow(lane, &emulator, start.Add(time.Duration(sample+1)*laneDeliverySampleWindow), sample, mss)
+		if sample == 6 {
+			preProbePacing = lane.pacingRateBPS
+		}
+	}
+	require.Greater(t, lane.compensationCeiling, laneCompensationInitialCeiling)
+	require.Zero(t, lane.probeCooldownShift)
+	require.Zero(t, lane.probeHarmfulStreak)
+	require.Greater(t, lane.pacingRateBPS, preProbePacing)
+}
+
+func TestWireV9ProbeInconclusiveWithoutBaselineDemand(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	lane.pacingRateBPS = 500_000
+	lane.deliveryRateBPS = 480_000
+	lane.deliveryCapacityBPS = 480_000
+	emulator := deterministicLaneEmulator{bandwidthBPS: 12_000_000 / 8, rtt: 80 * time.Millisecond}
+	emulator.demand = []bool{false, false, false, false, false, false, false, true, true, true, true, true}
+	mss := float64(laneKCPMTU - kcpHeaderSize)
+	for sample := 0; sample < 12; sample++ {
+		driveByteWindow(lane, &emulator, start.Add(time.Duration(sample+1)*laneDeliverySampleWindow), sample, mss)
+	}
+	// The baseline windows lacked demand, so the probe verdict must be
+	// inconclusive: no ceiling change, no rollback cooldown.
+	require.Equal(t, laneCompensationInitialCeiling, lane.compensationCeiling)
+	require.Zero(t, lane.probeCooldownShift)
+	require.Zero(t, lane.probeHarmfulStreak)
+	require.Positive(t, lane.pacingRateBPS)
+}
+
+func TestWireV9AckLossProducesSpuriousRetransmissions(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	lane.pacingRateBPS = 750_000
+	emulator := deterministicLaneEmulator{bandwidthBPS: 6_000_000 / 8, rtt: 80 * time.Millisecond, ackLossEvery: 4}
+	mss := float64(laneKCPMTU - kcpHeaderSize)
+	totalSent := 0
+	totalDelivered := 0
+	totalRetransmitted := 0
+	for sample := 0; sample < 10; sample++ {
+		sent, delivered, retransmitted := driveByteWindow(lane, &emulator, start.Add(time.Duration(sample+1)*laneDeliverySampleWindow), sample, mss)
+		totalSent += sent
+		totalDelivered += delivered
+		totalRetransmitted += retransmitted
+	}
+	// Lost acknowledgements on a clean forward path manufacture retransmits
+	// of already-delivered data.
+	require.Greater(t, totalRetransmitted, 0)
+	require.Less(t, totalDelivered, totalSent)
+	require.Greater(t, lane.retryRatioSmooth, 0.0)
 }

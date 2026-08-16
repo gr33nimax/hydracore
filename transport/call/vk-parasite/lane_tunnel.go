@@ -45,9 +45,23 @@ const (
 	lanePacingDecrease            = 0.85
 	lanePacingSteadyGain          = 1.10
 	lanePacingProbeGain           = 1.15
-	lanePacingProbeInterval       = 4 * time.Second
-	lanePacingProbeDuration       = time.Second
-	laneCongestionSamples         = 2
+	lanePacingProbeInterval        = 4 * time.Second
+	lanePacingProbeDuration        = time.Second
+	lanePacingProbeUsefulRatio     = 0.5
+	lanePacingProbeHarmfulRatio    = 0.25
+	laneProbeHarmfulStreakLimit    = 2
+	laneProbeCooldownMaxShift      = 3
+	laneProbeStreakExpiry          = 5 * time.Minute
+	laneProbeMinWindowBytes        = 32 * (laneKCPMTU - kcpHeaderSize)
+	laneCompensationInitialCeiling = 1.25
+	laneCompensationMaximum        = 1.5
+	laneCompensationMinimum        = 1.0
+	laneCompensationStepUp         = 0.05
+	laneCompensationStepDown       = 0.1
+	laneRetryRatioSmoothing        = 0.25
+	laneRetransmitRateSmoothing    = 0.5
+	laneNewDataFloorBPS            = lanePacingMinimumBPS / 4
+	laneCongestionSamples          = 2
 	laneResetRetryInterval        = 250 * time.Millisecond
 	laneResetMinimumDeadline      = 4 * time.Second
 	laneResetMaximumDeadline      = 30 * time.Second
@@ -103,6 +117,7 @@ type queuedSegment struct {
 type kcpSentSegment struct {
 	lastSentAt time.Time
 	attempts   []kcpSendAttempt
+	size       int
 }
 
 type kcpSendAttempt struct {
@@ -214,6 +229,39 @@ type kcpLane struct {
 	pacingNextProbe       time.Time
 	pacingProbeUntil      time.Time
 	congestionSamples     int
+
+	// Byte-granular delivery accounting feeds the marginal-goodput probe
+	// evaluation and the retransmission debt. The totals are monotonic;
+	// per-window deltas are derived from the snapshots in lastAckedBytes and
+	// lastAdmittedBytes and kept in the two-entry rings below.
+	ackedBytesTotal    uint64
+	admittedBytesTotal uint64
+	lastAckedBytes     uint64
+	lastAdmittedBytes  uint64
+	windowAckedBytes   [2]uint64
+	windowAdmittedBytes [2]uint64
+	windowDemandBits   uint8
+
+	retryRatioSmooth         float64
+	retxRateBPS              float64
+	deliveryRetransBytes     uint64
+	compensationCeiling      float64
+	probeBaselinePacing      float64
+	probeBaselineAckedBPS    float64
+	probeBaselineAdmittedBPS float64
+	probeBaselineDemandOK    bool
+	probeBaselineRetrySmooth float64
+	probeAckedBytes          uint64
+	probeAdmittedBytes       uint64
+	probeWindows             int
+	probeDemandWindows       int
+	probeHarmfulStreak       int
+	probeLastVerdictAt       time.Time
+	probeCooldownShift       int
+
+	recoveryAttemptID   uint64
+	recoveryLastOutcome uint8
+
 	previousOutputDepth   int
 	resetInFlight         bool
 	pendingResetGeneration uint64
@@ -335,6 +383,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 			pacingNextProbe:  laneNow.Add(lanePacingProbeInterval),
 		}
 		lane.applicationLimited = true
+		lane.compensationCeiling = laneCompensationInitialCeiling
 		lane.metrics.SetCounterParent(metrics)
 		lane.lastAckProgress.Store(time.Now().UnixNano())
 		lane.resetKCPLocked(1)
@@ -560,6 +609,9 @@ func (t *ParasiteTunnel) SetTelemetryCollectionActive(active bool) {
 			lane.deliveryAckedSegments = 0
 			lane.deliveryOutSegments = 0
 			lane.deliveryRetrans = 0
+			lane.deliveryRetransBytes = 0
+			lane.retryRatioSmooth = 0
+			lane.retxRateBPS = 0
 			lane.mu.Unlock()
 		}
 	}
@@ -900,6 +952,10 @@ func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, genera
 			if lane.resetStartedAt.IsZero() {
 				lane.resetStartedAt = time.Now()
 			}
+			lane.recoveryAttemptID = generation
+			lane.recoveryLastOutcome = 1
+			lane.metrics.Set(telemetry.LaneRecoveryAttemptID, float64(generation))
+			lane.metrics.Set(telemetry.LaneRecoveryLastOutcome, 1)
 			lane.metrics.AddHot(telemetry.LaneResetRequestTotal, 1)
 		} else if generation == current+1 {
 			ackReady = lane.resetMigrationDone
@@ -1620,7 +1676,13 @@ func (l *kcpLane) admitPacingLocked(size int, priority bool, now time.Time) bool
 	elapsed := now.Sub(l.pacingLastRefill).Seconds()
 	if elapsed > 0 {
 		bucket := float64(lanePacingBucketSegments * (laneKCPMTU - kcpHeaderSize))
-		l.pacingTokens = min(bucket, l.pacingTokens+elapsed*l.pacingRateBPS)
+		// Fresh data refills from the budget left after the retransmission
+		// debt: the smoothed KCP retransmit rate consumes path capacity
+		// instead of competing with it. Post-KCP output stays unlimited, so
+		// retransmits never wait behind this limiter and cannot manufacture
+		// false RTOs. The floor below lanePacingMinimumBPS keeps the ACK
+		// clock and probes alive while the path is degraded.
+		l.pacingTokens = min(bucket, l.pacingTokens+elapsed*l.newDataBudgetBPSLocked())
 		l.pacingLastRefill = now
 	}
 	if l.pacingTokens < float64(size) {
@@ -1629,6 +1691,8 @@ func (l *kcpLane) admitPacingLocked(size int, priority bool, now time.Time) bool
 		return false
 	}
 	l.pacingTokens -= float64(size)
+	l.admittedBytesTotal += uint64(size)
+	l.metrics.AddHot(telemetry.LaneAdmittedBytesTotal, uint64(size))
 	return true
 }
 
@@ -1924,6 +1988,13 @@ func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
 	lane.resetStartedAt = time.Now()
 	generation := lane.pendingResetGeneration
 	ack := lane.resetAck
+	// The reset generation doubles as the recovery attempt id: it is unique
+	// per attempt and both endpoints share it, so analyzer reconciliation can
+	// join client and server records without a separate identifier.
+	lane.recoveryAttemptID = generation
+	lane.recoveryLastOutcome = 1
+	lane.metrics.Set(telemetry.LaneRecoveryAttemptID, float64(generation))
+	lane.metrics.Set(telemetry.LaneRecoveryLastOutcome, 1)
 	lane.metrics.AddHot(telemetry.LaneResetRequestTotal, 1)
 	lane.mu.Unlock()
 	t.recordEvent("lane_reset_requested", "lane", reason, &laneID)
@@ -2048,6 +2119,11 @@ func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, a
 
 func (t *ParasiteTunnel) escalateLaneResetFailure(laneID uint16, reason string) {
 	t.recordEvent("lane_reset_failed", "lane", reason, &laneID)
+	lane := t.lanes[laneID]
+	lane.mu.Lock()
+	lane.recoveryLastOutcome = 3
+	lane.mu.Unlock()
+	lane.metrics.Set(telemetry.LaneRecoveryLastOutcome, 3)
 	t.recoveryMu.Lock()
 	recoveryActive := t.recoveryActive && t.recoveryLane == laneID
 	if recoveryActive {
@@ -2093,6 +2169,31 @@ func (t *ParasiteTunnel) resetLaneGeneration(laneID uint16, generation uint64, r
 	lane.pacingNextProbe = time.Now().Add(lanePacingProbeInterval)
 	lane.pacingProbeUntil = time.Time{}
 	lane.congestionSamples = 0
+	lane.retryRatioSmooth = 0
+	lane.retxRateBPS = 0
+	lane.deliveryRetransBytes = 0
+	lane.compensationCeiling = laneCompensationInitialCeiling
+	lane.ackedBytesTotal = 0
+	lane.admittedBytesTotal = 0
+	lane.lastAckedBytes = 0
+	lane.lastAdmittedBytes = 0
+	lane.windowAckedBytes = [2]uint64{}
+	lane.windowAdmittedBytes = [2]uint64{}
+	lane.windowDemandBits = 0
+	lane.probeBaselinePacing = 0
+	lane.probeBaselineAckedBPS = 0
+	lane.probeBaselineAdmittedBPS = 0
+	lane.probeBaselineDemandOK = false
+	lane.probeBaselineRetrySmooth = 0
+	lane.probeAckedBytes = 0
+	lane.probeAdmittedBytes = 0
+	lane.probeWindows = 0
+	lane.probeDemandWindows = 0
+	lane.probeHarmfulStreak = 0
+	lane.probeLastVerdictAt = time.Time{}
+	lane.probeCooldownShift = 0
+	// recoveryAttemptID and recoveryLastOutcome deliberately keep the last
+	// attempt visible after a generation commit.
 	lane.previousOutputDepth = 0
 	lane.pressureSince = time.Time{}
 	lane.probeStartedAt = time.Now()
@@ -2232,6 +2333,8 @@ func (t *ParasiteTunnel) maybeCompleteLaneProbe(laneID uint16) {
 	complete := lane.state == laneStateProbing && lane.probeReceived && lane.probeAcked && ackProgress.After(lane.probeStartedAt)
 	if complete {
 		lane.state = laneStateActive
+		lane.recoveryLastOutcome = 2
+		lane.metrics.Set(telemetry.LaneRecoveryLastOutcome, 2)
 		lane.metrics.Set(telemetry.LaneProbeResult, 1)
 		if !lane.resetStartedAt.IsZero() {
 			lane.metrics.Set(telemetry.LaneResetDurationMS, float64(time.Since(lane.resetStartedAt))/float64(time.Millisecond))

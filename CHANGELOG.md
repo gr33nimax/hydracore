@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Evaluated pacing probes by marginal goodput: a probe now compares the
+  byte-measured delivered gain against the byte-measured offered gain and
+  falls back to a three-way verdict (useful / harmful / inconclusive).
+  Harmful probes roll back the offered rate and lower the compensation
+  ceiling after two consecutive verdicts; useful probes raise the ceiling
+  toward 1.5x. The wire format is unchanged.
+- Subtracted the smoothed KCP retransmit rate from the new-data admission
+  budget as retransmission debt. Fresh data backs off while retransmits
+  consume the measured path, instead of competing with them and sustaining
+  a loss plateau on policer links.
+- Added byte-granular lane counters (admitted and uniquely-acked KCP bytes)
+  and recovery state gauges (`lane_recovery_attempt_id`,
+  `lane_recovery_last_outcome`) so analyzers can reconcile recovery attempts
+  from snapshots without relying on terminal events.
+
 ## v1.13.16-extended-hydracore.11-debug.38
 
 - Replaced retransmission-only pacing backoff with a composite congestion

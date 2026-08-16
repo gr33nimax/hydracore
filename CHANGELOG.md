@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.34
+
+- Kept a successfully connected VK parasite client on the bridge manager's
+  lifetime context instead of cancelling it when the connection attempt
+  returned. This prevents an authenticated DTLS session from closing within
+  milliseconds and entering an endless reconnect loop.
+
 ## v1.13.16-extended-hydracore.11-debug.32
 
 - Kept VK API flood-control state process-wide so restarting the VPN runtime

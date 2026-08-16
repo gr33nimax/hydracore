@@ -85,16 +85,11 @@ func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLog
 	}
 	options = validatedOptions
 	managerCtx, cancel := context.WithCancel(ctx)
-	attemptTimeout := options.WorkerConnectTimeout + 5*time.Second
-	if attemptTimeout < 15*time.Second {
-		attemptTimeout = 15 * time.Second
-	} else if attemptTimeout > 45*time.Second {
-		attemptTimeout = 45 * time.Second
-	}
 	connector := func(connectCtx context.Context) (managedParasiteClient, error) {
-		attemptCtx, attemptCancel := context.WithTimeout(connectCtx, attemptTimeout)
-		defer attemptCancel()
-		return ConnectClient(attemptCtx, options, log)
+		// ConnectClient owns its per-worker startup deadlines. The context passed
+		// here is also the lifetime context of a successful client, so wrapping it
+		// in an attempt-scoped context would close the session on return.
+		return ConnectClient(connectCtx, options, log)
 	}
 	initial := connectParasiteClientWithRetry(
 		managerCtx,

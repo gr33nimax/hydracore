@@ -1,4 +1,11 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.33
+# HydraCore v1.13.16-extended-hydracore.11-debug.34
+
+This hotfix separates a VK parasite connection attempt from the lifetime of
+the connected client. A successful TURN/DTLS/inner-auth session now remains
+owned by the bridge manager instead of being cancelled as soon as
+`ConnectClient` returns.
+
+## Previous debug.33 notes
 
 This build introduces the incompatible VK parasite wire v9. Client and VPS
 must be upgraded together. The transport now has an explicit logical-session

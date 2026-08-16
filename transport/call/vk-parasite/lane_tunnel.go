@@ -269,6 +269,7 @@ type ParasiteTunnel struct {
 	recoveryReadyAt     time.Time
 	recoveryDeferred    uint8
 	recoveryPending     uint8
+	recoveryProgress    [LaneCount]int64
 	recoverySuggestedAt [LaneCount]time.Time
 	recoveryCoordinator atomic.Bool
 	sessionReplaceOnce  sync.Once
@@ -1740,12 +1741,16 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 		t.recoveryStartedAt = now
 		t.recoveryDeadline = now.Add(t.laneResetHandshakeDeadline(workerID) + t.laneRecoveryGrace)
 		t.recoveryPending &^= uint8(1 << workerID)
+		t.recoveryProgress[workerID] = 0
 		t.recoveryDeferred = t.recoveryPending
 	}
-	if deferredReason != "" && !deferredDuplicate && t.recoveryDeferred&uint8(1<<workerID) == 0 {
-		t.recoveryDeferred |= uint8(1 << workerID)
-		t.recoveryPending |= uint8(1 << workerID)
-		recordDeferred = true
+	if deferredReason != "" && !deferredDuplicate {
+		t.recoveryProgress[workerID] = selected.lastAckProgress.Load()
+		if t.recoveryDeferred&uint8(1<<workerID) == 0 {
+			t.recoveryDeferred |= uint8(1 << workerID)
+			t.recoveryPending |= uint8(1 << workerID)
+			recordDeferred = true
+		}
 	}
 	t.recoveryMu.Unlock()
 	if deferredReason != "" {
@@ -1812,10 +1817,91 @@ func (t *ParasiteTunnel) scheduleLaneRecovery(laneID uint16, delay time.Duration
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			t.recoverStalledLane(&laneID)
+			t.resumeDeferredLaneRecovery(laneID)
 		case <-t.closed:
 		}
 	}()
+}
+
+func (t *ParasiteTunnel) resumeDeferredLaneRecovery(laneID uint16) {
+	if laneID >= LaneCount {
+		return
+	}
+	bit := uint8(1 << laneID)
+	now := time.Now()
+	t.recoveryMu.Lock()
+	if t.recoveryPending&bit == 0 {
+		t.recoveryMu.Unlock()
+		return
+	}
+	if t.recoveryActive {
+		// The active recovery completion will schedule the next pending lane.
+		t.recoveryMu.Unlock()
+		return
+	}
+	if now.Before(t.recoveryReadyAt) {
+		delay := time.Until(t.recoveryReadyAt)
+		t.recoveryMu.Unlock()
+		t.scheduleLaneRecovery(laneID, delay)
+		return
+	}
+	progress := t.recoveryProgress[laneID]
+	t.recoveryMu.Unlock()
+
+	if t.deferredLaneStillStalled(laneID, progress, now) {
+		t.recoverStalledLane(&laneID)
+		return
+	}
+
+	// ACK progress or a drained backlog invalidates the old recovery request.
+	// Clear it only if it still refers to the watermark inspected above.
+	t.recoveryMu.Lock()
+	cancelled := false
+	if t.recoveryPending&bit != 0 && t.recoveryProgress[laneID] == progress {
+		t.recoveryPending &^= bit
+		t.recoveryDeferred &^= bit
+		t.recoveryProgress[laneID] = 0
+		cancelled = true
+	}
+	var nextLane uint16
+	hasNext := false
+	for candidate := uint16(0); candidate < LaneCount; candidate++ {
+		if t.recoveryPending&uint8(1<<candidate) != 0 {
+			nextLane = candidate
+			hasNext = true
+			break
+		}
+	}
+	t.recoveryMu.Unlock()
+	if cancelled {
+		t.recordEvent("lane_send_recovery_cancelled", "lane", "stale_recovery_request", &laneID)
+	}
+	if hasNext {
+		t.scheduleLaneRecovery(nextLane, 0)
+	}
+}
+
+func (t *ParasiteTunnel) deferredLaneStillStalled(laneID uint16, progress int64, now time.Time) bool {
+	lane := t.lanes[laneID]
+	workerActive, workerQueueDepth := lane.workerState()
+	lane.mu.Lock()
+	defer lane.mu.Unlock()
+	if lane.state != laneStateActive {
+		return false
+	}
+	if !workerActive {
+		return true
+	}
+	if lane.lastAckProgress.Load() > progress {
+		return false
+	}
+	outputDepth := len(lane.outputPending)
+	waitSnd := lane.kcp.WaitSnd()
+	pressure := workerQueueDepth > 0 || outputDepth >= 3*laneKCPOutputBacklog/4 || waitSnd >= lane.admissionLimitLocked(false)
+	if !pressure {
+		return false
+	}
+	return now.Sub(time.Unix(0, lane.lastAckProgress.Load())) >= lane.ackStallTimeoutLocked()
 }
 
 func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {

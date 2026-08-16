@@ -91,11 +91,11 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 		delete(l.kcpSent, ack.sequence)
 		l.metrics.AddHot(telemetry.KCPAckProgressSegmentsTotal, 1)
 		ackedProgress++
-		for _, attempt := range sent.attempts {
-			if attempt.timestamp == ack.timestamp {
-				l.updateKCPRTT(float64(now.Sub(attempt.sentAt)) / float64(time.Millisecond))
-				break
-			}
+		// Karn's algorithm: an ACK for a retransmitted segment is ambiguous and
+		// must not feed the RTT/RTO estimator, even when its echoed timestamp
+		// happens to match one of the attempts.
+		if len(sent.attempts) == 1 && sent.attempts[0].timestamp == ack.timestamp {
+			l.updateKCPRTT(float64(now.Sub(sent.attempts[0].sentAt)) / float64(time.Millisecond))
 		}
 	}
 	if hasCumulativeACK {
@@ -138,14 +138,23 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 	}
 	mss := float64(laneKCPMTU - kcpHeaderSize)
 	instantRate := float64(l.deliveryAckedSegments) * mss / elapsed.Seconds()
-	applicationLimited := !l.deliveryDemanded
+	queueDepth := len(l.outputPending)
+	waitSnd := 0
+	if l.kcp != nil {
+		waitSnd = l.kcp.WaitSnd()
+	}
+	// Token/admission rejection is not the only proof of demand. A lane with
+	// a material KCP or writer backlog is network-limited even if the caller did
+	// not hit a limiter during this sample; treating it as application-limited
+	// would disable congestion backoff precisely while the path is saturated.
+	backlogged := queueDepth >= lanePacingBucketSegments || waitSnd >= lanePacingBucketSegments
+	applicationLimited := !l.deliveryDemanded && !backlogged
 	l.applicationLimited = applicationLimited
 	l.metrics.Set(telemetry.LaneApplicationLimited, boolFloat(applicationLimited))
 	retryRatio := 0.0
 	if l.deliveryOutSegments > 0 {
 		retryRatio = float64(l.deliveryRetrans) / float64(l.deliveryOutSegments)
 	}
-	queueDepth := len(l.outputPending)
 	queueGrowing := queueDepth > l.previousOutputDepth && queueDepth >= lanePacingBucketSegments
 	rttInflated := l.minRTTMS > 0 && l.kcpSRTTMS > 2*l.minRTTMS
 	severeRetry := retryRatio > 0.15

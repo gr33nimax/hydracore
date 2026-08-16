@@ -151,6 +151,24 @@ func TestWireV9ApplicationLimitedVideoPreservesBurstCapacity(t *testing.T) {
 	require.Greater(t, lane.pacingRateBPS, 0.9*240_000.0)
 }
 
+func TestWireV9BackloggedLaneIsNotApplicationLimited(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	lane.pacingRateBPS = 240_000
+	lane.deliveryRateBPS = 220_000
+	lane.deliveryCapacityBPS = 220_000
+	lane.outputPending = make([]queuedSegment, lanePacingBucketSegments)
+	lane.deliveryOutSegments = 100
+	lane.deliveryRetrans = 50
+	lane.deliveryDemanded = false
+
+	lane.updateDeliveryController(start.Add(laneDeliverySampleWindow), 50)
+
+	require.False(t, lane.applicationLimited)
+}
+
 func TestWireV9BlackholeLeavesThreeLaneCapacity(t *testing.T) {
 	t.Parallel()
 	lanes := [LaneCount]deterministicLaneEmulator{}

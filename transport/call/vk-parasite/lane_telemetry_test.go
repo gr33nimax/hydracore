@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestKCPRTTMatchesRetransmissionTimestamp(t *testing.T) {
+func TestKCPRTTSkipsRetransmittedSegment(t *testing.T) {
 	t.Parallel()
 	lane := &kcpLane{
 		metrics: telemetry.NewAccumulator(),
@@ -27,10 +27,28 @@ func TestKCPRTTMatchesRetransmissionTimestamp(t *testing.T) {
 
 	lane.observeKCPInput(testKCPSegment(kcpCommandACK, 7, 101, 8))
 
-	require.InDelta(t, 40, lane.kcpSRTTMS, 20)
-	require.Equal(t, float64(1), lane.metrics.Value(telemetry.KCPRTTSamplesTotal))
+	require.Zero(t, lane.kcpSRTTMS)
+	require.Zero(t, lane.metrics.Value(telemetry.KCPRTTSamplesTotal))
 	require.Equal(t, float64(1), lane.metrics.Value(telemetry.KCPAckProgressSegmentsTotal))
 	require.Empty(t, lane.kcpSent)
+}
+
+func TestKCPRTTSamplesUnambiguousSegment(t *testing.T) {
+	t.Parallel()
+	lane := &kcpLane{
+		metrics: telemetry.NewAccumulator(),
+		kcpSent: make(map[uint32]kcpSentSegment),
+	}
+	lane.metrics.SetCollectionActive(true)
+	lane.observeKCPOutput(testKCPSegment(kcpCommandPush, 7, 100, 0))
+	sent := lane.kcpSent[7]
+	sent.attempts[0].sentAt = time.Now().Add(-40 * time.Millisecond)
+	lane.kcpSent[7] = sent
+
+	lane.observeKCPInput(testKCPSegment(kcpCommandACK, 7, 100, 8))
+
+	require.InDelta(t, 40, lane.kcpSRTTMS, 20)
+	require.Equal(t, float64(1), lane.metrics.Value(telemetry.KCPRTTSamplesTotal))
 }
 
 func TestTelemetryLeaseRenewalDoesNotResetLaneRTTState(t *testing.T) {

@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.37
+
+- Revalidated serialized lane recoveries against fresh ACK progress, current
+  backlog, and the adaptive stall deadline before starting a deferred reset.
+  A lane that recovered while another lane was being repaired is no longer
+  reset from a stale pending bit.
+- Applied Karn's algorithm to the per-lane RTT estimator. ACKs for retransmitted
+  KCP segments no longer inflate RTT/RTO and postpone or trigger recovery using
+  an ambiguous timing sample.
+- Classified material KCP and writer backlogs as network demand even when the
+  caller did not hit the pacing limiter during that sample. Sustained overload
+  can now engage congestion backoff instead of remaining falsely marked as
+  application-limited.
+
 ## v1.13.16-extended-hydracore.11-debug.36
 
 - Corrected the debug.35 deterministic-load regression: the capacity-based

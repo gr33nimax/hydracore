@@ -1,4 +1,19 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.36
+# HydraCore v1.13.16-extended-hydracore.11-debug.37
+
+This build closes the reset cascade seen after reconnect in debug.36. A
+serialized recovery now records the lane's ACK-progress watermark and checks
+it again after cooldown. If ACKs resumed, backlog drained, or the adaptive
+stall deadline is no longer met, the stale reset is cancelled and the next
+pending lane is considered without disturbing the healthy one.
+
+Per-lane RTT now follows Karn's algorithm and ignores ambiguous ACK timing for
+retransmitted KCP segments. The delivery controller also treats a material KCP
+or writer backlog as real demand, allowing high-loss saturation to reduce
+pacing even if no token rejection occurred during that sample. In practice
+this avoids healthy-lane resets, oversized RTOs, and prolonged retransmission
+storms after reconnect.
+
+## Previous debug.36 notes
 
 This build corrects the deterministic-load retransmission regression found by
 CI in debug.35. Per-lane pacing now starts at 4 Mbit/s, requires two

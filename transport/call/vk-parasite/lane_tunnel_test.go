@@ -1067,6 +1067,8 @@ func TestClientNetworkRebindReplacesOneWorkerAtATime(t *testing.T) {
 	require.NoError(t, err)
 	peerTunnel, err := NewParasiteTunnel(0x778899ac, logger.NOP())
 	require.NoError(t, err)
+	tunnel.SetRecoveryCoordinator(true)
+	peerTunnel.SetRecoveryCoordinator(false)
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &Client{
 		ctx:     ctx,

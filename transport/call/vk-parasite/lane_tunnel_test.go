@@ -269,26 +269,39 @@ func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T
 	})
 	connectTestLanes(t, client, server)
 
-	received := make(chan byte, 64)
+	const packetCount = 8
+	received := make(chan byte, packetCount)
 	server.SetOnData(func(frame []byte) { received <- frame[9] })
-	for sequence := byte(0); sequence < 64; sequence++ {
-		payload := make([]byte, 4096)
-		payload[0] = sequence
-		client.SendData(calltunnel.EncodeFrame(100, calltunnel.MsgUDPReply, payload))
-	}
-	seen := make(map[byte]struct{}, 64)
-	for len(seen) < 64 {
+	seen := make(map[byte]struct{}, packetCount)
+	for sequence := byte(0); sequence < packetCount; sequence++ {
+		client.SendData(calltunnel.EncodeFrame(100, calltunnel.MsgUDPReply, []byte{sequence}))
 		select {
-		case sequence := <-received:
-			seen[sequence] = struct{}{}
+		case delivered := <-received:
+			seen[delivered] = struct{}{}
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for striped UDP payload")
 		}
+		time.Sleep(udpFlowletMaximumDwell + 5*time.Millisecond)
 	}
+	require.Len(t, seen, packetCount)
 	client.sendMu.Lock()
 	require.Equal(t, uint8((1<<LaneCount)-1), client.sendFlows[100].laneMask)
 	require.True(t, client.sendFlows[100].laneAssigned)
 	client.sendMu.Unlock()
+}
+
+func TestUDPFlowletByteBoundaryReleasesLanePreference(t *testing.T) {
+	laneID := uint16(2)
+	state := sendFlowState{
+		unordered:      true,
+		laneAssigned:  true,
+		laneID:         laneID,
+		flowletStarted: time.Now(),
+		flowletBytes:   udpFlowletMaximumBytes,
+	}
+	require.Nil(t, state.preferredLane())
+	state.flowletBytes--
+	require.Equal(t, laneID, *state.preferredLane())
 }
 
 func TestRemoteCloseReleasesLocalLaneFlowAccounting(t *testing.T) {

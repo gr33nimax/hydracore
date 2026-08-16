@@ -740,6 +740,13 @@ func (w *laneWorker) writeLoop() {
 		select {
 		case segment := <-w.sendQueue:
 			started := time.Now()
+			// Register the KCP transmission immediately before the physical
+			// write. A fast peer can enqueue and return an ACK before Write
+			// itself returns; recording afterwards loses that ACK progress and
+			// falsely triggers lane recovery on an otherwise healthy path.
+			w.lane.mu.Lock()
+			w.lane.observeKCPOutput(segment.payload)
+			w.lane.mu.Unlock()
 			if err := w.write(segment.payload); err != nil {
 				w.parent.removeWorker(w)
 				return
@@ -751,12 +758,6 @@ func (w *laneWorker) writeLoop() {
 				w.metrics.AddHot(telemetry.WorkerOutputQueueLateTotal, 1)
 				w.metrics.AddHotMonotonic(telemetry.KCPSendBlockedSecondsTotal, delay.Seconds())
 			}
-			// Record KCP transmission at the successful physical write, not when
-			// kcp.Update merely made the segment ready. This keeps RTT and retry
-			// attribution aligned with TURN/DTLS instead of post-KCP queue time.
-			w.lane.mu.Lock()
-			w.lane.observeKCPOutput(segment.payload)
-			w.lane.mu.Unlock()
 			w.parent.touch()
 		case <-ticker.C:
 			if err := w.write(workerHeartbeat[:]); err != nil {

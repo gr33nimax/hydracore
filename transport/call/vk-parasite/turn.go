@@ -2,8 +2,10 @@ package vkparasite
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"strings"
@@ -31,8 +33,15 @@ type CredentialProvider func(ctx context.Context, joinLink string) (TURNCredenti
 type managedTURNConn struct {
 	net.PacketConn
 	client    *turn.Client
-	base      net.PacketConn
+	base      io.Closer
 	closeOnce sync.Once
+}
+
+type turnEndpoint struct {
+	destination M.Socksaddr
+	network     string
+	secure      bool
+	serverName  string
 }
 
 func (c *managedTURNConn) Close() error {
@@ -61,30 +70,35 @@ func allocateTURN(
 		recordTURNFailure(ctx, metrics, started, workerID, "credentials")
 		return nil, errors.New("call vk_parasite: VK returned incomplete TURN credentials")
 	}
-	destinations := make([]M.Socksaddr, 0, len(credentials.URLs))
+	udpEndpoints := make([]turnEndpoint, 0, len(credentials.URLs))
+	tcpEndpoints := make([]turnEndpoint, 0, len(credentials.URLs))
 	for _, rawURL := range credentials.URLs {
-		turnDestination, parseErr := parseTURNUDPURL(rawURL)
+		endpoint, parseErr := parseTURNURL(rawURL)
 		if parseErr == nil {
-			destinations = append(destinations, turnDestination)
+			if endpoint.network == "udp" {
+				udpEndpoints = append(udpEndpoints, endpoint)
+			} else {
+				tcpEndpoints = append(tcpEndpoints, endpoint)
+			}
 		}
 	}
+	destinations := append(rotateTURNEndpoints(udpEndpoints, preferred), rotateTURNEndpoints(tcpEndpoints, preferred)...)
 	if len(destinations) == 0 {
 		metrics.Set(telemetry.TURNEndpointCount, 0)
 		metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
 		recordTURNFailure(ctx, metrics, started, workerID, "no_endpoint")
-		return nil, errors.New("call vk_parasite: no usable UDP TURN URL")
+		return nil, errors.New("call vk_parasite: no usable TURN URL")
 	}
 	var lastErr error
 	metrics.Set(telemetry.TURNEndpointCount, float64(len(destinations)))
 	metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
-	start := preferred % len(destinations)
 	for offset := 0; offset < len(destinations); offset++ {
 		metrics.Add(telemetry.TURNEndpointsTriedTotal, 1)
-		turnDestination := destinations[(start+offset)%len(destinations)]
-		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, turnDestination)
+		endpoint := destinations[offset]
+		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, endpoint)
 		if err == nil {
 			metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
-			metrics.Set(telemetry.TURNSelectedEndpointOrdinal, float64((start+offset)%len(destinations)+1))
+			metrics.Set(telemetry.TURNSelectedEndpointOrdinal, float64(offset+1))
 			metrics.Add(telemetry.TURNAllocateSuccessTotal, 1)
 			return connection, nil
 		}
@@ -92,6 +106,17 @@ func allocateTURN(
 	}
 	recordTURNFailure(ctx, metrics, started, workerID, "all_endpoints")
 	return nil, fmt.Errorf("call vk_parasite: all VK TURN endpoints failed: %w", lastErr)
+}
+
+func rotateTURNEndpoints(endpoints []turnEndpoint, preferred int) []turnEndpoint {
+	if len(endpoints) < 2 {
+		return append([]turnEndpoint(nil), endpoints...)
+	}
+	start := preferred % len(endpoints)
+	rotated := make([]turnEndpoint, 0, len(endpoints))
+	rotated = append(rotated, endpoints[start:]...)
+	rotated = append(rotated, endpoints[:start]...)
+	return rotated
 }
 
 func recordTURNFailure(ctx context.Context, metrics *telemetry.Accumulator, started time.Time, workerID uint16, reason string) {
@@ -112,19 +137,41 @@ func allocateTURNEndpoint(
 	dialer N.Dialer,
 	dnsRouter adapter.DNSRouter,
 	credentials TURNCredentials,
-	turnDestination M.Socksaddr,
+	endpoint turnEndpoint,
 ) (net.PacketConn, error) {
-	turnAddress, err := resolveUDPAddress(ctx, dialer, dnsRouter, turnDestination, true)
+	turnAddress, err := resolveUDPAddress(ctx, dialer, dnsRouter, endpoint.destination, true)
 	if err != nil {
 		return nil, err
 	}
 	resolvedDestination := M.SocksaddrFromNet(turnAddress)
-	base, err := dialer.ListenPacket(ctx, resolvedDestination)
-	if err != nil {
-		return nil, err
+	var packetConn net.PacketConn
+	var base io.Closer
+	if endpoint.network == "udp" {
+		udpConn, listenErr := dialer.ListenPacket(ctx, resolvedDestination)
+		if listenErr != nil {
+			return nil, listenErr
+		}
+		packetConn = udpConn
+		base = udpConn
+	} else {
+		tcpConn, dialErr := dialer.DialContext(ctx, "tcp", resolvedDestination)
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		stream := tcpConn
+		if endpoint.secure {
+			tlsConn := tls.Client(tcpConn, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: endpoint.serverName})
+			if handshakeErr := tlsConn.HandshakeContext(ctx); handshakeErr != nil {
+				_ = tcpConn.Close()
+				return nil, handshakeErr
+			}
+			stream = tlsConn
+		}
+		packetConn = turn.NewSTUNConn(stream)
+		base = stream
 	}
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = base.SetDeadline(deadline)
+		_ = packetConn.SetDeadline(deadline)
 	}
 	loggerFactory := logging.NewDefaultLoggerFactory()
 	loggerFactory.DefaultLogLevel = logging.LogLevelDisabled
@@ -133,7 +180,7 @@ func allocateTURNEndpoint(
 		TURNServerAddr: turnAddress.String(),
 		Username:       credentials.Username,
 		Password:       credentials.Credential,
-		Conn:           base,
+		Conn:           packetConn,
 		// A zero-value stdnet.Net resolves the already-pinned IP without the
 		// Android interface enumeration that can fail under VPN permissions.
 		Net:           new(stdnet.Net),
@@ -154,20 +201,32 @@ func allocateTURNEndpoint(
 		_ = base.Close()
 		return nil, err
 	}
-	_ = base.SetDeadline(time.Time{})
+	_ = packetConn.SetDeadline(time.Time{})
 	return &managedTURNConn{PacketConn: allocation, client: client, base: base}, nil
 }
 
-func parseTURNUDPURL(rawURL string) (M.Socksaddr, error) {
+func parseTURNURL(rawURL string) (turnEndpoint, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || !strings.EqualFold(parsed.Scheme, "turn") {
-		return M.Socksaddr{}, errors.New("not a TURN UDP URL")
+	if err != nil || (!strings.EqualFold(parsed.Scheme, "turn") && !strings.EqualFold(parsed.Scheme, "turns")) {
+		return turnEndpoint{}, errors.New("not a TURN URL")
 	}
-	if transport := parsed.Query().Get("transport"); transport != "" && !strings.EqualFold(transport, "udp") {
-		return M.Socksaddr{}, errors.New("TURN transport is not UDP")
+	secure := strings.EqualFold(parsed.Scheme, "turns")
+	network := strings.ToLower(parsed.Query().Get("transport"))
+	if network == "" {
+		if secure {
+			network = "tcp"
+		} else {
+			network = "udp"
+		}
+	}
+	if network != "udp" && network != "tcp" {
+		return turnEndpoint{}, errors.New("unsupported TURN transport")
+	}
+	if secure && network != "tcp" {
+		return turnEndpoint{}, errors.New("TURN TLS requires TCP")
 	}
 	if parsed.User != nil {
-		return M.Socksaddr{}, errors.New("TURN URL contains unexpected userinfo")
+		return turnEndpoint{}, errors.New("TURN URL contains unexpected userinfo")
 	}
 	authority := parsed.Host
 	if authority == "" {
@@ -175,12 +234,31 @@ func parseTURNUDPURL(rawURL string) (M.Socksaddr, error) {
 	}
 	destination := M.ParseSocksaddr(authority)
 	if !destination.IsValid() {
-		return M.Socksaddr{}, errors.New("TURN URL has no host")
+		return turnEndpoint{}, errors.New("TURN URL has no host")
 	}
 	if destination.Port == 0 {
-		destination.Port = 3478
+		if secure {
+			destination.Port = 5349
+		} else {
+			destination.Port = 3478
+		}
 	}
-	return destination, nil
+	serverName := destination.Fqdn
+	if serverName == "" && destination.IsIP() {
+		serverName = destination.Addr.String()
+	}
+	return turnEndpoint{destination: destination, network: network, secure: secure, serverName: serverName}, nil
+}
+
+func parseTURNUDPURL(rawURL string) (M.Socksaddr, error) {
+	endpoint, err := parseTURNURL(rawURL)
+	if err != nil {
+		return M.Socksaddr{}, err
+	}
+	if endpoint.network != "udp" || endpoint.secure {
+		return M.Socksaddr{}, errors.New("TURN transport is not UDP")
+	}
+	return endpoint.destination, nil
 }
 
 func resolveUDPAddress(

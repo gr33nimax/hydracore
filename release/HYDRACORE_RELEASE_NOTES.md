@@ -1,4 +1,28 @@
-# HydraCore v1.13.16-extended-hydracore.11-debug.32
+# HydraCore v1.13.16-extended-hydracore.11-debug.33
+
+This build introduces the incompatible VK parasite wire v9. Client and VPS
+must be upgraded together. The transport now has an explicit logical-session
+boundary: Android network changes stage a same-generation TURN/DTLS worker and
+atomically replace only the physical epoch, leaving RelayBridge, KCP lanes and
+flow sequence state alive.
+
+Wire v9 adds ordered-flow progress and migration controls with bounded replay
+(512 KiB per flow, 8 MiB per session). A generation reset migrates and replays
+only affected TCP flows; UDP and QUIC remain unordered flowlets. KCP windows
+are 512 segments and the adaptive ceiling is 25 Mbit/s per lane (100 Mbit/s
+aggregate), with small control/ACK records retaining priority.
+
+VK control-plane work is process-serialized with 3-6 second request spacing,
+a nine-minute credential cache and stable device/cookie identity. TURN uses a
+250 ms allocation gate, DTLS allows two handshakes, and UDP endpoints fall back
+to TURN/TCP or TURN/TLS. CAPTCHA is exposed as a structured, cancellable
+runtime challenge for a visible client WebView instead of hidden automation.
+Structured transport health reports starting, waiting_user, healthy, degraded,
+recovering and failed states. A full logical-session replacement is reserved
+for thirty seconds of demanded aggregate no-progress or terminal auth/config
+failure.
+
+## Previous debug.32 notes
 
 This build makes VK flood control survive an Android VPN runtime restart and
 stops the reconnect wrapper from hiding the worker's actual failure. Connection

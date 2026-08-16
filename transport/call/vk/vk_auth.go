@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
@@ -37,6 +39,7 @@ func runVKLegacyAuth(dialer N.Dialer, joinLink, displayName string, logger logge
 
 func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
 	client := common.HttpClient(dialer)
+	client.Jar = vkSharedCookieJar
 	httpPost := func(targetURL string, form url.Values, extraHeaders map[string]string) (map[string]interface{}, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(form.Encode()))
 		if err != nil {
@@ -129,23 +132,36 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 		if errObj, hasErr := callResp["error"].(map[string]interface{}); hasErr {
 			errCode, _ := errObj["error_code"].(float64)
 			if int(errCode) == 9 {
-				return "", fmt.Errorf("%w (legacy error_code=9)", ErrVKFloodControl)
+				return "", &ControlPlaneError{Stage: "vk_legacy", Kind: "rate_limit", Code: "9", Cause: ErrVKFloodControl}
 			}
 			if int(errCode) == 14 {
 				captchaErr := parseVKCaptchaError(errObj)
 				if captchaErr == nil {
 					return "", fmt.Errorf("captcha error missing fields: %v", errObj)
 				}
-				logger.Info("vk-auth: captcha required")
+				logger.Info("vk-auth: captcha challenge requires user interaction")
 				proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer)
 				if proxyPort == 0 {
-					return "", fmt.Errorf("failed to start captcha proxy")
+					return "", newControlPlaneError("vk_legacy", "captcha_proxy", "start_failed", ErrVKCaptchaRequired)
 				}
-				logger.Notice(fmt.Sprintf("vk-auth: solve the captcha to continue: http://127.0.0.1:%d/", proxyPort))
-				successToken := GetCaptchaResult()
+				challengeID := uuid.NewString()
+				challengeURL := fmt.Sprintf("http://127.0.0.1:%d/", proxyPort)
+				challengeContext, cancelChallenge := context.WithCancel(ctx)
+				HC.PublishRuntimeChallenge(HC.RuntimeChallenge{
+					ID: challengeID, Kind: "vk_captcha", URL: challengeURL,
+					CreatedAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(120 * time.Second).UnixMilli(),
+				}, cancelChallenge)
+				HC.PublishTransportHealth(HC.TransportHealthSnapshot{
+					State: HC.TransportStateWaitingUser,
+					Failure: &HC.TransportFailure{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID},
+				})
+				logger.Notice(fmt.Sprintf("vk-auth: challenge ready: %s", challengeID))
+				successToken := GetCaptchaResultContext(challengeContext, 120*time.Second)
+				cancelChallenge()
+				HC.ClearRuntimeChallenge(challengeID)
 				StopCaptchaProxy()
 				if successToken == "" {
-					return "", fmt.Errorf("captcha timed out")
+					return "", &ControlPlaneError{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID, Cause: ErrVKCaptchaRequired}
 				}
 				logger.Info("vk-auth: captcha solved, retrying")
 				captchaAttempt := captchaErr.captchaAttempt
@@ -184,7 +200,7 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 	if !strings.HasSuffix(baseURL, "/fb.do") {
 		baseURL += "/fb.do"
 	}
-	deviceID := fmt.Sprintf("%d", rand.Int63n(9e18))
+	deviceID := vkStableDeviceID
 	sessionData, _ := json.Marshal(map[string]interface{}{
 		"version":        2,
 		"device_id":      deviceID,

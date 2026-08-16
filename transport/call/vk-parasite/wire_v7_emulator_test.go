@@ -61,7 +61,7 @@ func newControllerLane(now time.Time) *kcpLane {
 	return lane
 }
 
-func TestWireV8FourLaneDeterministicSixtySecondLoad(t *testing.T) {
+func TestWireV9FourLaneDeterministicSixtySecondLoad(t *testing.T) {
 	t.Parallel()
 	start := time.Unix(1, 0)
 	lanes := [LaneCount]*kcpLane{}
@@ -122,7 +122,7 @@ func TestWireV8FourLaneDeterministicSixtySecondLoad(t *testing.T) {
 	}
 }
 
-func TestWireV8ApplicationLimitedVideoPreservesBurstCapacity(t *testing.T) {
+func TestWireV9ApplicationLimitedVideoPreservesBurstCapacity(t *testing.T) {
 	t.Parallel()
 	start := time.Unix(1, 0)
 	lane := newControllerLane(start)
@@ -151,7 +151,7 @@ func TestWireV8ApplicationLimitedVideoPreservesBurstCapacity(t *testing.T) {
 	require.Greater(t, lane.pacingRateBPS, 0.9*240_000.0)
 }
 
-func TestWireV8BlackholeLeavesThreeLaneCapacity(t *testing.T) {
+func TestWireV9BlackholeLeavesThreeLaneCapacity(t *testing.T) {
 	t.Parallel()
 	lanes := [LaneCount]deterministicLaneEmulator{}
 	for laneID := range lanes {
@@ -182,7 +182,7 @@ func (c *deterministicResetLossConn) Write(payload []byte) (int, error) {
 	return c.Conn.Write(payload)
 }
 
-func TestWireV8ResetHandshakeSurvivesThirtyPercentControlLoss(t *testing.T) {
+func TestWireV9ResetHandshakeSurvivesThirtyPercentControlLoss(t *testing.T) {
 	t.Parallel()
 	left, err := NewParasiteTunnel(0x71727374, nil)
 	require.NoError(t, err)
@@ -229,7 +229,7 @@ func TestWireV8ResetHandshakeSurvivesThirtyPercentControlLoss(t *testing.T) {
 	require.Equal(t, float64(1), left.lanes[0].metrics.Value(telemetry.LaneStaleGenerationDropsTotal))
 }
 
-func TestWireV8FragmentsTCPBeforeKCPButKeepsUDPDatagramsWhole(t *testing.T) {
+func TestWireV9FragmentsTCPBeforeKCPButKeepsUDPDatagramsWhole(t *testing.T) {
 	t.Parallel()
 	maximumPayload := 4*(laneKCPMTU-kcpHeaderSize) - laneFrameHeaderSize - 9
 	tcp := calltunnel.EncodeFrame(9, calltunnel.MsgData, make([]byte, 2*maximumPayload+1))
@@ -243,9 +243,9 @@ func TestWireV8FragmentsTCPBeforeKCPButKeepsUDPDatagramsWhole(t *testing.T) {
 	require.Len(t, fragmentTCPRelayFrame(udp, calltunnel.MsgUDP), 1)
 }
 
-func TestWireV8SessionNoProgressDeadlineIsBounded(t *testing.T) {
+func TestWireV9SessionNoProgressDeadlineIsBounded(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, 5*time.Second, sessionNoProgressThreshold(200*time.Millisecond))
-	require.Equal(t, 6*time.Second, sessionNoProgressThreshold(2*time.Second))
-	require.Equal(t, 10*time.Second, sessionNoProgressThreshold(35*time.Second))
+	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(200*time.Millisecond))
+	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(2*time.Second))
+	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(35*time.Second))
 }

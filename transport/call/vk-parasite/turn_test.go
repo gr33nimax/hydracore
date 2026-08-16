@@ -20,6 +20,14 @@ func TestParseTURNUDPURL(t *testing.T) {
 	require.Equal(t, uint16(3478), address.Port)
 	_, err = parseTURNUDPURL("turns:relay.example.invalid:5349?transport=tcp")
 	require.Error(t, err)
+	tcpEndpoint, err := parseTURNURL("turn:relay.example.invalid:3478?transport=tcp")
+	require.NoError(t, err)
+	require.Equal(t, "tcp", tcpEndpoint.network)
+	require.False(t, tcpEndpoint.secure)
+	tlsEndpoint, err := parseTURNURL("turns:relay.example.invalid:5349?transport=tcp")
+	require.NoError(t, err)
+	require.Equal(t, "tcp", tlsEndpoint.network)
+	require.True(t, tlsEndpoint.secure)
 }
 
 func TestRebindInterruptionsAreNotTransportFailures(t *testing.T) {

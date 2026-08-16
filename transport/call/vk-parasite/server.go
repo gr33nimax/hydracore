@@ -233,7 +233,7 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	// A speed-test burst can stop the DTLS reader briefly while one lane is being
 	// recycled. A smaller per-peer queue dropped authenticated media packets and
 	// converted that pause into RTO retransmission pressure. Keep the queue
-	// bounded, but use the validated hard maximum for all wire-v8 sessions.
+	// bounded, but use the validated hard maximum for all wire-v9 sessions.
 	if options.PeerReadQueuePackets < minimumPeerReadQueuePackets {
 		options.PeerReadQueuePackets = minimumPeerReadQueuePackets
 	}

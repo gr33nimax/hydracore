@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,6 +33,8 @@ var (
 	vkCallsAPIBaseURL = "https://api.vk.me/method"
 	vkCallsOKBaseURL  = "https://calls.okcdn.ru/fb.do"
 	ErrVKFloodControl = errors.New("VK API flood control")
+	vkStableDeviceID  = uuid.NewString()
+	vkSharedCookieJar, _ = cookiejar.New(nil)
 )
 
 // RunVKAuth first uses the anonymous VK Calls flow used by current VK clients.
@@ -71,7 +74,8 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 
 	client := common.HttpClient(dialer)
 	client.Timeout = 20 * time.Second
-	deviceID := uuid.NewString()
+	client.Jar = vkSharedCookieJar
+	deviceID := vkStableDeviceID
 	canonicalJoinLink := "https://vk.com/call/join/" + joinToken
 
 	log.Info("vk-auth: trying VK Calls anonymous path")
@@ -157,7 +161,7 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 
 	sessionData, err := json.Marshal(map[string]interface{}{
 		"version":        2,
-		"device_id":      uuid.NewString(),
+		"device_id":      deviceID,
 		"client_version": vkCallsAppVersion,
 	})
 	if err != nil {
@@ -257,10 +261,10 @@ func vkCallsResponseError(response map[string]interface{}) error {
 	code, _ := vkCallsNumberString(errorObject["error_code"])
 	message, _ := errorObject["error_msg"].(string)
 	if code == "14" {
-		return fmt.Errorf("captcha required (error_code=14)")
+		return &ControlPlaneError{Stage: "vk_calls", Kind: "captcha", Code: "14", Cause: ErrVKCaptchaRequired}
 	}
 	if code == "9" {
-		return fmt.Errorf("%w (error_code=9): %s", ErrVKFloodControl, message)
+		return &ControlPlaneError{Stage: "vk_calls", Kind: "rate_limit", Code: "9", Cause: fmt.Errorf("%w: %s", ErrVKFloodControl, message)}
 	}
 	if code == "" && message == "" {
 		return nil

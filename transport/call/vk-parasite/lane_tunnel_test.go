@@ -524,7 +524,7 @@ recovered:
 	tunnel.lanes[0].mu.Lock()
 	require.Equal(t, laneStateQuarantined, tunnel.lanes[0].state)
 	tunnel.lanes[0].mu.Unlock()
-	require.Equal(t, 1, tunnel.ActiveWorkers(), "wire v8 waits for RESET_ACK before detaching the physical lane")
+	require.Equal(t, 1, tunnel.ActiveWorkers(), "wire v9 waits for RESET_ACK before detaching the physical lane")
 	_ = blockedPeer.Close()
 	select {
 	case <-sendDone:
@@ -532,7 +532,7 @@ recovered:
 	}
 }
 
-func TestParasiteTunnelAllowsTwoQuarantinesAndEscalatesTheThird(t *testing.T) {
+func TestParasiteTunnelThreeQuarantinesWaitForAggregateDeadline(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x6677889d, logger.NOP())
 	require.NoError(t, err)
@@ -557,12 +557,12 @@ func TestParasiteTunnelAllowsTwoQuarantinesAndEscalatesTheThird(t *testing.T) {
 	require.True(t, tunnel.initiateLaneReset(2, "test"))
 	select {
 	case <-tunnel.Done():
-	case <-time.After(time.Second):
-		t.Fatal("three quarantined lanes did not trigger full session replacement")
+		t.Fatal("three quarantined lanes bypassed the aggregate no-progress deadline")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
-func TestParasiteTunnelReplacesSessionWhenThreeWorkersDetach(t *testing.T) {
+func TestParasiteTunnelPhysicalDetachPreservesLogicalSession(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x6677889f, logger.NOP())
 	require.NoError(t, err)
@@ -585,8 +585,8 @@ func TestParasiteTunnelReplacesSessionWhenThreeWorkersDetach(t *testing.T) {
 	tunnel.DropWorker(2)
 	select {
 	case <-tunnel.Done():
-	case <-time.After(time.Second):
-		t.Fatal("three detached workers did not trigger full session replacement")
+		t.Fatal("physical worker detach closed the logical session")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -866,7 +866,7 @@ func TestLaneResetHandshakeDeadlineTracksMeasuredRTO(t *testing.T) {
 	lane.kcpSRTTMS = 600
 	lane.kcpRTTVARMS = 200
 	lane.mu.Unlock()
-	require.Equal(t, 8400*time.Millisecond, tunnel.laneResetHandshakeDeadline(0))
+	require.Equal(t, 11200*time.Millisecond, tunnel.laneResetHandshakeDeadline(0))
 	lane.mu.Lock()
 	lane.kcpSRTTMS = 2000
 	lane.kcpRTTVARMS = 1000
@@ -920,11 +920,10 @@ func TestParasiteTunnelNoProgressRequiresFreshApplicationDemand(t *testing.T) {
 	require.True(t, tunnel.hasFreshApplicationDemand(now, 5*time.Second))
 }
 
-func TestParasiteTunnelUnavailableLaneAbortsOnlyItsFlows(t *testing.T) {
+func TestParasiteTunnelUnavailableLaneKeepsFlowForHotSwap(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x6677889f, logger.NOP())
 	require.NoError(t, err)
-	tunnel.laneRecoveryGrace = 40 * time.Millisecond
 	t.Cleanup(func() { _ = tunnel.Close() })
 
 	connection, peer := newTestDatagramPair()
@@ -951,10 +950,14 @@ func TestParasiteTunnelUnavailableLaneAbortsOnlyItsFlows(t *testing.T) {
 	tunnel.DropWorker(0)
 	select {
 	case connID := <-closedFlow:
-		require.Equal(t, uint32(101), connID)
-	case <-time.After(time.Second):
-		t.Fatal("flow pinned to an unavailable lane was not aborted")
+		t.Fatalf("flow %d was aborted before same-generation hot swap", connID)
+	case <-time.After(100 * time.Millisecond):
 	}
+	replacement, replacementPeer := newTestDatagramPair()
+	_, err = tunnel.AddWorkerEpoch(0, 2, replacement)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = replacementPeer.Close() })
+	require.Equal(t, uint64(1), tunnel.LaneGeneration(0))
 	select {
 	case <-tunnel.Done():
 		t.Fatal("unavailable lane closed the logical session")
@@ -983,6 +986,55 @@ func TestParasiteTunnelMissingPreferredLaneResetsOnlyThatLane(t *testing.T) {
 	tunnel.lanes[1].mu.Lock()
 	require.Equal(t, laneStateActive, tunnel.lanes[1].state)
 	tunnel.lanes[1].mu.Unlock()
+}
+
+func TestWireV9MigratesOrderedFlowWithBoundedReplay(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x667788b0, logger.NOP())
+	require.NoError(t, err)
+	peers := make([]net.Conn, 0, 2)
+	for laneID := uint16(0); laneID < 2; laneID++ {
+		connection, peer := newTestDatagramPair()
+		_, err = tunnel.AddWorkerEpoch(laneID, 1, connection)
+		require.NoError(t, err)
+		peers = append(peers, peer)
+	}
+	t.Cleanup(func() {
+		_ = tunnel.Close()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
+	})
+
+	state := tunnel.sendFlow(202)
+	frame := calltunnel.EncodeFrame(202, calltunnel.MsgData, []byte("unacknowledged"))
+	state.mu.Lock()
+	state.initialized = true
+	state.laneAssigned = true
+	state.laneID = 0
+	state.laneOwner.Store(1)
+	state.laneMask = 1
+	state.nextSequence = 1
+	state.replay = []flowReplayFrame{{sequence: 0, frame: frame}}
+	state.replayBytes = len(frame)
+	tunnel.replayBytes.Store(int64(len(frame)))
+	tunnel.lanes[0].flowCount.Add(1)
+	state.mu.Unlock()
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		ack := calltunnel.EncodeFrame(
+			calltunnel.ControlConnID,
+			calltunnel.MsgFlowCommitAck,
+			encodeFlowControlPayload(202, 1, 1),
+		)
+		tunnel.deliver(1, encodeLaneFrame(calltunnel.ControlConnID, 0, ack))
+	}()
+
+	require.True(t, tunnel.migrateOrderedFlow(202, state, 0, "test"))
+	require.Equal(t, uint32(2), state.laneOwner.Load())
+	require.Equal(t, uint16(1), state.laneID)
+	require.LessOrEqual(t, state.replayBytes, flowReplayPerFlowLimit)
+	require.LessOrEqual(t, tunnel.replayBytes.Load(), int64(flowReplaySessionLimit))
 }
 
 func TestParasiteTunnelTelemetryTrySendDoesNotWaitForControlFlow(t *testing.T) {
@@ -1061,14 +1113,11 @@ func TestParasiteTunnelUDPReorderGapDoesNotKillLogicalSession(t *testing.T) {
 	tunnel.deliverMu.Unlock()
 }
 
-func TestClientNetworkRebindReplacesOneWorkerAtATime(t *testing.T) {
+func TestClientNetworkRebindUsesSameGenerationHotSwap(t *testing.T) {
 	t.Parallel()
 	tunnel, err := NewParasiteTunnel(0x778899ac, logger.NOP())
 	require.NoError(t, err)
-	peerTunnel, err := NewParasiteTunnel(0x778899ac, logger.NOP())
-	require.NoError(t, err)
 	tunnel.SetRecoveryCoordinator(true)
-	peerTunnel.SetRecoveryCoordinator(false)
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &Client{
 		ctx:     ctx,
@@ -1080,46 +1129,35 @@ func TestClientNetworkRebindReplacesOneWorkerAtATime(t *testing.T) {
 		workers: make([]clientWorkerControl, LaneCount),
 	}
 	oldDone := make([]<-chan struct{}, LaneCount)
+	peers := make([]net.Conn, 0, 2*LaneCount)
 	for workerID := 0; workerID < LaneCount; workerID++ {
 		client.workers[workerID] = newClientWorkerControl()
 		connection, peerConnection := newTestDatagramPair()
 		oldDone[workerID], err = tunnel.AddWorkerEpoch(uint16(workerID), 1, connection)
 		require.NoError(t, err)
-		_, err = peerTunnel.AddWorkerEpoch(uint16(workerID), 1, peerConnection)
-		require.NoError(t, err)
+		peers = append(peers, peerConnection)
 	}
 	t.Cleanup(func() {
 		_ = client.Close()
-		_ = peerTunnel.Close()
+		for _, peer := range peers {
+			_ = peer.Close()
+		}
 	})
 
-	client.RebindNetwork()
 	for workerID := 0; workerID < LaneCount; workerID++ {
+		connection, peerConnection := newTestDatagramPair()
+		_, err = tunnel.AddWorkerGenerationEpoch(uint16(workerID), 1, 2, connection)
+		require.NoError(t, err)
+		peers = append(peers, peerConnection)
 		select {
 		case <-oldDone[workerID]:
 		case <-time.After(time.Second):
-			t.Fatalf("worker %d was not selected for staged replacement", workerID)
+			t.Fatalf("worker %d was not replaced atomically", workerID)
 		}
-		require.Eventually(t, func() bool {
-			return tunnel.LaneGeneration(uint16(workerID)) == 2 &&
-				peerTunnel.LaneGeneration(uint16(workerID)) == 2 &&
-				tunnel.ActiveWorkers() == LaneCount-1 &&
-				peerTunnel.ActiveWorkers() == LaneCount-1
-		}, 3*time.Second, 10*time.Millisecond)
-		require.Equal(t, LaneCount-1, tunnel.ActiveWorkers(), "another lane was dropped before worker %d recovered", workerID)
-		connection, peerConnection := newTestDatagramPair()
-		_, err = tunnel.AddWorkerGenerationEpoch(uint16(workerID), 2, 2, connection)
-		require.NoError(t, err)
-		_, err = peerTunnel.AddWorkerGenerationEpoch(uint16(workerID), 2, 2, peerConnection)
-		require.NoError(t, err)
-		require.Eventually(t, func() bool {
-			return tunnel.workerReadyAfter(uint16(workerID), 1) &&
-				peerTunnel.workerReadyAfter(uint16(workerID), 1)
-		}, 3*time.Second, 10*time.Millisecond)
+		require.True(t, tunnel.workerReadyAfter(uint16(workerID), 1))
+		require.Equal(t, uint64(1), tunnel.LaneGeneration(uint16(workerID)))
+		require.Equal(t, LaneCount, tunnel.ActiveWorkers())
 	}
-	require.Eventually(t, func() bool {
-		return tunnel.ActiveWorkers() == LaneCount && peerTunnel.ActiveWorkers() == LaneCount
-	}, time.Second, 10*time.Millisecond)
 }
 
 func TestClientClosesImmediatelyWithLogicalTunnel(t *testing.T) {

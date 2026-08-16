@@ -7,8 +7,8 @@ const (
 	callClientEnabled = true
 	callServerEnabled = true
 	distributionRole  = "combined"
-	callWireMin       = 8
-	callWireMax       = 8
+	callWireMin       = 9
+	callWireMax       = 9
 )
 
 var (

@@ -14,6 +14,7 @@ import (
 
 	"github.com/pion/dtls/v3"
 	"github.com/sagernet/sing-box/adapter"
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 	callvk "github.com/sagernet/sing-box/transport/call/vk"
 	"github.com/sagernet/sing/common/logger"
@@ -60,7 +61,6 @@ type Client struct {
 	errors                chan error
 	closeOnce             sync.Once
 	workers               []clientWorkerControl
-	workerReconnectMu     sync.Mutex
 	rebindMu              sync.Mutex
 	rebindCancel          context.CancelFunc
 }
@@ -69,11 +69,12 @@ type clientWorkerControl struct {
 	mu     sync.Mutex
 	epoch  uint64
 	cancel context.CancelFunc
-	wake   chan struct{}
+	wake    chan struct{}
+	replace chan struct{}
 }
 
 func newClientWorkerControl() clientWorkerControl {
-	return clientWorkerControl{wake: make(chan struct{}, 1)}
+	return clientWorkerControl{wake: make(chan struct{}, 1), replace: make(chan struct{}, 1)}
 }
 
 func (c *clientWorkerControl) begin(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc, uint64) {
@@ -160,15 +161,18 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		errors:    make(chan error, options.Workers),
 		workers:   make([]clientWorkerControl, options.Workers),
 	}
+	client.publishHealth(HC.TransportStateStarting, nil)
 	tunnel.SetTelemetryControlHandler(client.enableTelemetry)
 	go client.telemetryLoop()
+	go client.healthLoop()
 	for workerID := 0; workerID < options.Workers; workerID++ {
 		client.workers[workerID] = newClientWorkerControl()
 		go client.maintainWorker(uint16(workerID), options.JoinLinks[workerID%len(options.JoinLinks)])
 	}
 	go client.monitorConnectivity()
-	timer := time.NewTimer(options.WorkerConnectTimeout)
-	defer timer.Stop()
+	deadline := time.Now().Add(options.WorkerConnectTimeout)
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
 	var lastErr error
 	for {
 		select {
@@ -180,7 +184,16 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 				_ = client.Close()
 				return nil, fmt.Errorf("call vk_parasite: VK credentials unavailable: %w", err)
 			}
-		case <-timer.C:
+		case now := <-ticker.C:
+			if challenge := HC.CurrentRuntimeChallenge(); challenge != nil {
+				challengeDeadline := time.UnixMilli(challenge.ExpiresAt).Add(options.WorkerConnectTimeout)
+				if challengeDeadline.After(deadline) {
+					deadline = challengeDeadline
+				}
+			}
+			if now.Before(deadline) {
+				continue
+			}
 			_ = client.Close()
 			if lastErr != nil {
 				return nil, fmt.Errorf("call vk_parasite: no VK TURN worker connected: %w", lastErr)
@@ -246,75 +259,94 @@ func (c *Client) maintainWorker(workerID uint16, joinLink string) {
 	metrics := c.tunnel.telemetryWorker(workerID)
 	backoff := time.Second
 	attempt := 0
+	var activeDone <-chan struct{}
 	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		default:
-		}
-		reconnecting := attempt > 0
-		if reconnecting {
-			metrics.Add(telemetry.WorkerReconnectTotal, 1)
-		}
-		attempt++
-		if reconnecting {
-			c.workerReconnectMu.Lock()
-		}
-		done, err := c.connectWorker(workerID, joinLink, control)
-		if reconnecting {
-			c.workerReconnectMu.Unlock()
-		}
-		if err == nil {
-			backoff = time.Second
-			c.readyOnce.Do(func() { close(c.ready) })
+		if activeDone == nil {
+			reconnecting := attempt > 0
+			if reconnecting {
+				metrics.Add(telemetry.WorkerReconnectTotal, 1)
+			}
+			attempt++
+			var releaseRecovery func()
+			var gateErr error
+			if reconnecting {
+				releaseRecovery, gateErr = sharedTransportSupervisor.acquireRecovery(c.ctx)
+				if gateErr != nil {
+					return
+				}
+			}
+			done, err := c.connectWorker(workerID, joinLink, control)
+			if releaseRecovery != nil {
+				releaseRecovery()
+			}
+			if err == nil {
+				activeDone = done
+				backoff = time.Second
+				c.readyOnce.Do(func() { close(c.ready) })
+				continue
+			}
+			c.reportWorkerError(workerID, err)
+			metrics.Set(telemetry.WorkerReconnectBackoffMS, float64(backoff/time.Millisecond))
+			timer := time.NewTimer(backoff)
 			select {
-			case <-done:
+			case <-timer.C:
+			case <-control.wake:
+				timer.Stop()
+				backoff = time.Second
 			case <-c.ctx.Done():
+				timer.Stop()
 				return
 			}
-		} else {
-			select {
-			case c.errors <- err:
-			default:
-			}
-			c.logger.Debug(fmt.Sprintf("call vk_parasite: worker %d reconnecting after transport error", workerID))
+			backoff = min(30*time.Second, 2*backoff)
+			continue
 		}
-		metrics.Set(telemetry.WorkerReconnectBackoffMS, float64(backoff/time.Millisecond))
-		timer := time.NewTimer(backoff)
+
 		select {
-		case <-timer.C:
-		case <-control.wake:
-			timer.Stop()
+		case <-activeDone:
+			activeDone = nil
+		case <-control.replace:
+			previousDone := activeDone
+			done, err := c.connectWorker(workerID, joinLink, control)
+			if err != nil {
+				c.reportWorkerError(workerID, err)
+				activeDone = previousDone
+				continue
+			}
+			activeDone = done
 			backoff = time.Second
 		case <-c.ctx.Done():
-			timer.Stop()
 			return
-		}
-		if backoff < 30*time.Second {
-			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
 		}
 	}
 }
 
+func (c *Client) reportWorkerError(workerID uint16, err error) {
+	select {
+	case c.errors <- err:
+	default:
+	}
+	c.publishHealth(HC.TransportStateRecovering, transportFailure(err))
+	c.logger.Debug(fmt.Sprintf("call vk_parasite: worker %d reconnecting after staged transport error", workerID))
+}
+
 func (c *Client) connectWorker(workerID uint16, joinLink string, control *clientWorkerControl) (<-chan struct{}, error) {
+	authContext, authCancel := context.WithTimeout(c.ctx, 120*time.Second)
+	credentials, err := c.options.Credentials(authContext, joinLink)
+	authCancel()
+	if err != nil {
+		return nil, fmt.Errorf("worker %d VK credentials: %w", workerID, err)
+	}
 	ctx, cancel, workerEpoch := control.begin(c.ctx, c.options.WorkerConnectTimeout)
 	defer control.finish(workerEpoch, cancel)
 	metrics := c.tunnel.telemetryWorker(workerID)
 	ctx = telemetry.ContextWithAccumulator(ctx, metrics)
-	credentials, err := c.options.Credentials(ctx, joinLink)
+	releaseTURN, err := sharedTransportSupervisor.acquireTURN(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("worker %d VK credentials: %w", workerID, err)
+		return nil, fmt.Errorf("worker %d TURN gate: %w", workerID, err)
 	}
 	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), metrics, workerID)
+	releaseTURN()
 	if err != nil {
-		// A cancelled allocation belongs to a planned network handover. Its
-		// credentials remain valid and must not trigger another VK API join.
-		if ctx.Err() == nil {
-			c.invalidateCredentials(joinLink)
-		}
 		return nil, fmt.Errorf("worker %d TURN allocate: %w", workerID, err)
 	}
 	codec, err := newRTPCodec(c.key)
@@ -323,6 +355,11 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		return nil, fmt.Errorf("worker %d RTP codec: %w", workerID, err)
 	}
 	packetConn := newObfsPacketConn(allocation, c.server, codec, metrics)
+	releaseDTLS, err := sharedTransportSupervisor.acquireDTLS(ctx)
+	if err != nil {
+		_ = packetConn.Close()
+		return nil, fmt.Errorf("worker %d DTLS gate: %w", workerID, err)
+	}
 	conn, err := dtls.Client(packetConn, c.server, &dtls.Config{
 		InsecureSkipVerify:   true, // Authenticated by the outer key and the inner user attach.
 		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -330,6 +367,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		MTU:                  1100,
 	})
 	if err != nil {
+		releaseDTLS()
 		metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
 		metrics.RecordEvent("dtls_handshake_failed", "dtls", "initialize", &workerID)
 		_ = packetConn.Close()
@@ -337,6 +375,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	}
 	handshakeStarted := time.Now()
 	if err = conn.HandshakeContext(ctx); err != nil {
+		releaseDTLS()
 		metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 		reason := telemetryFailureReason(err)
 		if reason == "rebind" {
@@ -348,6 +387,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		_ = conn.Close()
 		return nil, fmt.Errorf("worker %d DTLS handshake: %w", workerID, err)
 	}
+	releaseDTLS()
 	metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 	metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
 	stopAuthInterrupt := context.AfterFunc(ctx, func() { _ = conn.Close() })
@@ -409,6 +449,13 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
 	metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
 	return done, nil
+}
+
+func (c *clientWorkerControl) requestReplacement() {
+	select {
+	case c.replace <- struct{}{}:
+	default:
+	}
 }
 
 func (c *Client) invalidateCredentials(joinLink string) {
@@ -486,12 +533,11 @@ func (c *Client) rebindWorkers(ctx context.Context) {
 		id := uint16(workerID)
 		previousEpoch, _ := c.tunnel.WorkerEpoch(id)
 		c.tunnel.recordEvent("network_rebind_lane_started", "network", "staged", &id)
-		// A planned handover must not inherit the cooldown used to suppress
-		// repeated automatic stall recovery. Start its generation reset while
-		// the other physical lanes can still carry the control handshake.
-		c.tunnel.initiateLaneReset(id, "network_rebind")
-		c.workers[workerID].interrupt()
-		c.tunnel.DropWorker(id)
+		// Make-before-break: the current physical worker continues carrying the
+		// lane until the replacement has completed TURN, DTLS and inner auth.
+		// reserveWorkerGeneration swaps the connection atomically at the same
+		// lane generation, so KCP and ordered flows survive the handover.
+		c.workers[workerID].requestReplacement()
 		if !c.waitWorkerReplacement(ctx, id, previousEpoch) {
 			if ctx.Err() == nil {
 				c.tunnel.recordEvent("network_rebind_lane_failed", "network", "timeout", &id)
@@ -504,13 +550,7 @@ func (c *Client) rebindWorkers(ctx context.Context) {
 }
 
 func (c *Client) waitWorkerReplacement(ctx context.Context, workerID uint16, previousEpoch uint64) bool {
-	timeout := c.options.WorkerConnectTimeout / 3
-	if timeout < 3*time.Second {
-		timeout = 3 * time.Second
-	}
-	if timeout > 8*time.Second {
-		timeout = 8 * time.Second
-	}
+	timeout := c.options.WorkerConnectTimeout
 	ticker := time.NewTicker(50 * time.Millisecond)
 	timer := time.NewTimer(timeout)
 	defer ticker.Stop()
@@ -540,13 +580,7 @@ func (c *Client) monitorConnectivity() {
 		_ = c.Close()
 		return
 	}
-	grace := c.options.WorkerConnectTimeout / 3
-	if grace < 5*time.Second {
-		grace = 5 * time.Second
-	}
-	if grace > 10*time.Second {
-		grace = 10 * time.Second
-	}
+	grace := transportFailureLimit
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var disconnectedSince time.Time
@@ -584,6 +618,7 @@ func (c *Client) Close() error {
 		c.rebindMu.Unlock()
 		c.cancel()
 		_ = c.tunnel.Close()
+		c.publishHealth(HC.TransportStateFailed, &HC.TransportFailure{Stage: "transport", Kind: "closed", Code: "session_closed"})
 	})
 	return nil
 }

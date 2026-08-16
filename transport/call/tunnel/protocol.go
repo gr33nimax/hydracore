@@ -18,6 +18,14 @@ const (
 	MsgTelemetryRecord  byte = 0x0b
 	// MsgFlowCredit returns bytes consumed by the relay reader to the sender.
 	MsgFlowCredit byte = 0x0c
+	// Wire-v9 ordered-flow migration controls are consumed by vk_parasite and
+	// never forwarded to RelayBridge.
+	MsgFlowProgress  byte = 0x0d
+	MsgFlowFreeze    byte = 0x0e
+	MsgFlowState     byte = 0x0f
+	MsgFlowCommit    byte = 0x10
+	MsgFlowCommitAck byte = 0x11
+	MsgFlowResume    byte = 0x12
 )
 
 const ControlConnID uint32 = 0

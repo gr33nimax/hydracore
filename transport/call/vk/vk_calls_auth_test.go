@@ -41,7 +41,7 @@ func TestVKCallsResponseErrorDetectsCaptcha(t *testing.T) {
 			"error_msg":  "Captcha needed",
 		},
 	})
-	if err == nil || err.Error() != "captcha required (error_code=14)" {
+	if !errors.Is(err, ErrVKCaptchaRequired) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

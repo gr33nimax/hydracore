@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,9 +21,13 @@ import (
 )
 
 const (
-	turnCredentialCacheTTL     = 8 * time.Minute
-	turnCredentialMinimumReuse = 30 * time.Second
+	turnCredentialCacheTTL     = 9 * time.Minute
+	turnCredentialMinimumReuse = 15 * time.Second
+	vkControlPlaneMinSpacing   = 3 * time.Second
+	vkControlPlaneMaxSpacing   = 6 * time.Second
 	vkFloodControlCooldown     = 2 * time.Minute
+	authFailureWindow          = 10 * time.Second
+	authFailureThreshold       = 3
 )
 
 type cachedTURNCredentials struct {
@@ -35,6 +40,7 @@ type vkControlPlaneLimiter struct {
 	mu         sync.Mutex
 	fetchGate  chan struct{}
 	floodUntil time.Time
+	lastFetch  time.Time
 }
 
 func newVKControlPlaneLimiter() *vkControlPlaneLimiter {
@@ -53,6 +59,7 @@ type TURNCredentialProvider struct {
 	group   singleflight.Group
 	metrics *telemetry.Accumulator
 	limiter *vkControlPlaneLimiter
+	authFailures map[string][]time.Time
 }
 
 func (p *TURNCredentialProvider) SetTelemetry(metrics *telemetry.Accumulator) {
@@ -68,6 +75,7 @@ func NewTURNCredentialProvider(dialer N.Dialer, log logger.ContextLogger) *TURNC
 		logger:  log,
 		cache:   make(map[string]cachedTURNCredentials),
 		limiter: sharedVKControlPlaneLimiter,
+		authFailures: make(map[string][]time.Time),
 	}
 	return provider
 }
@@ -101,6 +109,9 @@ func (p *TURNCredentialProvider) Fetch(ctx context.Context, joinLink string) (Tu
 			return server, nil
 		}
 		if err := p.floodControlError(time.Now()); err != nil {
+			return TurnServer{}, err
+		}
+		if err := p.waitForFetchSpacing(ctx, joinLink); err != nil {
 			return TurnServer{}, err
 		}
 		metrics.Add(telemetry.VKCredentialFetchTotal, 1)
@@ -142,6 +153,36 @@ func (p *TURNCredentialProvider) activateFloodControl(now time.Time) {
 	p.limiter.mu.Unlock()
 }
 
+func (p *TURNCredentialProvider) waitForFetchSpacing(ctx context.Context, joinLink string) error {
+	p.limiter.mu.Lock()
+	spacing := vkControlPlaneSpacing(joinLink)
+	wait := time.Until(p.limiter.lastFetch.Add(spacing))
+	p.limiter.mu.Unlock()
+	if wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	p.limiter.mu.Lock()
+	p.limiter.lastFetch = time.Now()
+	p.limiter.mu.Unlock()
+	return nil
+}
+
+func vkControlPlaneSpacing(joinLink string) time.Duration {
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(joinLink))
+	span := vkControlPlaneMaxSpacing - vkControlPlaneMinSpacing
+	if span <= 0 {
+		return vkControlPlaneMinSpacing
+	}
+	return vkControlPlaneMinSpacing + time.Duration(hasher.Sum32()%uint32(span/time.Millisecond+1))*time.Millisecond
+}
+
 func (p *TURNCredentialProvider) floodControlError(now time.Time) error {
 	p.limiter.mu.Lock()
 	until := p.limiter.floodUntil
@@ -150,7 +191,7 @@ func (p *TURNCredentialProvider) floodControlError(now time.Time) error {
 		return nil
 	}
 	remaining := until.Sub(now).Round(time.Second)
-	return fmt.Errorf("%w: retry after %s", ErrVKFloodControl, remaining)
+	return &ControlPlaneError{Stage: "vk_auth", Kind: "rate_limit", Code: "9", RetryAfter: remaining, Cause: ErrVKFloodControl}
 }
 
 // Invalidate lets the next physical TURN connection obtain a new allocation
@@ -159,6 +200,20 @@ func (p *TURNCredentialProvider) floodControlError(now time.Time) error {
 // a burst of VK control-plane joins.
 func (p *TURNCredentialProvider) Invalidate(joinLink string) {
 	p.mu.Lock()
+	now := time.Now()
+	failures := p.authFailures[joinLink][:0]
+	for _, observed := range p.authFailures[joinLink] {
+		if now.Sub(observed) <= authFailureWindow {
+			failures = append(failures, observed)
+		}
+	}
+	failures = append(failures, now)
+	p.authFailures[joinLink] = failures
+	if len(failures) < authFailureThreshold {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.authFailures, joinLink)
 	if entry, loaded := p.cache[joinLink]; loaded && time.Now().Before(entry.refreshAfter) {
 		p.mu.Unlock()
 		return
@@ -214,16 +269,19 @@ func FetchTURNCredentials(
 			}
 			metrics.RecordEvent("vk_auth_failed", "vk_auth", reason, nil)
 		}
-		return TurnServer{}, fmt.Errorf("vk TURN auth: %w", err)
+		if _, typed := AsControlPlaneError(err); typed {
+			return TurnServer{}, err
+		}
+		return TurnServer{}, newControlPlaneError("vk_auth", "request", "auth_failed", err)
 	}
 	var params VKAuthParams
 	if err = json.Unmarshal([]byte(authJSON), &params); err != nil {
 		metrics.RecordEvent("vk_auth_failed", "vk_auth", "invalid_parameters", nil)
-		return TurnServer{}, errors.New("vk TURN auth returned invalid parameters")
+		return TurnServer{}, newControlPlaneError("vk_auth", "response", "invalid_parameters", errors.New("VK TURN auth returned invalid parameters"))
 	}
 	if params.APIBaseURL == "" || params.SessionKey == "" || params.ApplicationKey == "" || params.JoinLink == "" {
 		metrics.RecordEvent("vk_auth_failed", "vk_auth", "incomplete_parameters", nil)
-		return TurnServer{}, errors.New("vk TURN auth returned incomplete parameters")
+		return TurnServer{}, newControlPlaneError("vk_auth", "response", "incomplete_parameters", errors.New("VK TURN auth returned incomplete parameters"))
 	}
 	mediaSettings := `{"isAudioEnabled":false,"isVideoEnabled":true,"isScreenSharingEnabled":false}`
 	body := url.Values{
@@ -253,12 +311,12 @@ func FetchTURNCredentials(
 	response, err := client.Do(request)
 	if err != nil {
 		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "transport", nil)
-		return TurnServer{}, fmt.Errorf("vk TURN join: %w", err)
+		return TurnServer{}, newControlPlaneError("vk_join_conversation", "transport", "request_failed", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "http_status", nil)
-		return TurnServer{}, fmt.Errorf("vk TURN join returned HTTP %d", response.StatusCode)
+		return TurnServer{}, controlPlaneErrorf("vk_join_conversation", "http", fmt.Sprint(response.StatusCode), "VK TURN join returned HTTP %d", response.StatusCode)
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
@@ -268,7 +326,7 @@ func FetchTURNCredentials(
 	var joined VKJoinResponse
 	if err = json.Unmarshal(raw, &joined); err != nil {
 		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "invalid_json", nil)
-		return TurnServer{}, errors.New("vk TURN join returned invalid JSON")
+		return TurnServer{}, newControlPlaneError("vk_join_conversation", "response", "invalid_json", errors.New("VK TURN join returned invalid JSON"))
 	}
 	server := TurnServer{
 		URLs:       append([]string(nil), joined.TurnServer.URLs...),
@@ -277,7 +335,7 @@ func FetchTURNCredentials(
 	}
 	if len(server.URLs) == 0 || server.Username == "" || server.Credential == "" {
 		metrics.RecordEvent("vk_join_failed", "vk_join_conversation", "incomplete_credentials", nil)
-		return TurnServer{}, errors.New("vk TURN join returned incomplete credentials")
+		return TurnServer{}, newControlPlaneError("vk_join_conversation", "response", "incomplete_credentials", errors.New("VK TURN join returned incomplete credentials"))
 	}
 	succeeded = true
 	return server, nil

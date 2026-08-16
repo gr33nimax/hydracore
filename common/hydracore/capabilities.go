@@ -39,6 +39,11 @@ type FeatureSet struct {
 	CallVKFourLaneKCP            bool `json:"call_vk_four_lane_kcp"`
 	CallVKPreKCPAdmission        bool `json:"call_vk_pre_kcp_admission"`
 	CallVKRelayFlowControl       bool `json:"call_vk_relay_flow_control"`
+	CallVKWorkerHotSwap          bool `json:"call_vk_worker_hot_swap"`
+	CallVKFlowMigration          bool `json:"call_vk_flow_migration"`
+	CallVKTurnTCPFallback        bool `json:"call_vk_turn_tcp_fallback"`
+	CallVKTransportHealth        bool `json:"call_vk_transport_health"`
+	VKAuthChallenges             bool `json:"vk_auth_challenges"`
 	AmneziaVersion               int  `json:"amnezia_version"`
 }
 
@@ -135,6 +140,11 @@ func Capabilities() CapabilitySet {
 			CallVKFourLaneKCP:            callEnabled,
 			CallVKPreKCPAdmission:        callEnabled,
 			CallVKRelayFlowControl:       callEnabled,
+			CallVKWorkerHotSwap:          callEnabled,
+			CallVKFlowMigration:          callEnabled,
+			CallVKTurnTCPFallback:        callEnabled,
+			CallVKTransportHealth:        callEnabled,
+			VKAuthChallenges:             callClientEnabled,
 			AmneziaVersion:               3,
 		},
 		Protocols: ProtocolSet{
@@ -162,8 +172,8 @@ func Capabilities() CapabilitySet {
 			ReservedTagPrefixes: []string{"__hydra."},
 		},
 		Runtime: RuntimeContract{
-			Version:                    1,
-			SnapshotSchemaVersion:      1,
+			Version:                    2,
+			SnapshotSchemaVersion:      2,
 			MinimumEventIntervalMillis: 250,
 			MaximumEventIntervalMillis: 30_000,
 			RetainedURLTestSessions:    64,

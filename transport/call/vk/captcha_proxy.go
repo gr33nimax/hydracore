@@ -182,6 +182,10 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 }
 
 func GetCaptchaResult() string {
+	return GetCaptchaResultContext(context.Background(), 300*time.Second)
+}
+
+func GetCaptchaResultContext(ctx context.Context, timeout time.Duration) string {
 	activeCaptchaProxy.Lock()
 	ch := activeCaptchaProxy.keyCh
 	done := activeCaptchaProxy.doneCh
@@ -194,7 +198,9 @@ func GetCaptchaResult() string {
 		return token
 	case <-done:
 		return ""
-	case <-time.After(300 * time.Second):
+	case <-ctx.Done():
+		return ""
+	case <-time.After(timeout):
 		return ""
 	}
 }

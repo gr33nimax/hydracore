@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 	calltunnel "github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
@@ -19,13 +20,13 @@ import (
 const (
 	LaneCount                = 4
 	laneKCPMTU               = 1000
-	laneKCPSendWindow        = 128
-	laneKCPReceiveWindow     = 128
-	laneKCPMaxPending        = 256
+	laneKCPSendWindow        = 512
+	laneKCPReceiveWindow     = 512
+	laneKCPMaxPending        = 1024
 	laneKCPControlReserve    = 8
 	laneKCPInitialAdmission  = 16
 	laneKCPMinimumAdmission  = 8
-	laneKCPMaximumAdmission  = 64
+	laneKCPMaximumAdmission  = 512
 	laneKCPOutputBacklog     = laneKCPSendWindow
 	laneKCPMaxFragments      = 255
 	laneKCPUpdateInterval    = 10 * time.Millisecond
@@ -38,7 +39,7 @@ const (
 	laneDeliverySampleWindow = 500 * time.Millisecond
 	lanePacingInitialBPS      = 1_500_000 / 8
 	lanePacingMinimumBPS      = 256_000 / 8
-	lanePacingMaximumBPS      = 4_000_000 / 8
+	lanePacingMaximumBPS      = 25_000_000 / 8
 	lanePacingBucketSegments  = 4
 	lanePacingStartupGain     = 1.25
 	lanePacingDecrease        = 0.80
@@ -47,8 +48,8 @@ const (
 	lanePacingProbeInterval   = 8 * time.Second
 	lanePacingProbeDuration   = time.Second
 	laneResetRetryInterval    = 250 * time.Millisecond
-	laneResetMinimumDeadline  = 3 * time.Second
-	laneResetMaximumDeadline  = 10 * time.Second
+	laneResetMinimumDeadline  = 4 * time.Second
+	laneResetMaximumDeadline  = 12 * time.Second
 	laneProbeInterval         = 250 * time.Millisecond
 	laneProbeDeadline         = 10 * time.Second
 	laneFrameHeaderSize       = 32
@@ -58,6 +59,10 @@ const (
 	defaultLaneRecoveryGrace = 6 * time.Second
 	laneReorderGapTimeout    = 15 * time.Second
 	laneReorderCheckInterval = time.Second
+	flowReplayPerFlowLimit   = 512 * 1024
+	flowReplaySessionLimit   = 8 * 1024 * 1024
+	udpFlowletMaximumDwell   = 15 * time.Millisecond
+	udpFlowletMaximumBytes   = 64 * 1024
 	workerHeartbeatInterval  = 5 * time.Second
 	workerLivenessTimeout    = 20 * time.Second
 	workerWriteTimeout       = 5 * time.Second
@@ -66,9 +71,9 @@ const (
 )
 
 var workerHeartbeat = [8]byte{'H', 'C', 'V', 'K', 'H', 'B', 2, 0}
-var laneResetControlMagic = [8]byte{'H', 'C', 'V', 'K', 'R', 'S', 8, 0}
-var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 8, 0}
-var laneProbeMagic = [8]byte{'H', 'C', 'V', 'K', 'P', 'R', 8, 0}
+var laneResetControlMagic = [8]byte{'H', 'C', 'V', 'K', 'R', 'S', 9, 0}
+var laneFrameMagic = [8]byte{'H', 'C', 'V', 'K', 'L', 'N', 9, 0}
+var laneProbeMagic = [8]byte{'H', 'C', 'V', 'K', 'P', 'R', 9, 0}
 
 type laneState uint8
 
@@ -123,11 +128,23 @@ type sendFlowState struct {
 	initialized  bool
 	unordered    bool
 	closed       bool
+	replay       []flowReplayFrame
+	replayBytes  int
+	flowletStarted time.Time
+	flowletBytes   int
+}
+
+type flowReplayFrame struct {
+	sequence uint64
+	frame    []byte
 }
 
 type receiveFlowState struct {
 	nextSequence uint64
 	pending      map[uint64][]byte
+	commitSequence uint64
+	commitLane     uint16
+	commitPending  bool
 	gapSince     time.Time
 	unordered    bool
 	closed       bool
@@ -219,6 +236,8 @@ type ParasiteTunnel struct {
 	controlLaneAssigned bool
 	receiveFlows        map[uint32]*receiveFlowState
 	nextLane            atomic.Uint32
+	replayBytes         atomic.Int64
+	migrationAcks       sync.Map
 
 	callbackMu sync.RWMutex
 	deliverMu  sync.Mutex
@@ -384,8 +403,15 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 	}
 	state.initialize(msgType)
 	for _, fragment := range fragmentTCPRelayFrame(frame, msgType) {
-		encoded := encodeLaneFrameGeneration(0, connID, state.nextSequence, fragment)
-		lane, sent := t.sendEncoded(encoded, true, state.preferredLane(), priorityRelayMessage(msgType))
+		if !state.unordered && !t.waitReplayCapacityLocked(state, len(fragment)) {
+			if state.abortStarted.CompareAndSwap(false, true) {
+				go t.finishOrderedFlowAbort(connID, "lane_flow_replay_backpressure")
+			}
+			return
+		}
+		sequence := state.nextSequence
+		encoded := encodeLaneFrameGeneration(0, connID, sequence, fragment)
+		lane, sent := t.sendEncoded(encoded, true, state.preferredLane(), priorityRelayFrame(fragment, msgType))
 		if !sent {
 			if !state.unordered && state.abortStarted.CompareAndSwap(false, true) {
 				go t.finishOrderedFlowAbort(connID, "lane_flow_send_timeout")
@@ -394,7 +420,7 @@ func (t *ParasiteTunnel) SendData(frame []byte) {
 		}
 		t.touch()
 		t.markProgress()
-		t.commitFlowFrame(connID, msgType, state, lane)
+		t.commitFlowFrame(connID, msgType, state, lane, sequence, fragment)
 	}
 }
 
@@ -444,8 +470,12 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 	}
 	state.initialize(msgType)
 	for _, fragment := range fragmentTCPRelayFrame(frame, msgType) {
-		encoded := encodeLaneFrameGeneration(0, connID, state.nextSequence, fragment)
-		lane, sent := t.sendEncoded(encoded, false, state.preferredLane(), priorityRelayMessage(msgType))
+		if !state.unordered && !t.replayCapacityAvailable(state, len(fragment)) {
+			return false
+		}
+		sequence := state.nextSequence
+		encoded := encodeLaneFrameGeneration(0, connID, sequence, fragment)
+		lane, sent := t.sendEncoded(encoded, false, state.preferredLane(), priorityRelayFrame(fragment, msgType))
 		if !sent {
 			return false
 		}
@@ -453,7 +483,7 @@ func (t *ParasiteTunnel) trySendDataWithActivity(frame []byte, activity bool) bo
 			t.touch()
 		}
 		t.markProgress()
-		t.commitFlowFrame(connID, msgType, state, lane)
+		t.commitFlowFrame(connID, msgType, state, lane, sequence, fragment)
 	}
 	return true
 }
@@ -865,7 +895,7 @@ func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, genera
 		t.recoverySuggestedAt[laneID] = time.Time{}
 		t.recoveryMu.Unlock()
 		if newPrepare {
-			t.abortLaneFlows(laneID, "lane_reset_prepare")
+			t.migrateLaneFlows(laneID, "peer_generation_reset")
 		}
 		if generation >= current {
 			t.broadcastLaneResetControl(laneResetACK, laneID, generation)
@@ -1067,6 +1097,7 @@ func (t *ParasiteTunnel) deliver(laneID uint16, message []byte) {
 		return
 	}
 	if sequence < state.nextSequence {
+		t.sendFlowProgress(connID, state.nextSequence)
 		return
 	}
 	if sequence > state.nextSequence {
@@ -1101,6 +1132,8 @@ func (t *ParasiteTunnel) deliver(laneID uint16, message []byte) {
 	} else {
 		state.gapSince = time.Now()
 	}
+	t.sendFlowProgress(connID, state.nextSequence)
+	t.ackFlowCommitIfReady(connID, state)
 }
 
 // UDP datagrams may be striped over all four independent calls. They are
@@ -1154,6 +1187,9 @@ func (t *ParasiteTunnel) deliverFrameLocked(connID uint32, frame []byte) {
 	if t.handleTelemetryMessage(frame) {
 		return
 	}
+	if t.handleFlowControlMessage(frame) {
+		return
+	}
 	_, msgType, _ := relayFrameIdentity(frame)
 	if connID != calltunnel.ControlConnID {
 		t.markProgress()
@@ -1200,7 +1236,10 @@ func (state *sendFlowState) initialize(msgType byte) {
 }
 
 func (state *sendFlowState) preferredLane() *uint16 {
-	if state.unordered || !state.laneAssigned {
+	if !state.laneAssigned {
+		return nil
+	}
+	if state.unordered && (time.Since(state.flowletStarted) >= udpFlowletMaximumDwell || state.flowletBytes >= udpFlowletMaximumBytes) {
 		return nil
 	}
 	return &state.laneID
@@ -1227,11 +1266,26 @@ func (t *ParasiteTunnel) preferredControlLane() *uint16 {
 	return &t.controlLaneID
 }
 
-func (t *ParasiteTunnel) commitFlowFrame(connID uint32, msgType byte, state *sendFlowState, lane *kcpLane) {
+func (t *ParasiteTunnel) commitFlowFrame(connID uint32, msgType byte, state *sendFlowState, lane *kcpLane, sequence uint64, frame []byte) {
 	if !state.unordered && !state.laneAssigned {
 		state.laneID = lane.id
 		state.laneOwner.Store(uint32(lane.id) + 1)
 		state.laneAssigned = true
+	}
+	if state.unordered {
+		if !state.laneAssigned || state.laneID != lane.id || time.Since(state.flowletStarted) >= udpFlowletMaximumDwell || state.flowletBytes >= udpFlowletMaximumBytes {
+			state.laneID = lane.id
+			state.laneAssigned = true
+			state.flowletStarted = time.Now()
+			state.flowletBytes = 0
+		}
+		state.flowletBytes += len(frame)
+	}
+	if !state.unordered {
+		copy := append([]byte(nil), frame...)
+		state.replay = append(state.replay, flowReplayFrame{sequence: sequence, frame: copy})
+		state.replayBytes += len(copy)
+		t.replayBytes.Add(int64(len(copy)))
 	}
 	state.nextSequence++
 	bit := uint8(1 << lane.id)
@@ -1273,11 +1327,41 @@ func (t *ParasiteTunnel) releaseSendFlowState(connID uint32, state *sendFlowStat
 }
 
 func (t *ParasiteTunnel) releaseFlowLanes(state *sendFlowState) {
+	if state.replayBytes > 0 {
+		t.replayBytes.Add(-int64(state.replayBytes))
+		state.replayBytes = 0
+		state.replay = nil
+	}
 	for laneID := uint16(0); laneID < LaneCount; laneID++ {
 		if state.laneMask&(1<<laneID) != 0 {
 			t.lanes[laneID].flowCount.Add(-1)
 		}
 	}
+}
+
+func (t *ParasiteTunnel) replayCapacityAvailable(state *sendFlowState, size int) bool {
+	return state.replayBytes+size <= flowReplayPerFlowLimit &&
+		t.replayBytes.Load()+int64(size) <= flowReplaySessionLimit
+}
+
+func (t *ParasiteTunnel) waitReplayCapacityLocked(state *sendFlowState, size int) bool {
+	deadline := time.Now().Add(t.sendStallTimeout)
+	for !t.replayCapacityAvailable(state, size) {
+		state.mu.Unlock()
+		timer := time.NewTimer(laneSendRetryInterval)
+		select {
+		case <-timer.C:
+		case <-t.closed:
+			timer.Stop()
+			state.mu.Lock()
+			return false
+		}
+		state.mu.Lock()
+		if state.closed || time.Now().After(deadline) {
+			return false
+		}
+	}
+	return true
 }
 
 type laneCandidate struct {
@@ -1681,12 +1765,8 @@ func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
 	ack := lane.resetAck
 	lane.metrics.AddHot(telemetry.LaneResetRequestTotal, 1)
 	lane.mu.Unlock()
-	t.abortLaneFlows(laneID, "lane_reset_quarantine")
+	t.migrateLaneFlows(laneID, reason)
 	t.recordEvent("lane_reset_requested", "lane", reason, &laneID)
-	if t.quarantinedLaneCount() >= 3 {
-		t.replaceSession("three_quarantined_lanes", &laneID)
-		return true
-	}
 	go t.coordinateLaneReset(laneID, generation, ack, t.laneResetHandshakeDeadline(laneID))
 	return true
 }
@@ -1726,7 +1806,7 @@ func (t *ParasiteTunnel) laneResetHandshakeDeadline(laneID uint16) time.Duration
 	}
 	lane := t.lanes[laneID]
 	lane.mu.Lock()
-	deadline := 6 * lane.estimatedKCPRTO()
+	deadline := 8 * lane.estimatedKCPRTO()
 	lane.mu.Unlock()
 	if deadline < laneResetMinimumDeadline {
 		return laneResetMinimumDeadline
@@ -1777,7 +1857,6 @@ func (t *ParasiteTunnel) coordinateLaneReset(laneID uint16, generation uint64, a
 			continue
 		case <-deadline.C:
 			t.recordEvent("lane_reset_failed", "lane", "handshake_timeout", &laneID)
-			t.replaceSession("lane_reset_handshake_timeout", &laneID)
 			return
 		case <-t.closed:
 			return
@@ -1851,7 +1930,6 @@ func (t *ParasiteTunnel) awaitLaneProbe(laneID uint16, generation uint64) {
 	lane.mu.Unlock()
 	if failed {
 		t.recordEvent("lane_reset_failed", "lane", "probe_timeout", &laneID)
-		t.replaceSession("lane_probe_timeout", &laneID)
 	}
 }
 
@@ -1979,6 +2057,10 @@ func priorityRelayMessage(msgType byte) bool {
 	}
 }
 
+func priorityRelayFrame(frame []byte, msgType byte) bool {
+	return priorityRelayMessage(msgType) || len(frame) <= 256
+}
+
 func relayFrameIdentity(frame []byte) (uint32, byte, bool) {
 	if len(frame) < 9 {
 		return 0, 0, false
@@ -2047,22 +2129,15 @@ func (t *ParasiteTunnel) removeWorker(worker *laneWorker) {
 	if removed {
 		workerID := worker.id
 		t.recordEvent("lane_worker_detached", "lane", "transport_closed", &workerID)
-		if t.fullyAttached.Load() && t.ActiveWorkers() <= 1 {
-			t.replaceSession("three_unavailable_lanes", &workerID)
-			return
-		}
-		lane.mu.Lock()
-		shouldReset := lane.state == laneStateActive
-		lane.mu.Unlock()
-		if shouldReset {
-			t.recoverStalledLane(&workerID)
-		}
-		go t.abortLaneFlowsIfUnavailable(workerID, availabilityEpoch)
+		// Physical detach is not a logical lane failure. maintainWorker first
+		// attempts a same-generation hot swap; only a bounded lack of a new
+		// worker escalates to the wire-v9 generation recovery handshake.
+		go t.recoverLaneIfUnavailable(workerID, availabilityEpoch)
 	}
 }
 
-func (t *ParasiteTunnel) abortLaneFlowsIfUnavailable(laneID uint16, availabilityEpoch uint64) {
-	timer := time.NewTimer(t.laneRecoveryGrace)
+func (t *ParasiteTunnel) recoverLaneIfUnavailable(laneID uint16, availabilityEpoch uint64) {
+	timer := time.NewTimer(t.laneResetHandshakeDeadline(laneID))
 	defer timer.Stop()
 	select {
 	case <-timer.C:
@@ -2076,7 +2151,7 @@ func (t *ParasiteTunnel) abortLaneFlowsIfUnavailable(laneID uint16, availability
 	if !unavailable {
 		return
 	}
-	t.abortLaneFlows(laneID, "lane_recovery_timeout")
+	t.recoverStalledLane(&laneID)
 }
 
 func (t *ParasiteTunnel) abortLaneFlows(laneID uint16, reason string) {
@@ -2323,6 +2398,29 @@ func (t *ParasiteTunnel) LastProgress() time.Time {
 	return time.Unix(0, t.lastProgress.Load())
 }
 
+func (t *ParasiteTunnel) transportHealthSnapshot() HC.TransportHealthSnapshot {
+	now := time.Now()
+	lastInbound := int64(0)
+	for _, lane := range t.lanes {
+		lane.workerMu.RLock()
+		worker := lane.worker
+		if worker != nil {
+			lastInbound = max(lastInbound, worker.lastInbound.Load())
+		}
+		lane.workerMu.RUnlock()
+	}
+	lastDemand := t.lastApplicationDemand.Load()
+	return HC.TransportHealthSnapshot{
+		ActiveLanes:             int32(t.ActiveWorkers()),
+		TotalLanes:              LaneCount,
+		Demand:                  lastDemand != 0 && now.Sub(time.Unix(0, lastDemand)) <= transportFailureLimit,
+		LastProgressAt:          time.Unix(0, t.lastProgress.Load()).UnixMilli(),
+		LastAggregateProgressAt: time.Unix(0, t.lastAggregateProgress.Load()).UnixMilli(),
+		LastInboundAt:           time.Unix(0, lastInbound).UnixMilli(),
+		ObservedAt:              now.UnixMilli(),
+	}
+}
+
 func (t *ParasiteTunnel) Done() <-chan struct{} {
 	return t.closed
 }
@@ -2398,14 +2496,7 @@ func (t *ParasiteTunnel) noProgressWatchLoop() {
 }
 
 func sessionNoProgressThreshold(medianRTO time.Duration) time.Duration {
-	threshold := 3 * medianRTO
-	if threshold < 5*time.Second {
-		threshold = 5 * time.Second
-	}
-	if threshold > 10*time.Second {
-		threshold = 10 * time.Second
-	}
-	return threshold
+	return 30 * time.Second
 }
 
 func (t *ParasiteTunnel) pendingDataAndMedianRTO() (bool, time.Duration) {

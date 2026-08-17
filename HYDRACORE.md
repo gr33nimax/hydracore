@@ -1,7 +1,7 @@
 # HydraCore distribution contract
 
 Current debug release:
-`v1.13.16-extended-hydracore.11-debug.32`.
+`v1.13.16-extended-hydracore.11-debug.40`.
 
 HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
 must use artifacts from the same release manifest and commit; mixed wire
@@ -85,10 +85,56 @@ Example client outbound:
 ```
 
 `workers` and `max_workers_per_session` default to four and every other value is
-rejected. One to four distinct join links are accepted; links are reused to
+rejected (frozen at 4 for the wire-v9 contract). One to four distinct join links are accepted; links are reused to
 create the fixed four calls when fewer than four are supplied. The legacy-named
 `call_vk_pre_kcp_admission` capability now covers the wire-v9 ACK-clocked lane
 pacer and its BDP-derived 32-512 segment inflight limit.
+
+## Host OS tuning and client socket allocation
+
+High-throughput multi-lane operation requires adequate OS network buffer limits
+and ephemeral port space to avoid client-side socket starvation (`no_ports`) and
+UDP packet loss (`RcvbufErrors`):
+
+- **Linux Sysctl Guidelines**:
+  ```sysctl
+  net.ipv4.ip_local_port_range = 10240 65535
+  net.core.rmem_max = 16777216
+  net.core.wmem_max = 16777216
+  net.core.rmem_default = 2097152
+  net.core.wmem_default = 2097152
+  ```
+- **Android VPN Protection**: Under Android VPN mode, client UDP socket allocations
+  must be protected from looping back into the VPN interface, and socket buffers
+  are explicitly sized to 2 MiB during TURN endpoint allocation.
+
+## Policer validation and performance criteria
+
+When traversing token-bucket rate limiters and policers (e.g. 8 Mbit/s cap with
+1-2% baseline loss), the ACK-clocked controller maintains:
+- Offered-to-delivered ratio < 1.3x (preventing retransmission plateau collapse);
+- Retransmission share < 15% of transmitted bytes;
+- Goodput >= 90% of available bottleneck capacity without flow abort cascades;
+- Demand-gated pacing probes with low inconclusive noise.
+
+## Known limitations
+
+- **IPv4-only TURN**: TURN endpoint resolution and allocation require IPv4 addresses
+  (`requireIPv4`); IPv6 TURN allocation is deferred to future wire versions.
+- **Platform dependency**: The transport relies completely on VK call infrastructure
+  and TURN availability.
+- **Fixed RTP imitation**: RTP headers use fixed Payload Type (PT=96), padding ±24B,
+  and static packet distribution.
+- **Flag-day wire versioning**: Wire v9 enforces strict symmetric version matching
+  between client and VPS; mixed wire versions are rejected during worker auth.
+- **Severe loss behavior**: At extreme loss rates (~50%), idle lanes may experience
+  intermittent liveness expiration (~5%/window).
+- **Asymmetric flow abort**: Pinned flow termination is unidirectional; peer state
+  recovers via timeout-driven garbage collection.
+- **Global singleton supervisor**: Concurrent transport gating shares a global
+  singleton supervisor.
+- **Tunnel state machine boundary**: `lane_tunnel.go` (~3k LOC) remains a unified
+  high-performance concurrency boundary.
 
 ## Verification and publication
 

@@ -1444,3 +1444,75 @@ func TestLaneRecoveryAttemptStateGauges(t *testing.T) {
 	require.Equal(t, float64(3), lane.metrics.Value(telemetry.LaneRecoveryLastOutcome))
 	require.Equal(t, float64(2), lane.metrics.Value(telemetry.LaneRecoveryAttemptID))
 }
+
+func TestParasiteTunnelNoProgressReplacesSessionWhenAllWorkersDead(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x99887766, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	replaced := make(chan string, 1)
+	tunnel.SetTelemetryEventHandler(func(event telemetry.Event) {
+		if event.Event == "session_replacement" {
+			select {
+			case replaced <- event.Reason:
+			default:
+			}
+		}
+	})
+
+	now := time.Now()
+	// Inject pending output segment while active workers is zero
+	tunnel.lanes[0].mu.Lock()
+	tunnel.lanes[0].outputPending = append(tunnel.lanes[0].outputPending, queuedSegment{payload: []byte{1, 2, 3}, enqueuedAt: now})
+	tunnel.lanes[0].mu.Unlock()
+
+	// Set last aggregate progress to past threshold
+	tunnel.lastAggregateProgress.Store(now.Add(-35 * time.Second).UnixNano())
+	// No fresh application demand
+	tunnel.lastApplicationDemand.Store(0)
+
+	pendingSince := now.Add(-35 * time.Second)
+	replacedResult := tunnel.evaluateNoProgress(now, &pendingSince)
+	require.True(t, replacedResult)
+	select {
+	case reason := <-replaced:
+		require.Equal(t, "aggregate_no_progress", reason)
+	case <-time.After(time.Second):
+		t.Fatal("expected session_replacement event")
+	}
+}
+
+func TestParasiteTunnelLaneQualityQuarantine(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x55443322, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	for i := uint16(0); i < LaneCount; i++ {
+		conn, peer := newTestDatagramPair()
+		_, err = tunnel.AddWorkerEpoch(i, 1, conn)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = peer.Close() })
+	}
+
+	// Lanes 1, 2, 3 have clean paths (1-2% loss)
+	for i := uint16(1); i < LaneCount; i++ {
+		tunnel.lanes[i].mu.Lock()
+		tunnel.lanes[i].retryRatioSmooth = 0.02
+		tunnel.lanes[i].mu.Unlock()
+	}
+
+	median := tunnel.medianActiveRetryRatio(0)
+	require.InDelta(t, 0.02, median, 0.01)
+
+	// Lane 0 is severely degraded (55% loss)
+	lane0 := uint16(0)
+	tunnel.lanes[0].mu.Lock()
+	tunnel.lanes[0].retryRatioSmooth = 0.55
+	tunnel.lanes[0].mu.Unlock()
+
+	laneID, result := tunnel.recoverStalledLaneWithReason(&lane0, "lane_quality")
+	require.Equal(t, uint16(0), laneID)
+	require.Equal(t, laneRecoveryStarted, result)
+}

@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.40
+
+- Gated pacing probe initiation on baseline application demand (`windowDemandBits == 0b11`),
+  preventing spurious probes and reducing inconclusive telemetry noise on application-limited
+  traffic.
+- Accelerated stalled session recovery: when all physical workers are detached with
+  pending data, the watchdog triggers session replacement at the 30s threshold without
+  waiting for the 70s cascade.
+- Optimized lane reset handshake: added a zero-flow fast path to flow migration and halved
+  the control retry interval to 125ms, reducing reset latency to < 2s.
+- Added TURN endpoint quality scoring to bias selection toward reliable endpoints and
+  introduced early lane quarantine when a lane's smoothed loss exceeds 3x the median of other
+  active lanes.
+- Tuned DTLS flight retransmission interval to 500ms for resilient multi-roundtrip handshakes
+  on lossy networks, and configured 2 MiB UDP socket buffers on client TURN packet sockets.
+- Removed unused server decoder state, removed dead medianRTO threshold parameter, and
+  documented wire-v9 worker constraints, host sysctl recommendations, and architectural boundaries.
+
 ## v1.13.16-extended-hydracore.11-debug.39
 
 - Evaluated pacing probes by marginal goodput: a probe now compares the

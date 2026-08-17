@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -38,10 +39,56 @@ type managedTURNConn struct {
 }
 
 type turnEndpoint struct {
+	rawURL      string
 	destination M.Socksaddr
 	network     string
 	secure      bool
 	serverName  string
+}
+
+type turnEndpointScore struct {
+	mu          sync.RWMutex
+	failures    int
+	lastSuccess time.Time
+}
+
+var turnEndpointQualityRegistry sync.Map
+
+func getTURNEndpointPenalty(rawURL string) int {
+	if rawURL == "" {
+		return 0
+	}
+	val, ok := turnEndpointQualityRegistry.Load(rawURL)
+	if !ok {
+		return 0
+	}
+	stat := val.(*turnEndpointScore)
+	stat.mu.RLock()
+	defer stat.mu.RUnlock()
+	return stat.failures
+}
+
+func recordTURNEndpointSuccess(rawURL string) {
+	if rawURL == "" {
+		return
+	}
+	val, _ := turnEndpointQualityRegistry.LoadOrStore(rawURL, &turnEndpointScore{})
+	stat := val.(*turnEndpointScore)
+	stat.mu.Lock()
+	stat.failures = max(0, stat.failures-1)
+	stat.lastSuccess = time.Now()
+	stat.mu.Unlock()
+}
+
+func recordTURNEndpointFailure(rawURL string) {
+	if rawURL == "" {
+		return
+	}
+	val, _ := turnEndpointQualityRegistry.LoadOrStore(rawURL, &turnEndpointScore{})
+	stat := val.(*turnEndpointScore)
+	stat.mu.Lock()
+	stat.failures++
+	stat.mu.Unlock()
 }
 
 func (c *managedTURNConn) Close() error {
@@ -97,11 +144,13 @@ func allocateTURN(
 		endpoint := destinations[offset]
 		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, endpoint)
 		if err == nil {
+			recordTURNEndpointSuccess(endpoint.rawURL)
 			metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
 			metrics.Set(telemetry.TURNSelectedEndpointOrdinal, float64(offset+1))
 			metrics.Add(telemetry.TURNAllocateSuccessTotal, 1)
 			return connection, nil
 		}
+		recordTURNEndpointFailure(endpoint.rawURL)
 		lastErr = err
 	}
 	recordTURNFailure(ctx, metrics, started, workerID, "all_endpoints")
@@ -116,6 +165,9 @@ func rotateTURNEndpoints(endpoints []turnEndpoint, preferred int) []turnEndpoint
 	rotated := make([]turnEndpoint, 0, len(endpoints))
 	rotated = append(rotated, endpoints[start:]...)
 	rotated = append(rotated, endpoints[:start]...)
+	sort.SliceStable(rotated, func(i, j int) bool {
+		return getTURNEndpointPenalty(rotated[i].rawURL) < getTURNEndpointPenalty(rotated[j].rawURL)
+	})
 	return rotated
 }
 
@@ -150,6 +202,10 @@ func allocateTURNEndpoint(
 		udpConn, listenErr := dialer.ListenPacket(ctx, resolvedDestination)
 		if listenErr != nil {
 			return nil, listenErr
+		}
+		if setter, ok := udpConn.(packetSocketBufferSetter); ok {
+			_ = setter.SetReadBuffer(2 * 1024 * 1024)
+			_ = setter.SetWriteBuffer(2 * 1024 * 1024)
 		}
 		packetConn = udpConn
 		base = udpConn
@@ -247,7 +303,7 @@ func parseTURNURL(rawURL string) (turnEndpoint, error) {
 	if serverName == "" && destination.IsIP() {
 		serverName = destination.Addr.String()
 	}
-	return turnEndpoint{destination: destination, network: network, secure: secure, serverName: serverName}, nil
+	return turnEndpoint{rawURL: rawURL, destination: destination, network: network, secure: secure, serverName: serverName}, nil
 }
 
 func parseTURNUDPURL(rawURL string) (M.Socksaddr, error) {

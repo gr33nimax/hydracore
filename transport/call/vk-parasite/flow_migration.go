@@ -136,6 +136,9 @@ func (t *ParasiteTunnel) migrateLaneFlows(laneID uint16, reason string) {
 		}
 	}
 	t.sendMu.Unlock()
+	if len(flows) == 0 {
+		return
+	}
 	migrationBudget := t.laneResetHandshakeDeadline(laneID) - time.Second
 	if migrationBudget < t.sendStallTimeout {
 		migrationBudget = t.sendStallTimeout

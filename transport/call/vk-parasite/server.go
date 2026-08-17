@@ -105,7 +105,6 @@ type Server struct {
 	dtlsConfig *dtls.Config
 
 	packetConn net.PacketConn
-	decoder    *rtpCodec
 	peersMu    sync.Mutex
 	peers      map[string]*peerPacketConn
 	helloPeers map[[32]byte]*peerPacketConn
@@ -149,6 +148,7 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 			Certificates:         []tls.Certificate{certificate},
 			CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
+			FlightInterval:       500 * time.Millisecond,
 			MTU:                  1100,
 		},
 		peers:        make(map[string]*peerPacketConn),
@@ -276,7 +276,6 @@ func (s *Server) Start(packetConn net.PacketConn) error {
 		}
 		decoders[index] = decoder
 	}
-	s.decoder = decoders[0]
 	s.ingressQueues = makeIngressQueues(s.options.IngressWorkers, s.options.IngressQueuePackets)
 	s.peersMu.Unlock()
 	s.configurePacketSocket(packetConn)

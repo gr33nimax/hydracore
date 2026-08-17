@@ -251,6 +251,10 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 		case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
 			l.evaluateProbeLocked(now)
 		case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
+			if l.windowDemandBits != 0b11 {
+				l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+				break
+			}
 			// A probe is a marginal-goodput experiment. The baseline is the
 			// measured byte rate of the previous two delivery windows, not
 			// the pacing knob: the steady branch blends probe bumps down
@@ -259,7 +263,7 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 			l.probeBaselinePacing = l.pacingRateBPS
 			l.probeBaselineAckedBPS = float64(l.windowAckedBytes[0]+l.windowAckedBytes[1]) / (2 * laneDeliverySampleWindow.Seconds())
 			l.probeBaselineAdmittedBPS = float64(l.windowAdmittedBytes[0]+l.windowAdmittedBytes[1]) / (2 * laneDeliverySampleWindow.Seconds())
-			l.probeBaselineDemandOK = l.windowDemandBits == 0b11
+			l.probeBaselineDemandOK = true
 			l.probeBaselineRetrySmooth = l.retryRatioSmooth
 			// A previous probe may have been aborted without evaluation
 			// (congestion backoff or a generation reset clears pacingProbeUntil
@@ -275,6 +279,20 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 		case !l.pacingStartup:
 			targetRate := l.steadyPacingTargetLocked()
 			l.pacingRateBPS = 0.75*l.pacingRateBPS + 0.25*targetRate
+		}
+		if l.parent != nil && !applicationLimited && l.retryRatioSmooth > 0.30 {
+			medianRetry := l.parent.medianActiveRetryRatio(l.id)
+			if medianRetry >= 0 && l.retryRatioSmooth > 3*max(0.05, medianRetry) {
+				l.degradedLossSamples++
+				if l.degradedLossSamples >= 5 {
+					l.degradedLossSamples = 0
+					go l.parent.recoverStalledLaneWithReason(&l.id, "lane_quality")
+				}
+			} else {
+				l.degradedLossSamples = 0
+			}
+		} else if applicationLimited {
+			l.degradedLossSamples = 0
 		}
 		l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))
 		windowRTTMS := max(80, l.minRTTMS)

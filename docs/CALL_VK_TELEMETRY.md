@@ -46,7 +46,11 @@ Every lane reports independently:
 - generation and state (`active`, `quarantined`, `resetting`, `probing`);
 - pacing/delivered rate, minRTT, inflight limit, token starvation and ACK age;
 - admitted and uniquely-acked KCP bytes, used by the marginal-goodput probe
-  verdicts (`useful` / `harmful` / `inconclusive`) to evaluate pacing probes;
+  verdicts (`useful` / `harmful` / `inconclusive`) to evaluate pacing probes.
+  Probe initiation is gated on baseline demand (`windowDemandBits == 0b11`),
+  preventing spurious probes during application-limited periods. Analyzers
+  must group `lane_pacing_probe_inconclusive` events by `reason`
+  (`invalid_baseline` vs `no_signal`) rather than aggregating by event name;
 - the recovery attempt id (the shared lane generation) and the last recovery
   outcome (0 none / 1 in_progress / 2 recovered / 3 failed). Analyzers must
   reconcile the attempt lifecycle from these snapshot gauges instead of

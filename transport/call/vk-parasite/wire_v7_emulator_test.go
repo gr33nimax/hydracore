@@ -318,7 +318,7 @@ func TestWireV9ResetHandshakeSurvivesThirtyPercentControlLoss(t *testing.T) {
 		return left.LaneGeneration(0) == 2 && right.LaneGeneration(0) == 2 &&
 			left.ActiveWorkers() == LaneCount-1 && right.ActiveWorkers() == LaneCount-1
 	}, 4*time.Second, 10*time.Millisecond)
-	require.LessOrEqual(t, time.Since(started), 12*time.Second)
+	require.LessOrEqual(t, time.Since(started), 2*time.Second)
 
 	leftReplacement, rightReplacement := newTestDatagramPair()
 	_, err = left.AddWorkerGenerationEpoch(0, 2, 2, leftReplacement)
@@ -358,9 +358,7 @@ func TestWireV9FragmentsTCPBeforeKCPButKeepsUDPDatagramsWhole(t *testing.T) {
 
 func TestWireV9SessionNoProgressDeadlineIsBounded(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(200*time.Millisecond))
-	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(2*time.Second))
-	require.Equal(t, 30*time.Second, sessionNoProgressThreshold(35*time.Second))
+	require.Equal(t, 30*time.Second, sessionNoProgressThreshold())
 }
 
 func TestWireV9PolicerPlateauIsHarmfulAndRollsBack(t *testing.T) {
@@ -421,18 +419,39 @@ func TestWireV9ProbeInconclusiveWithoutBaselineDemand(t *testing.T) {
 	lane.pacingRateBPS = 500_000
 	lane.deliveryRateBPS = 480_000
 	lane.deliveryCapacityBPS = 480_000
+	initialPacing := lane.pacingRateBPS
 	emulator := deterministicLaneEmulator{bandwidthBPS: 12_000_000 / 8, rtt: 80 * time.Millisecond}
-	emulator.demand = []bool{false, false, false, false, false, false, false, true, true, true, true, true}
+	emulator.demand = []bool{false, false, false, false, false, false, false, false, false, false, false, false}
 	mss := float64(laneKCPMTU - kcpHeaderSize)
 	for sample := 0; sample < 12; sample++ {
 		driveByteWindow(lane, &emulator, start.Add(time.Duration(sample+1)*laneDeliverySampleWindow), sample, mss)
 	}
-	// The baseline windows lacked demand, so the probe verdict must be
-	// inconclusive: no ceiling change, no rollback cooldown.
+	// Without demand, probe does not start, pacing rate does not bump, probeWindows == 0
 	require.Equal(t, laneCompensationInitialCeiling, lane.compensationCeiling)
 	require.Zero(t, lane.probeCooldownShift)
 	require.Zero(t, lane.probeHarmfulStreak)
-	require.Positive(t, lane.pacingRateBPS)
+	require.Zero(t, lane.probeWindows)
+	require.True(t, lane.pacingProbeUntil.IsZero())
+	require.LessOrEqual(t, lane.pacingRateBPS, initialPacing)
+}
+
+func TestWireV9ProbeConclusiveWithActiveDemand(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1, 0)
+	lane := newControllerLane(start)
+	lane.pacingStartup = false
+	lane.pacingRateBPS = 500_000
+	lane.deliveryRateBPS = 480_000
+	lane.deliveryCapacityBPS = 480_000
+	emulator := deterministicLaneEmulator{bandwidthBPS: 12_000_000 / 8, rtt: 80 * time.Millisecond}
+	emulator.demand = []bool{true, true, true, true, true, true, true, true, true, true, true, true}
+	mss := float64(laneKCPMTU - kcpHeaderSize)
+	for sample := 0; sample < 12; sample++ {
+		driveByteWindow(lane, &emulator, start.Add(time.Duration(sample+1)*laneDeliverySampleWindow), sample, mss)
+	}
+	require.Greater(t, lane.compensationCeiling, laneCompensationInitialCeiling)
+	require.Zero(t, lane.probeCooldownShift)
+	require.Zero(t, lane.probeHarmfulStreak)
 }
 
 func TestWireV9AckLossProducesSpuriousRetransmissions(t *testing.T) {

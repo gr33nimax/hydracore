@@ -62,8 +62,8 @@ const (
 	laneRetransmitRateSmoothing    = 0.5
 	laneNewDataFloorBPS            = lanePacingMinimumBPS / 4
 	laneCongestionSamples          = 2
-	laneResetRetryInterval        = 250 * time.Millisecond
-	laneResetMinimumDeadline      = 4 * time.Second
+	laneResetRetryInterval        = 125 * time.Millisecond
+	laneResetMinimumDeadline      = 2 * time.Second
 	laneResetMaximumDeadline      = 30 * time.Second
 	laneFlowMigrationConcurrency = 8
 	laneProbeInterval             = 250 * time.Millisecond
@@ -258,6 +258,7 @@ type kcpLane struct {
 	probeHarmfulStreak       int
 	probeLastVerdictAt       time.Time
 	probeCooldownShift       int
+	degradedLossSamples      int
 
 	recoveryAttemptID   uint64
 	recoveryLastOutcome uint8
@@ -384,6 +385,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 		}
 		lane.applicationLimited = true
 		lane.compensationCeiling = laneCompensationInitialCeiling
+		lane.degradedLossSamples = 0
 		lane.metrics.SetCounterParent(metrics)
 		lane.lastAckProgress.Store(time.Now().UnixNano())
 		lane.resetKCPLocked(1)
@@ -1726,6 +1728,10 @@ func (l *kcpLane) ackStallTimeoutLocked() time.Duration {
 }
 
 func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneRecoveryResult) {
+	return t.recoverStalledLaneWithReason(preferred, "ack_progress_timeout")
+}
+
+func (t *ParasiteTunnel) recoverStalledLaneWithReason(preferred *uint16, reason string) (uint16, laneRecoveryResult) {
 	var selected *kcpLane
 	hasPreferred := preferred != nil && int(*preferred) < LaneCount
 	if hasPreferred {
@@ -1827,7 +1833,7 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 		}
 		return workerID, laneRecoveryInProgress
 	}
-	if !t.initiateLaneReset(workerID, "ack_progress_timeout") {
+	if !t.initiateLaneReset(workerID, reason) {
 		selected.mu.Lock()
 		stillActive := selected.state == laneStateActive && !selected.resetInFlight
 		selected.mu.Unlock()
@@ -1843,6 +1849,31 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 		return workerID, laneRecoveryInProgress
 	}
 	return workerID, laneRecoveryStarted
+}
+
+func (t *ParasiteTunnel) medianActiveRetryRatio(excludeLane uint16) float64 {
+	retries := make([]float64, 0, LaneCount)
+	for _, lane := range t.lanes {
+		if lane.id == excludeLane {
+			continue
+		}
+		active, _ := lane.workerState()
+		if !active {
+			continue
+		}
+		lane.mu.Lock()
+		healthy := lane.state == laneStateActive
+		ratio := lane.retryRatioSmooth
+		lane.mu.Unlock()
+		if healthy {
+			retries = append(retries, ratio)
+		}
+	}
+	if len(retries) == 0 {
+		return -1
+	}
+	sort.Float64s(retries)
+	return retries[len(retries)/2]
 }
 
 func (t *ParasiteTunnel) completeLaneRecovery(laneID uint16) {
@@ -2192,6 +2223,7 @@ func (t *ParasiteTunnel) resetLaneGeneration(laneID uint16, generation uint64, r
 	lane.probeHarmfulStreak = 0
 	lane.probeLastVerdictAt = time.Time{}
 	lane.probeCooldownShift = 0
+	lane.degradedLossSamples = 0
 	// recoveryAttemptID and recoveryLastOutcome deliberately keep the last
 	// attempt visible after a generation commit.
 	lane.previousOutputDepth = 0
@@ -2774,6 +2806,43 @@ func (t *ParasiteTunnel) replaceSession(reason string, laneID *uint16) {
 	})
 }
 
+func (t *ParasiteTunnel) evaluateNoProgress(now time.Time, pendingSince *time.Time) bool {
+	pending, _ := t.pendingDataAndMedianRTO()
+	age := now.Sub(time.Unix(0, t.lastAggregateProgress.Load()))
+	if age < 0 {
+		age = 0
+	}
+	t.metrics.Set(telemetry.AggregateProgressAgeSeconds, age.Seconds())
+	t.metrics.Set(telemetry.QuarantinedLanes, float64(t.quarantinedLaneCount()))
+	if !pending {
+		*pendingSince = time.Time{}
+		return false
+	}
+	if pendingSince.IsZero() {
+		*pendingSince = now
+		return false
+	}
+	threshold := sessionNoProgressThreshold()
+	activeWorkers := t.ActiveWorkers()
+	// When active workers remain, require fresh application demand to avoid
+	// recycling an idle session that simply has lingering queue data.
+	// However, if all physical workers are detached (worker_active == 0) while
+	// data is pending, the session is fatally stalled regardless of demand freshness.
+	if activeWorkers > 0 && !t.hasFreshApplicationDemand(now, threshold) {
+		*pendingSince = time.Time{}
+		return false
+	}
+	progressReference := time.Unix(0, t.lastAggregateProgress.Load())
+	if pendingSince.After(progressReference) {
+		progressReference = *pendingSince
+	}
+	if now.Sub(progressReference) >= threshold {
+		t.replaceSession("aggregate_no_progress", nil)
+		return true
+	}
+	return false
+}
+
 func (t *ParasiteTunnel) noProgressWatchLoop() {
 	ticker := time.NewTicker(laneDeliverySampleWindow)
 	defer ticker.Stop()
@@ -2781,32 +2850,7 @@ func (t *ParasiteTunnel) noProgressWatchLoop() {
 	for {
 		select {
 		case now := <-ticker.C:
-			pending, medianRTO := t.pendingDataAndMedianRTO()
-			age := now.Sub(time.Unix(0, t.lastAggregateProgress.Load()))
-			if age < 0 {
-				age = 0
-			}
-			t.metrics.Set(telemetry.AggregateProgressAgeSeconds, age.Seconds())
-			t.metrics.Set(telemetry.QuarantinedLanes, float64(t.quarantinedLaneCount()))
-			if !pending {
-				pendingSince = time.Time{}
-				continue
-			}
-			if pendingSince.IsZero() {
-				pendingSince = now
-				continue
-			}
-			threshold := sessionNoProgressThreshold(medianRTO)
-			if !t.hasFreshApplicationDemand(now, threshold) {
-				pendingSince = time.Time{}
-				continue
-			}
-			progressReference := time.Unix(0, t.lastAggregateProgress.Load())
-			if pendingSince.After(progressReference) {
-				progressReference = pendingSince
-			}
-			if now.Sub(progressReference) >= threshold {
-				t.replaceSession("aggregate_no_progress", nil)
+			if t.evaluateNoProgress(now, &pendingSince) {
 				return
 			}
 		case <-t.closed:
@@ -2815,7 +2859,7 @@ func (t *ParasiteTunnel) noProgressWatchLoop() {
 	}
 }
 
-func sessionNoProgressThreshold(medianRTO time.Duration) time.Duration {
+func sessionNoProgressThreshold() time.Duration {
 	return 30 * time.Second
 }
 

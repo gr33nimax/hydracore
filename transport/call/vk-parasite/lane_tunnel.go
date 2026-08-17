@@ -37,8 +37,8 @@ const (
 	laneReorderFrameLimit    = 4096
 	laneSendRetryInterval    = 2 * time.Millisecond
 	laneDeliverySampleWindow = 500 * time.Millisecond
-	lanePacingInitialBPS          = 4_000_000 / 8
-	lanePacingMinimumBPS          = 1_000_000 / 8
+	lanePacingInitialBPS          = 2_000_000 / 8 // Aggregate cold start across 4 lanes = 8 Mbit/s, closer to typical policer knee ~5.5 Mbit/s; accelerated via lanePacingStartupGain.
+	lanePacingMinimumBPS          = 512_000 / 8   // 512 Kbit/s minimum baseline.
 	lanePacingMaximumBPS          = 25_000_000 / 8
 	lanePacingBucketSegments      = 16
 	lanePacingStartupGain         = 1.35
@@ -198,6 +198,7 @@ type kcpLane struct {
 	recvBuf       []byte
 	outputPending []queuedSegment
 	outputReady   chan struct{}
+	wake          chan struct{}
 
 	workerMu sync.RWMutex
 	worker   *laneWorker
@@ -370,6 +371,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 			parent:           tunnel,
 			recvBuf:          make([]byte, laneKCPReceiveBuffer),
 			outputReady:      make(chan struct{}, 1),
+			wake:             make(chan struct{}, 1),
 			metrics:          telemetry.NewAccumulator(),
 			kcpSent:          make(map[uint32]kcpSentSegment),
 			generation:       1,
@@ -381,7 +383,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 			pacingTokens:     float64(lanePacingBucketSegments * (laneKCPMTU - kcpHeaderSize)),
 			pacingLastRefill: laneNow,
 			pacingStartup:    true,
-			pacingNextProbe:  laneNow.Add(lanePacingProbeInterval),
+			pacingNextProbe:  laneNow.Add(lanePacingProbeInterval + time.Duration(index)*lanePacingProbeInterval/LaneCount),
 		}
 		lane.applicationLimited = true
 		lane.compensationCeiling = laneCompensationInitialCeiling
@@ -430,6 +432,17 @@ func (l *kcpLane) resetKCPLocked(generation uint64) {
 	l.kcp.NoDelay(1, int(laneKCPUpdateInterval/time.Millisecond), laneKCPFastResend, laneKCPNoCongestion)
 	l.kcp.WndSize(laneKCPSendWindow, laneKCPReceiveWindow)
 	l.kcp.SetMtu(laneKCPMTU)
+}
+
+func (l *kcpLane) probeOffset() time.Duration {
+	return time.Duration(l.id) * lanePacingProbeInterval / LaneCount
+}
+
+func (l *kcpLane) notifyWake() {
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (t *ParasiteTunnel) SendData(frame []byte) {
@@ -739,6 +752,7 @@ func (t *ParasiteTunnel) reserveWorkerGeneration(id uint16, generation, epoch ui
 	case lane.outputReady <- struct{}{}:
 	default:
 	}
+	lane.notifyWake()
 	worker.metrics.Set(telemetry.WorkerActive, 1)
 	if replaced != nil {
 		replaced.close()
@@ -1082,6 +1096,7 @@ func (l *kcpLane) stageSegment(segment []byte) {
 	case l.outputReady <- struct{}{}:
 	default:
 	}
+	l.notifyWake()
 }
 
 func (l *kcpLane) outputLoop() {
@@ -1141,6 +1156,7 @@ func (l *kcpLane) inputSegment(segment []byte) {
 		return
 	}
 	l.observeKCPInput(segment)
+	l.notifyWake()
 	if l.kcp.Input(segment, kcp.IKCP_PACKET_REGULAR, true) < 0 {
 		l.mu.Unlock()
 		return
@@ -1656,7 +1672,11 @@ func (t *ParasiteTunnel) trySendEncodedOnLane(lane *kcpLane, encoded []byte, req
 	// The lane update loop flushes within 10 ms. Calling Update synchronously
 	// here lets a blocked TURN write hold both the KCP mutex and RelayBridge's
 	// per-flow send path, preventing the stall timer from recovering the lane.
-	return lane.kcp.Send(encoded) >= 0
+	sent := lane.kcp.Send(encoded) >= 0
+	if sent {
+		lane.notifyWake()
+	}
+	return sent
 }
 
 func bindLaneGeneration(encoded []byte, generation uint64) []byte {
@@ -2197,7 +2217,7 @@ func (t *ParasiteTunnel) resetLaneGeneration(laneID uint16, generation uint64, r
 	lane.pacingTokens = float64(lanePacingBucketSegments * (laneKCPMTU - kcpHeaderSize))
 	lane.pacingLastRefill = time.Now()
 	lane.pacingStartup = true
-	lane.pacingNextProbe = time.Now().Add(lanePacingProbeInterval)
+	lane.pacingNextProbe = time.Now().Add(lanePacingProbeInterval + lane.probeOffset())
 	lane.pacingProbeUntil = time.Time{}
 	lane.congestionSamples = 0
 	lane.retryRatioSmooth = 0
@@ -2945,54 +2965,78 @@ func (t *ParasiteTunnel) closeAsync() {
 }
 
 func (l *kcpLane) updateLoop() {
-	ticker := time.NewTicker(laneKCPUpdateInterval)
+	currentInterval := laneKCPUpdateInterval
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			now := time.Now()
-			lockStarted := time.Now()
-			l.mu.Lock()
-			if waited := time.Since(lockStarted); waited >= laneSendRetryInterval {
-				l.metrics.AddHotMonotonic(telemetry.KCPMutexBlockedSecondsTotal, waited.Seconds())
-			}
-			// Do not let kcp-go start another transmission burst while the
-			// previous one is still waiting for the physical writer. Input keeps
-			// running, so ACK progress can drain WaitSnd instead of being blocked
-			// behind the saturated TURN path.
-			outputDepth := len(l.outputPending)
-			waitSnd := l.kcp.WaitSnd()
-			state := l.state
-			probeDue := state == laneStateProbing && (l.probeLastSentAt.IsZero() || now.Sub(l.probeLastSentAt) >= laneProbeInterval)
-			if outputDepth < laneKCPOutputBacklog {
-				l.kcp.Update()
-			} else {
-				l.metrics.AddHot(telemetry.KCPUpdateBackpressureTotal, 1)
-			}
-			pressure := state == laneStateActive && (outputDepth >= 3*laneKCPOutputBacklog/4 || waitSnd >= l.admissionLimitLocked(false))
-			if pressure {
-				if l.pressureSince.IsZero() {
-					l.pressureSince = now
-				}
-			} else {
-				l.pressureSince = time.Time{}
-			}
-			ackStallTimeout := l.ackStallTimeoutLocked()
-			ackStalled := pressure && !l.pressureSince.IsZero() &&
-				now.Sub(l.pressureSince) >= ackStallTimeout &&
-				now.Sub(time.Unix(0, l.lastAckProgress.Load())) >= ackStallTimeout
-			l.mu.Unlock()
-			if probeDue {
-				l.parent.sendLaneProbe(l.id)
-			}
-			if ackStalled {
-				workerID, recovery := l.parent.recoverStalledLane(&l.id)
-				if recovery == laneRecoveryStarted {
-					l.parent.recordEvent("lane_send_recovery", "lane", "ack_progress_timeout", &workerID)
-				}
-			}
+		case <-l.wake:
 		case <-l.parent.closed:
 			return
+		}
+		now := time.Now()
+		lockStarted := time.Now()
+		l.mu.Lock()
+		if waited := time.Since(lockStarted); waited >= laneSendRetryInterval {
+			l.metrics.AddHotMonotonic(telemetry.KCPMutexBlockedSecondsTotal, waited.Seconds())
+		}
+		// Do not let kcp-go start another transmission burst while the
+		// previous one is still waiting for the physical writer. Input keeps
+		// running, so ACK progress can drain WaitSnd instead of being blocked
+		// behind the saturated TURN path.
+		outputDepth := len(l.outputPending)
+		waitSnd := l.kcp.WaitSnd()
+		state := l.state
+		probeDue := state == laneStateProbing && (l.probeLastSentAt.IsZero() || now.Sub(l.probeLastSentAt) >= laneProbeInterval)
+		if outputDepth < laneKCPOutputBacklog {
+			l.kcp.Update()
+		} else {
+			l.metrics.AddHot(telemetry.KCPUpdateBackpressureTotal, 1)
+		}
+		pressure := state == laneStateActive && (outputDepth >= 3*laneKCPOutputBacklog/4 || waitSnd >= l.admissionLimitLocked(false))
+		if pressure {
+			if l.pressureSince.IsZero() {
+				l.pressureSince = now
+			}
+		} else {
+			l.pressureSince = time.Time{}
+		}
+		ackStallTimeout := l.ackStallTimeoutLocked()
+		ackStalled := pressure && !l.pressureSince.IsZero() &&
+			now.Sub(l.pressureSince) >= ackStallTimeout &&
+			now.Sub(time.Unix(0, l.lastAckProgress.Load())) >= ackStallTimeout
+
+		l.workerMu.RLock()
+		workerQueueLen := 0
+		if l.worker != nil {
+			workerQueueLen = len(l.worker.sendQueue)
+		}
+		l.workerMu.RUnlock()
+
+		hasDemand := l.parent.hasFreshApplicationDemand(now, 500*time.Millisecond)
+		quiesced := len(l.kcpSent) == 0 && len(l.outputPending) == 0 && workerQueueLen == 0 && !hasDemand && state == laneStateActive
+
+		var nextInterval time.Duration
+		if quiesced {
+			nextInterval = 40 * time.Millisecond
+		} else {
+			nextInterval = laneKCPUpdateInterval
+		}
+		if nextInterval != currentInterval {
+			currentInterval = nextInterval
+			ticker.Reset(currentInterval)
+		}
+		l.mu.Unlock()
+
+		if probeDue {
+			l.parent.sendLaneProbe(l.id)
+		}
+		if ackStalled {
+			workerID, recovery := l.parent.recoverStalledLane(&l.id)
+			if recovery == laneRecoveryStarted {
+				l.parent.recordEvent("lane_send_recovery", "lane", "ack_progress_timeout", &workerID)
+			}
 		}
 	}
 }

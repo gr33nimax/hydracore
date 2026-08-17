@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.41
+
+- Deterministically sorted resolved TURN relay IPv4 addresses (`netip.Addr.Compare`) and distributed physical workers across distinct relay IPs via `preferred % len(addrs)` candidate rotation and fallback retry loop.
+- Halved per-lane cold start pacing rate to 2 Mbit/s (`lanePacingInitialBPS = 2_000_000 / 8`), providing an aggregate 8 Mbit/s start across four lanes closer to typical TURN policer knees.
+- Lowered absolute pacing floor to 512 Kbit/s (`lanePacingMinimumBPS = 512_000 / 8`) and clamped the pacing rate to an adaptive floor following 25% of measured delivered capacity.
+- Desynchronized per-lane pacing probing by offsetting probe deadlines by `laneID * 1s`, ensuring non-overlapping probe windows across all four lanes.
+- Implemented adaptive KCP ticking: extended ticker period to 40ms on fully quiesced lanes while preserving instant wake-up upon new input or application data.
+
 ## v1.13.16-extended-hydracore.11-debug.40
 
 - Gated pacing probe initiation on baseline application demand (`windowDemandBits == 0b11`),

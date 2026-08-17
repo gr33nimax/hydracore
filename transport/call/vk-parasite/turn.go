@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strings"
@@ -33,9 +34,10 @@ type CredentialProvider func(ctx context.Context, joinLink string) (TURNCredenti
 
 type managedTURNConn struct {
 	net.PacketConn
-	client    *turn.Client
-	base      io.Closer
-	closeOnce sync.Once
+	client      *turn.Client
+	base        io.Closer
+	turnAddress net.Addr
+	closeOnce   sync.Once
 }
 
 type turnEndpoint struct {
@@ -142,7 +144,7 @@ func allocateTURN(
 	for offset := 0; offset < len(destinations); offset++ {
 		metrics.Add(telemetry.TURNEndpointsTriedTotal, 1)
 		endpoint := destinations[offset]
-		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, endpoint)
+		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, endpoint, preferred)
 		if err == nil {
 			recordTURNEndpointSuccess(endpoint.rawURL)
 			metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
@@ -190,75 +192,93 @@ func allocateTURNEndpoint(
 	dnsRouter adapter.DNSRouter,
 	credentials TURNCredentials,
 	endpoint turnEndpoint,
+	preferred int,
 ) (net.PacketConn, error) {
-	turnAddress, err := resolveUDPAddress(ctx, dialer, dnsRouter, endpoint.destination, true)
+	addrs, err := resolveUDPAddresses(ctx, dialer, dnsRouter, endpoint.destination, true)
 	if err != nil {
 		return nil, err
 	}
-	resolvedDestination := M.SocksaddrFromNet(turnAddress)
-	var packetConn net.PacketConn
-	var base io.Closer
-	if endpoint.network == "udp" {
-		udpConn, listenErr := dialer.ListenPacket(ctx, resolvedDestination)
-		if listenErr != nil {
-			return nil, listenErr
-		}
-		if setter, ok := udpConn.(packetSocketBufferSetter); ok {
-			_ = setter.SetReadBuffer(2 * 1024 * 1024)
-			_ = setter.SetWriteBuffer(2 * 1024 * 1024)
-		}
-		packetConn = udpConn
-		base = udpConn
-	} else {
-		tcpConn, dialErr := dialer.DialContext(ctx, "tcp", resolvedDestination)
-		if dialErr != nil {
-			return nil, dialErr
-		}
-		stream := tcpConn
-		if endpoint.secure {
-			tlsConn := tls.Client(tcpConn, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: endpoint.serverName})
-			if handshakeErr := tlsConn.HandshakeContext(ctx); handshakeErr != nil {
-				_ = tcpConn.Close()
-				return nil, handshakeErr
+	n := len(addrs)
+	start := preferred % n
+	if start < 0 {
+		start += n
+	}
+	var lastErr error
+	for i := 0; i < n; i++ {
+		candidateAddr := addrs[(start+i)%n]
+		turnAddress := M.SocksaddrFrom(candidateAddr, endpoint.destination.Port).UDPAddr()
+		resolvedDestination := M.SocksaddrFrom(candidateAddr, endpoint.destination.Port)
+		var packetConn net.PacketConn
+		var base io.Closer
+		if endpoint.network == "udp" {
+			udpConn, listenErr := dialer.ListenPacket(ctx, resolvedDestination)
+			if listenErr != nil {
+				lastErr = listenErr
+				continue
 			}
-			stream = tlsConn
+			if setter, ok := udpConn.(packetSocketBufferSetter); ok {
+				_ = setter.SetReadBuffer(2 * 1024 * 1024)
+				_ = setter.SetWriteBuffer(2 * 1024 * 1024)
+			}
+			packetConn = udpConn
+			base = udpConn
+		} else {
+			tcpConn, dialErr := dialer.DialContext(ctx, "tcp", resolvedDestination)
+			if dialErr != nil {
+				lastErr = dialErr
+				continue
+			}
+			stream := tcpConn
+			if endpoint.secure {
+				tlsConn := tls.Client(tcpConn, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: endpoint.serverName})
+				if handshakeErr := tlsConn.HandshakeContext(ctx); handshakeErr != nil {
+					_ = tcpConn.Close()
+					lastErr = handshakeErr
+					continue
+				}
+				stream = tlsConn
+			}
+			packetConn = turn.NewSTUNConn(stream)
+			base = stream
 		}
-		packetConn = turn.NewSTUNConn(stream)
-		base = stream
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = packetConn.SetDeadline(deadline)
+		}
+		loggerFactory := logging.NewDefaultLoggerFactory()
+		loggerFactory.DefaultLogLevel = logging.LogLevelDisabled
+		client, clientErr := turn.NewClient(&turn.ClientConfig{
+			STUNServerAddr: turnAddress.String(),
+			TURNServerAddr: turnAddress.String(),
+			Username:       credentials.Username,
+			Password:       credentials.Credential,
+			Conn:           packetConn,
+			// A zero-value stdnet.Net resolves the already-pinned IP without the
+			// Android interface enumeration that can fail under VPN permissions.
+			Net:           new(stdnet.Net),
+			LoggerFactory: loggerFactory,
+		})
+		if clientErr != nil {
+			_ = base.Close()
+			lastErr = clientErr
+			continue
+		}
+		if listenErr := client.Listen(); listenErr != nil {
+			client.Close()
+			_ = base.Close()
+			lastErr = listenErr
+			continue
+		}
+		allocation, allocErr := client.Allocate()
+		if allocErr != nil {
+			client.Close()
+			_ = base.Close()
+			lastErr = allocErr
+			continue
+		}
+		_ = packetConn.SetDeadline(time.Time{})
+		return &managedTURNConn{PacketConn: allocation, client: client, base: base, turnAddress: turnAddress}, nil
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = packetConn.SetDeadline(deadline)
-	}
-	loggerFactory := logging.NewDefaultLoggerFactory()
-	loggerFactory.DefaultLogLevel = logging.LogLevelDisabled
-	client, err := turn.NewClient(&turn.ClientConfig{
-		STUNServerAddr: turnAddress.String(),
-		TURNServerAddr: turnAddress.String(),
-		Username:       credentials.Username,
-		Password:       credentials.Credential,
-		Conn:           packetConn,
-		// A zero-value stdnet.Net resolves the already-pinned IP without the
-		// Android interface enumeration that can fail under VPN permissions.
-		Net:           new(stdnet.Net),
-		LoggerFactory: loggerFactory,
-	})
-	if err != nil {
-		_ = base.Close()
-		return nil, err
-	}
-	if err = client.Listen(); err != nil {
-		client.Close()
-		_ = base.Close()
-		return nil, err
-	}
-	allocation, err := client.Allocate()
-	if err != nil {
-		client.Close()
-		_ = base.Close()
-		return nil, err
-	}
-	_ = packetConn.SetDeadline(time.Time{})
-	return &managedTURNConn{PacketConn: allocation, client: client, base: base}, nil
+	return nil, lastErr
 }
 
 func parseTURNURL(rawURL string) (turnEndpoint, error) {
@@ -317,21 +337,22 @@ func parseTURNUDPURL(rawURL string) (M.Socksaddr, error) {
 	return endpoint.destination, nil
 }
 
-func resolveUDPAddress(
+func resolveUDPAddresses(
 	ctx context.Context,
 	dialer N.Dialer,
 	dnsRouter adapter.DNSRouter,
 	destination M.Socksaddr,
 	requireIPv4 bool,
-) (*net.UDPAddr, error) {
+) ([]netip.Addr, error) {
 	if destination.Port == 0 || !destination.IsValid() {
 		return nil, errors.New("call vk_parasite: invalid UDP destination")
 	}
 	if destination.IsIP() {
-		if requireIPv4 && !destination.Addr.Unmap().Is4() {
+		addr := destination.Addr.Unmap()
+		if requireIPv4 && !addr.Is4() {
 			return nil, errors.New("call vk_parasite: TURN requires an IPv4 address")
 		}
-		return destination.Unwrap().UDPAddr(), nil
+		return []netip.Addr{addr}, nil
 	}
 	if dnsRouter == nil {
 		return nil, errors.New("call vk_parasite: DNS router unavailable")
@@ -344,12 +365,33 @@ func resolveUDPAddress(
 	if err != nil {
 		return nil, err
 	}
+	var filtered []netip.Addr
 	for _, address := range addresses {
 		address = address.Unmap()
 		if requireIPv4 && !address.Is4() {
 			continue
 		}
-		return M.SocksaddrFrom(address, destination.Port).UDPAddr(), nil
+		filtered = append(filtered, address)
 	}
-	return nil, errors.New("call vk_parasite: no usable address returned by DNS")
+	if len(filtered) == 0 {
+		return nil, errors.New("call vk_parasite: no usable address returned by DNS")
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Compare(filtered[j]) < 0
+	})
+	return filtered, nil
+}
+
+func resolveUDPAddress(
+	ctx context.Context,
+	dialer N.Dialer,
+	dnsRouter adapter.DNSRouter,
+	destination M.Socksaddr,
+	requireIPv4 bool,
+) (*net.UDPAddr, error) {
+	addrs, err := resolveUDPAddresses(ctx, dialer, dnsRouter, destination, requireIPv4)
+	if err != nil {
+		return nil, err
+	}
+	return M.SocksaddrFrom(addrs[0], destination.Port).UDPAddr(), nil
 }

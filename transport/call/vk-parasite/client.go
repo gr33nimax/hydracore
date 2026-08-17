@@ -349,6 +349,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 	if err != nil {
 		return nil, fmt.Errorf("worker %d TURN allocate: %w", workerID, err)
 	}
+	c.logger.Debug(fmt.Sprintf("call vk_parasite: worker %d allocated TURN relay %s", workerID, allocation.LocalAddr()))
 	codec, err := newRTPCodec(c.key)
 	if err != nil {
 		_ = allocation.Close()

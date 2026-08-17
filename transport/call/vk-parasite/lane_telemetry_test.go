@@ -172,3 +172,38 @@ func TestRetransmissionDebtShrinksNewDataBudget(t *testing.T) {
 	lane.retxRateBPS = 900_000
 	require.Equal(t, float64(laneNewDataFloorBPS), lane.newDataBudgetBPSLocked())
 }
+
+func TestAdaptivePacingFloorFollowsCapacity(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1, 0)
+
+	// 1. High capacity: floor is raised to 0.25 * deliveryCapacityBPS
+	lane := &kcpLane{
+		metrics:             telemetry.NewAccumulator(),
+		pacingStartup:       false,
+		pacingRateBPS:       100_000,
+		deliveryCapacityBPS: 1_000_000,
+		deliverySampleAt:    now.Add(-laneDeliverySampleWindow),
+		pacingNextProbe:     now.Add(10 * time.Minute),
+		state:               laneStateActive,
+		deliveryDemanded:    true,
+		outputPending:       make([]queuedSegment, laneKCPOutputBacklog),
+		minRTTMS:            50,
+		kcpSRTTMS:           150, // rttInflated -> congestionSignal
+		congestionSamples:   laneCongestionSamples,
+	}
+
+	// Under congestion backoff, pacing rate (100_000 * 0.85 = 85_000) is clamped up to
+	// floor = max(lanePacingMinimumBPS, 0.25 * 833_000) = 208_250 BPS (> 64_000).
+	lane.updateDeliveryController(now, 1)
+	require.Equal(t, 208_250.0, lane.pacingRateBPS)
+
+	// 2. Zero capacity: floor is absolute lanePacingMinimumBPS (512 Kbit/s = 64_000 BPS)
+	lane.deliveryCapacityBPS = 0
+	lane.pacingRateBPS = 10_000
+	lane.deliveryDemanded = true
+	lane.deliverySampleAt = now
+	lane.congestionSamples = laneCongestionSamples
+	lane.updateDeliveryController(now.Add(laneDeliverySampleWindow), 1)
+	require.Equal(t, float64(lanePacingMinimumBPS), lane.pacingRateBPS)
+}

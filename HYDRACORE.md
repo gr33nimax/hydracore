@@ -1,7 +1,7 @@
 # HydraCore distribution contract
 
 Current debug release:
-`v1.13.16-extended-hydracore.11-debug.40`.
+`v1.13.16-extended-hydracore.11-debug.41`.
 
 HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
 must use artifacts from the same release manifest and commit; mixed wire
@@ -108,6 +108,10 @@ UDP packet loss (`RcvbufErrors`):
   must be protected from looping back into the VPN interface, and socket buffers
   are explicitly sized to 2 MiB during TURN endpoint allocation.
 
+## TURN worker distribution and relay endpoint allocation
+
+To prevent all four physical workers from converging on the same TURN relay IP behind DNS round-robin and sharing a single per-IP policer, endpoint resolution deterministically sorts all resolved IPv4 addresses (`netip.Addr.Compare`) and rotates candidates by `workerID % len(addrs)`. Each candidate is attempted with full dial, STUN/TURN allocation and fallback on failure before escalating to other transports.
+
 ## Policer validation and performance criteria
 
 When traversing token-bucket rate limiters and policers (e.g. 8 Mbit/s cap with
@@ -116,6 +120,11 @@ When traversing token-bucket rate limiters and policers (e.g. 8 Mbit/s cap with
 - Retransmission share < 15% of transmitted bytes;
 - Goodput >= 90% of available bottleneck capacity without flow abort cascades;
 - Demand-gated pacing probes with low inconclusive noise.
+
+On heavy / lossy paths (policer <= 5.5 Mbit/s, loss >= 25%):
+- Offered-to-delivered ratio <= 1.7x;
+- Retransmission share <= 25% of transmitted bytes;
+- Goodput >= 90% of available bottleneck capacity without flow abort cascades.
 
 ## Known limitations
 

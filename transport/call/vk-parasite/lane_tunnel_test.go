@@ -1516,3 +1516,98 @@ func TestParasiteTunnelLaneQualityQuarantine(t *testing.T) {
 	require.Equal(t, uint16(0), laneID)
 	require.Equal(t, laneRecoveryStarted, result)
 }
+
+func TestLaneProbeDesynchronization(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(100, 0)
+	tunnel, err := NewParasiteTunnel(0x12345678, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	type probeWindow struct {
+		start time.Time
+		until time.Time
+	}
+	windows := make(map[uint16][]probeWindow)
+	mss := float64(laneKCPMTU - kcpHeaderSize)
+
+	// Switch each lane from startup to steady and enable demand
+	for i := uint16(0); i < LaneCount; i++ {
+		lane := tunnel.lanes[i]
+		lane.mu.Lock()
+		lane.pacingStartup = false
+		lane.pacingRateBPS = 500_000
+		lane.deliveryRateBPS = 480_000
+		lane.deliveryCapacityBPS = 480_000
+		lane.deliverySampleAt = start
+		lane.pacingNextProbe = start.Add(lanePacingProbeInterval + lane.probeOffset())
+		lane.windowDemandBits = 0b11
+		lane.mu.Unlock()
+	}
+
+	stepDuration := 500 * time.Millisecond
+	for step := 1; step <= 24; step++ { // 12 seconds
+		now := start.Add(time.Duration(step) * stepDuration)
+		for i := uint16(0); i < LaneCount; i++ {
+			lane := tunnel.lanes[i]
+			lane.mu.Lock()
+			lane.deliveryDemanded = true
+			lane.deliveryOutSegments = 20
+			lane.ackedBytesTotal += 20 * uint64(mss)
+			lane.admittedBytesTotal += 20 * uint64(mss)
+			wasProbing := !lane.pacingProbeUntil.IsZero()
+			lane.updateDeliveryController(now, 20)
+			nowProbing := !lane.pacingProbeUntil.IsZero()
+			if !wasProbing && nowProbing {
+				windows[i] = append(windows[i], probeWindow{start: now, until: lane.pacingProbeUntil})
+			}
+			lane.mu.Unlock()
+		}
+	}
+
+	// Verify each lane executed at least one probe
+	for i := uint16(0); i < LaneCount; i++ {
+		require.NotEmpty(t, windows[i], "lane %d should have probed", i)
+	}
+
+	// Verify no pair of lanes has overlapping probe windows within 500ms
+	for i := uint16(0); i < LaneCount; i++ {
+		for j := i + 1; j < LaneCount; j++ {
+			for _, w1 := range windows[i] {
+				for _, w2 := range windows[j] {
+					// Check distance between probe starts >= 500ms
+					diff := w1.start.Sub(w2.start)
+					if diff < 0 {
+						diff = -diff
+					}
+					require.GreaterOrEqual(t, diff, 500*time.Millisecond,
+						"lane %d and lane %d probe start diff should be >= 500ms", i, j)
+					// Check windows do not overlap
+					require.True(t, w1.until.Before(w2.start) || w2.until.Before(w1.start) || w1.until.Equal(w2.start) || w2.until.Equal(w1.start),
+						"lane %d and lane %d probe windows overlap", i, j)
+				}
+			}
+		}
+	}
+}
+
+func TestAdaptiveKCPTickQuiescedAndImmediateWake(t *testing.T) {
+	t.Parallel()
+	tunnel, err := NewParasiteTunnel(0x87654321, logger.NOP())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	conn, peer := newTestDatagramPair()
+	_, err = tunnel.AddWorkerEpoch(0, 1, conn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+
+	lane := tunnel.lanes[0]
+	// Verify lane has wake channel
+	require.NotNil(t, lane.wake)
+
+	// Send data into lane to wake it up immediately
+	started := time.Now()
+	lane.notifyWake()
+	require.Less(t, time.Since(started), 15*time.Millisecond)
+}

@@ -233,13 +233,13 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 			l.deliveryCapacityBPS = max(instantRate, lanePacingDecrease*l.deliveryCapacityBPS)
 			l.pacingStartup = false
 			l.pacingProbeUntil = time.Time{}
-			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+			l.pacingNextProbe = now.Add(lanePacingProbeInterval + l.probeOffset())
 			l.congestionSamples = 0
 		case l.pacingStartup && !congestionSignal && instantRate >= 0.55*l.pacingRateBPS:
 			l.pacingRateBPS *= lanePacingStartupGain
 			if l.pacingRateBPS >= lanePacingMaximumBPS {
 				l.pacingStartup = false
-				l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+				l.pacingNextProbe = now.Add(lanePacingProbeInterval + l.probeOffset())
 			}
 		case l.pacingStartup:
 			// Delivery stopped following the startup ramp. Enter the measured
@@ -247,7 +247,7 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 			// startup step or treating the retry ratio alone as congestion.
 			l.pacingRateBPS = l.steadyPacingTargetLocked()
 			l.pacingStartup = false
-			l.pacingNextProbe = now.Add(lanePacingProbeInterval)
+			l.pacingNextProbe = now.Add(lanePacingProbeInterval + l.probeOffset())
 		case !l.pacingStartup && !l.pacingProbeUntil.IsZero() && !now.Before(l.pacingProbeUntil):
 			l.evaluateProbeLocked(now)
 		case !l.pacingStartup && l.pacingProbeUntil.IsZero() && !now.Before(l.pacingNextProbe):
@@ -294,7 +294,11 @@ func (l *kcpLane) updateDeliveryController(now time.Time, ackedSegments int) {
 		} else if applicationLimited {
 			l.degradedLossSamples = 0
 		}
-		l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(float64(lanePacingMinimumBPS), l.pacingRateBPS))
+		// Floor follows a quarter of the measured delivered capacity, but never below
+		// the absolute floor — allowing the controller to back off below the policer edge.
+		// laneCompensationMaximum is intentionally not raised (>1.5x on policer loss self-amplifies drops).
+		floor := max(float64(lanePacingMinimumBPS), 0.25*l.deliveryCapacityBPS)
+		l.pacingRateBPS = min(float64(lanePacingMaximumBPS), max(floor, l.pacingRateBPS))
 		windowRTTMS := max(80, l.minRTTMS)
 		if l.minRTTMS <= 0 {
 			windowRTTMS = 80
@@ -403,7 +407,7 @@ func (l *kcpLane) evaluateProbeLocked(now time.Time) {
 				target = baselinePacing
 			}
 			l.pacingRateBPS = target
-			l.pacingNextProbe = now.Add(lanePacingProbeInterval << l.probeCooldownShift)
+			l.pacingNextProbe = now.Add((lanePacingProbeInterval << l.probeCooldownShift) + l.probeOffset())
 		} else {
 			l.pacingRateBPS = l.steadyPacingTargetLocked()
 		}

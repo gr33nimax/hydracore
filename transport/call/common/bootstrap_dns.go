@@ -1,5 +1,3 @@
-// ai-generated: multi-tier bootstrap dns resolver (DoT RFC 7858, UDP/TCP DNS) for whitelist environments
-
 package common
 
 import (

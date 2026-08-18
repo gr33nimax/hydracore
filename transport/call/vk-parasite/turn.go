@@ -125,7 +125,6 @@ func allocateTURN(
 		if parseErr == nil {
 			if endpoint.network == "udp" {
 				udpEndpoints = append(udpEndpoints, endpoint)
-				// ai-generated: synthesize TCP fallback endpoint in case UDP is dropped by cellular DPI
 				tcpFallback := endpoint
 				tcpFallback.network = "tcp"
 				tcpEndpoints = append(tcpEndpoints, tcpFallback)
@@ -348,7 +347,6 @@ func parseTURNUDPURL(rawURL string) (M.Socksaddr, error) {
 	return endpoint.destination, nil
 }
 
-// ai-generated: robust dns resolution with bootstrap doh fallback
 func resolveUDPAddresses(
 	ctx context.Context,
 	dialer N.Dialer,

@@ -35,7 +35,6 @@ func LoadCookies(path string) (string, error) {
 	return strings.Join(parts, "; "), nil
 }
 
-// ai-generated: fallback dialer through bootstrap doh for cellular whitelists
 func HttpClient(dialer N.Dialer) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{

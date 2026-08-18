@@ -1,7 +1,7 @@
 # HydraCore distribution contract
 
 Current debug release:
-`v1.13.16-extended-hydracore.11-debug.43`.
+`v1.13.16-extended-hydracore.11-debug.44`.
 
 HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
 must use artifacts from the same release manifest and commit; mixed wire

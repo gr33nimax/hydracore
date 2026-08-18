@@ -56,11 +56,13 @@ type turnEndpointScore struct {
 
 var turnEndpointQualityRegistry sync.Map
 
-func getTURNEndpointPenalty(rawURL string) int {
-	if rawURL == "" {
-		return 0
-	}
-	val, ok := turnEndpointQualityRegistry.Load(rawURL)
+func turnEndpointKey(endpoint turnEndpoint) string {
+	return endpoint.network + "://" + endpoint.destination.String()
+}
+
+func getTURNEndpointPenalty(endpoint turnEndpoint) int {
+	key := turnEndpointKey(endpoint)
+	val, ok := turnEndpointQualityRegistry.Load(key)
 	if !ok {
 		return 0
 	}
@@ -70,11 +72,9 @@ func getTURNEndpointPenalty(rawURL string) int {
 	return stat.failures
 }
 
-func recordTURNEndpointSuccess(rawURL string) {
-	if rawURL == "" {
-		return
-	}
-	val, _ := turnEndpointQualityRegistry.LoadOrStore(rawURL, &turnEndpointScore{})
+func recordTURNEndpointSuccess(endpoint turnEndpoint) {
+	key := turnEndpointKey(endpoint)
+	val, _ := turnEndpointQualityRegistry.LoadOrStore(key, &turnEndpointScore{})
 	stat := val.(*turnEndpointScore)
 	stat.mu.Lock()
 	stat.failures = max(0, stat.failures-1)
@@ -82,11 +82,9 @@ func recordTURNEndpointSuccess(rawURL string) {
 	stat.mu.Unlock()
 }
 
-func recordTURNEndpointFailure(rawURL string) {
-	if rawURL == "" {
-		return
-	}
-	val, _ := turnEndpointQualityRegistry.LoadOrStore(rawURL, &turnEndpointScore{})
+func recordTURNEndpointFailure(endpoint turnEndpoint) {
+	key := turnEndpointKey(endpoint)
+	val, _ := turnEndpointQualityRegistry.LoadOrStore(key, &turnEndpointScore{})
 	stat := val.(*turnEndpointScore)
 	stat.mu.Lock()
 	stat.failures++
@@ -126,6 +124,10 @@ func allocateTURN(
 		if parseErr == nil {
 			if endpoint.network == "udp" {
 				udpEndpoints = append(udpEndpoints, endpoint)
+				// ai-generated: synthesize TCP fallback endpoint in case UDP is dropped by cellular DPI
+				tcpFallback := endpoint
+				tcpFallback.network = "tcp"
+				tcpEndpoints = append(tcpEndpoints, tcpFallback)
 			} else {
 				tcpEndpoints = append(tcpEndpoints, endpoint)
 			}
@@ -146,13 +148,13 @@ func allocateTURN(
 		endpoint := destinations[offset]
 		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, endpoint, preferred)
 		if err == nil {
-			recordTURNEndpointSuccess(endpoint.rawURL)
+			recordTURNEndpointSuccess(endpoint)
 			metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
 			metrics.Set(telemetry.TURNSelectedEndpointOrdinal, float64(offset+1))
 			metrics.Add(telemetry.TURNAllocateSuccessTotal, 1)
 			return connection, nil
 		}
-		recordTURNEndpointFailure(endpoint.rawURL)
+		recordTURNEndpointFailure(endpoint)
 		lastErr = err
 	}
 	recordTURNFailure(ctx, metrics, started, workerID, "all_endpoints")
@@ -168,7 +170,7 @@ func rotateTURNEndpoints(endpoints []turnEndpoint, preferred int) []turnEndpoint
 	rotated = append(rotated, endpoints[start:]...)
 	rotated = append(rotated, endpoints[:start]...)
 	sort.SliceStable(rotated, func(i, j int) bool {
-		return getTURNEndpointPenalty(rotated[i].rawURL) < getTURNEndpointPenalty(rotated[j].rawURL)
+		return getTURNEndpointPenalty(rotated[i]) < getTURNEndpointPenalty(rotated[j])
 	})
 	return rotated
 }
@@ -241,7 +243,12 @@ func allocateTURNEndpoint(
 			packetConn = turn.NewSTUNConn(stream)
 			base = stream
 		}
-		if deadline, ok := ctx.Deadline(); ok {
+		allocTimeout := 4 * time.Second
+		if endpoint.network != "udp" {
+			allocTimeout = 10 * time.Second
+		}
+		allocCtx, cancelAlloc := context.WithTimeout(ctx, allocTimeout)
+		if deadline, ok := allocCtx.Deadline(); ok {
 			_ = packetConn.SetDeadline(deadline)
 		}
 		loggerFactory := logging.NewDefaultLoggerFactory()
@@ -258,17 +265,20 @@ func allocateTURNEndpoint(
 			LoggerFactory: loggerFactory,
 		})
 		if clientErr != nil {
+			cancelAlloc()
 			_ = base.Close()
 			lastErr = clientErr
 			continue
 		}
 		if listenErr := client.Listen(); listenErr != nil {
+			cancelAlloc()
 			client.Close()
 			_ = base.Close()
 			lastErr = listenErr
 			continue
 		}
 		allocation, allocErr := client.Allocate()
+		cancelAlloc()
 		if allocErr != nil {
 			client.Close()
 			_ = base.Close()
@@ -337,6 +347,7 @@ func parseTURNUDPURL(rawURL string) (M.Socksaddr, error) {
 	return endpoint.destination, nil
 }
 
+// ai-generated: robust dns resolution with bootstrap doh fallback
 func resolveUDPAddresses(
 	ctx context.Context,
 	dialer N.Dialer,
@@ -354,16 +365,27 @@ func resolveUDPAddresses(
 		}
 		return []netip.Addr{addr}, nil
 	}
-	if dnsRouter == nil {
-		return nil, errors.New("call vk_parasite: DNS router unavailable")
+	var addresses []netip.Addr
+	if dnsRouter != nil {
+		queryOptions := adapter.DNSQueryOptions{}
+		if resolveDialer, ok := dialer.(D.ResolveDialer); ok {
+			queryOptions = resolveDialer.QueryOptions()
+		}
+		var lookupErr error
+		addresses, lookupErr = dnsRouter.Lookup(ctx, destination.Fqdn, queryOptions)
+		if lookupErr != nil || len(addresses) == 0 {
+			addresses = nil
+		}
 	}
-	queryOptions := adapter.DNSQueryOptions{}
-	if resolveDialer, ok := dialer.(D.ResolveDialer); ok {
-		queryOptions = resolveDialer.QueryOptions()
-	}
-	addresses, err := dnsRouter.Lookup(ctx, destination.Fqdn, queryOptions)
-	if err != nil {
-		return nil, err
+	if len(addresses) == 0 {
+		ips, dohErr := common.ResolveBootstrapDomain(ctx, dialer, destination.Fqdn)
+		if dohErr == nil && len(ips) > 0 {
+			for _, ip := range ips {
+				if addr, ok := netip.AddrFromSlice(ip); ok {
+					addresses = append(addresses, addr.Unmap())
+				}
+			}
+		}
 	}
 	var filtered []netip.Addr
 	for _, address := range addresses {
@@ -374,7 +396,7 @@ func resolveUDPAddresses(
 		filtered = append(filtered, address)
 	}
 	if len(filtered) == 0 {
-		return nil, errors.New("call vk_parasite: no usable address returned by DNS")
+		return nil, errors.New("call vk_parasite: no usable address returned by DNS or Bootstrap DoH")
 	}
 	sort.Slice(filtered, func(i, j int) bool {
 		return filtered[i].Compare(filtered[j]) < 0

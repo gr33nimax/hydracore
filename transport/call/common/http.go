@@ -35,11 +35,34 @@ func LoadCookies(path string) (string, error) {
 	return strings.Join(parts, "; "), nil
 }
 
+// ai-generated: fallback dialer through bootstrap doh for cellular whitelists
 func HttpClient(dialer N.Dialer) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
+				conn, err := dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
+				if err == nil {
+					return conn, nil
+				}
+				host, port, splitErr := net.SplitHostPort(addr)
+				if splitErr != nil {
+					host = addr
+					port = "443"
+				}
+				if net.ParseIP(host) != nil {
+					return nil, err
+				}
+				ips, dohErr := ResolveBootstrapDomain(ctx, dialer, host)
+				if dohErr == nil && len(ips) > 0 {
+					for _, ip := range ips {
+						target := net.JoinHostPort(ip.String(), port)
+						bConn, bErr := dialer.DialContext(ctx, network, M.ParseSocksaddr(target))
+						if bErr == nil {
+							return bConn, nil
+						}
+					}
+				}
+				return nil, err
 			},
 		},
 	}

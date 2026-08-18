@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.42
+
+- Integrated autonomous RFC 8484 Bootstrap DoH resolver via direct TLS SNI `common.dot.dns.yandex.net` (77.88.8.8 / 77.88.8.1) with fallback to Google and Cloudflare for resolving VK signaling and TURN endpoints in cellular whitelist environments.
+- Added automatic fallback to Bootstrap DoH in `HttpClient` and `resolveUDPAddresses` when system or tunnel DNS is uninitialized or blocked.
+- Implemented automatic TCP fallback endpoint generation for UDP TURN allocations and added a 4-second fast-fail candidate timeout to switch to TCP STUN (`turn.NewSTUNConn`) under DPI UDP blackholing.
+
 ## v1.13.16-extended-hydracore.11-debug.41
 
 - Deterministically sorted resolved TURN relay IPv4 addresses (`netip.Addr.Compare`) and distributed physical workers across distinct relay IPs via `preferred % len(addrs)` candidate rotation and fallback retry loop.

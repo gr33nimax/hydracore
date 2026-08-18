@@ -19,6 +19,7 @@ import (
 	"github.com/pion/turn/v4"
 	"github.com/sagernet/sing-box/adapter"
 	D "github.com/sagernet/sing-box/common/dialer"
+	callcommon "github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -378,7 +379,7 @@ func resolveUDPAddresses(
 		}
 	}
 	if len(addresses) == 0 {
-		ips, dohErr := common.ResolveBootstrapDomain(ctx, dialer, destination.Fqdn)
+		ips, dohErr := callcommon.ResolveBootstrapDomain(ctx, dialer, destination.Fqdn)
 		if dohErr == nil && len(ips) > 0 {
 			for _, ip := range ips {
 				if addr, ok := netip.AddrFromSlice(ip); ok {

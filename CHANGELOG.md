@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.43
+
+- Replaced DoH with native RFC 7858 DNS-over-TLS (DoT) on port 853 (`77.88.8.8:853` / `77.88.8.1:853` with SNI `common.dot.dns.yandex.net`) and direct UDP/TCP DNS port 53 fallback, eliminating HTTP framing incompatibilities and ensuring instant resolution of VK signaling and TURN hosts in cellular whitelist environments.
+
 ## v1.13.16-extended-hydracore.11-debug.42
 
 - Integrated autonomous RFC 8484 Bootstrap DoH resolver via direct TLS SNI `common.dot.dns.yandex.net` (77.88.8.8 / 77.88.8.1) with fallback to Google and Cloudflare for resolving VK signaling and TURN endpoints in cellular whitelist environments.

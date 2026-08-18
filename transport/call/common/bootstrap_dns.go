@@ -1,10 +1,8 @@
-// ai-generated: bootstrap doh resolver for vk signaling and turn endpoints in whitelist environments
+// ai-generated: multi-tier bootstrap dns resolver (DoT RFC 7858, UDP/TCP DNS) for whitelist environments
 
 package common
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -12,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -28,20 +25,26 @@ type bootstrapCacheEntry struct {
 
 var (
 	bootstrapCache sync.Map
-	dohEndpoints   = []struct {
+
+	dotEndpoints = []struct {
 		address string
 		sni     string
 	}{
-		{address: "77.88.8.8:443", sni: "common.dot.dns.yandex.net"},
-		{address: "77.88.8.1:443", sni: "common.dot.dns.yandex.net"},
-		{address: "8.8.8.8:443", sni: "dns.google"},
-		{address: "1.1.1.1:443", sni: "cloudflare-dns.com"},
+		{address: "77.88.8.8:853", sni: "common.dot.dns.yandex.net"},
+		{address: "77.88.8.1:853", sni: "common.dot.dns.yandex.net"},
+		{address: "1.1.1.1:853", sni: "cloudflare-dns.com"},
+		{address: "8.8.8.8:853", sni: "dns.google"},
+	}
+
+	plainDNSEndpoints = []string{
+		"77.88.8.8:53",
+		"77.88.8.1:53",
 	}
 )
 
 // ResolveBootstrapDomain resolves critical domains (api.vk.me, login.vk.ru, calls.okcdn.ru)
-// directly via HTTPS DoH endpoints using fixed IP addresses, bypassing uninitialized or
-// blocked system/tunnel DNS in cellular whitelist environments.
+// directly via DoT (port 853) and plain DNS (port 53) using fixed IP addresses, bypassing
+// uninitialized or blocked system/tunnel DNS in cellular whitelist environments.
 func ResolveBootstrapDomain(ctx context.Context, dialer N.Dialer, domain string) ([]net.IP, error) {
 	domain = strings.TrimSpace(domain)
 	if domain == "" {
@@ -64,8 +67,10 @@ func ResolveBootstrapDomain(ctx context.Context, dialer N.Dialer, domain string)
 	}
 
 	var lastErr error
-	for _, ep := range dohEndpoints {
-		resp, queryErr := queryDoHEndpoint(ctx, dialer, ep.address, ep.sni, query)
+
+	// 1. Try DoT (RFC 7858) over port 853 to Yandex (and fallback to Cloudflare/Google)
+	for _, ep := range dotEndpoints {
+		resp, queryErr := queryDoTEndpoint(ctx, dialer, ep.address, ep.sni, query)
 		if queryErr != nil {
 			lastErr = queryErr
 			continue
@@ -83,10 +88,32 @@ func ResolveBootstrapDomain(ctx context.Context, dialer N.Dialer, domain string)
 			return ips, nil
 		}
 	}
-	if lastErr != nil {
-		return nil, fmt.Errorf("bootstrap doh failed for %s: %w", domain, lastErr)
+
+	// 2. Fallback to direct UDP/TCP DNS (port 53) to Yandex DNS
+	for _, ep := range plainDNSEndpoints {
+		resp, queryErr := queryPlainDNSEndpoint(ctx, dialer, ep, query)
+		if queryErr != nil {
+			lastErr = queryErr
+			continue
+		}
+		ips, parseErr := parseDNSResponse(resp)
+		if parseErr != nil {
+			lastErr = parseErr
+			continue
+		}
+		if len(ips) > 0 {
+			bootstrapCache.Store(domain, bootstrapCacheEntry{
+				ips:     ips,
+				expires: time.Now().Add(10 * time.Minute),
+			})
+			return ips, nil
+		}
 	}
-	return nil, fmt.Errorf("bootstrap doh failed for %s: no response", domain)
+
+	if lastErr != nil {
+		return nil, fmt.Errorf("bootstrap dns failed for %s: %w", domain, lastErr)
+	}
+	return nil, fmt.Errorf("bootstrap dns failed for %s: no response", domain)
 }
 
 func buildDNSQuery(domain string, qtype uint16) ([]byte, error) {
@@ -193,13 +220,13 @@ func skipDNSName(data []byte, offset int) (int, error) {
 	return 0, errors.New("unterminated name")
 }
 
-func queryDoHEndpoint(ctx context.Context, dialer N.Dialer, endpointHostPort string, sni string, query []byte) ([]byte, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+func queryDoTEndpoint(ctx context.Context, dialer N.Dialer, endpointHostPort string, sni string, query []byte) ([]byte, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 
 	conn, err := dialer.DialContext(reqCtx, "tcp", M.ParseSocksaddr(endpointHostPort))
 	if err != nil {
-		return nil, fmt.Errorf("dial doh %s: %w", endpointHostPort, err)
+		return nil, fmt.Errorf("dial dot %s: %w", endpointHostPort, err)
 	}
 	defer conn.Close()
 
@@ -211,33 +238,73 @@ func queryDoHEndpoint(ctx context.Context, dialer N.Dialer, endpointHostPort str
 		return nil, fmt.Errorf("tls handshake %s: %w", sni, err)
 	}
 
-	reqBuf := bytes.NewBuffer(nil)
-	fmt.Fprintf(reqBuf, "POST /dns-query HTTP/1.1\r\n")
-	fmt.Fprintf(reqBuf, "Host: %s\r\n", sni)
-	fmt.Fprintf(reqBuf, "User-Agent: %s\r\n", UserAgent)
-	fmt.Fprintf(reqBuf, "Accept: application/dns-message\r\n")
-	fmt.Fprintf(reqBuf, "Content-Type: application/dns-message\r\n")
-	fmt.Fprintf(reqBuf, "Content-Length: %d\r\n", len(query))
-	fmt.Fprintf(reqBuf, "Connection: close\r\n\r\n")
-	reqBuf.Write(query)
+	frame := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(frame[0:2], uint16(len(query)))
+	copy(frame[2:], query)
 
-	if _, err := tlsConn.Write(reqBuf.Bytes()); err != nil {
-		return nil, fmt.Errorf("write doh request: %w", err)
+	if _, err := tlsConn.Write(frame); err != nil {
+		return nil, fmt.Errorf("write dot request: %w", err)
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), nil)
+	lenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(tlsConn, lenBuf); err != nil {
+		return nil, fmt.Errorf("read dot length: %w", err)
+	}
+	respLen := int(binary.BigEndian.Uint16(lenBuf))
+	if respLen < 12 || respLen > 4096 {
+		return nil, fmt.Errorf("invalid dot response length %d", respLen)
+	}
+
+	respBuf := make([]byte, respLen)
+	if _, err := io.ReadFull(tlsConn, respBuf); err != nil {
+		return nil, fmt.Errorf("read dot body: %w", err)
+	}
+	return respBuf, nil
+}
+
+func queryPlainDNSEndpoint(ctx context.Context, dialer N.Dialer, endpointHostPort string, query []byte) ([]byte, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	// Try UDP first
+	udpConn, err := dialer.DialContext(reqCtx, "udp", M.ParseSocksaddr(endpointHostPort))
+	if err == nil {
+		defer udpConn.Close()
+		if _, err := udpConn.Write(query); err == nil {
+			buf := make([]byte, 2048)
+			if n, err := udpConn.Read(buf); err == nil && n >= 12 {
+				return buf[:n], nil
+			}
+		}
+	}
+
+	// Try TCP fallback
+	tcpConn, err := dialer.DialContext(reqCtx, "tcp", M.ParseSocksaddr(endpointHostPort))
 	if err != nil {
-		return nil, fmt.Errorf("read doh response: %w", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
+	defer tcpConn.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("doh status %d", resp.StatusCode)
+	frame := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(frame[0:2], uint16(len(query)))
+	copy(frame[2:], query)
+
+	if _, err := tcpConn.Write(frame); err != nil {
+		return nil, err
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
-	if err != nil {
-		return nil, fmt.Errorf("read doh body: %w", err)
+	lenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(tcpConn, lenBuf); err != nil {
+		return nil, err
 	}
-	return body, nil
+	respLen := int(binary.BigEndian.Uint16(lenBuf))
+	if respLen < 12 || respLen > 4096 {
+		return nil, fmt.Errorf("invalid dns response length %d", respLen)
+	}
+
+	respBuf := make([]byte, respLen)
+	if _, err := io.ReadFull(tcpConn, respBuf); err != nil {
+		return nil, err
+	}
+	return respBuf, nil
 }

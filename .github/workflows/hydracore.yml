@@ -145,6 +145,7 @@ jobs:
           cp libbox.aar dist/hydracore-client-libbox.aar
           cp libbox-sources.jar dist/hydracore-client-libbox-sources.jar
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
+          source release/UPSTREAM_BASELINE
           client_build_tags="${LIBBOX_BUILD_TAGS//with_call/with_call_client}"
           go run -tags "$client_build_tags" \
             -ldflags "-X github.com/sagernet/sing-box/constant.Version=${version}" \

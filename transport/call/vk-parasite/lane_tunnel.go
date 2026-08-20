@@ -2791,7 +2791,7 @@ func (t *ParasiteTunnel) transportHealthSnapshot() HC.TransportHealthSnapshot {
 	lastDemand := t.lastApplicationDemand.Load()
 	return HC.TransportHealthSnapshot{
 		ActiveLanes:             int32(t.UsableLanes()),
-		TotalLanes:              int(t.laneCount()),
+		TotalLanes:              int32(t.laneCount()),
 		Demand:                  lastDemand != 0 && now.Sub(time.Unix(0, lastDemand)) <= transportFailureLimit,
 		LastProgressAt:          time.Unix(0, t.lastProgress.Load()).UnixMilli(),
 		LastAggregateProgressAt: time.Unix(0, t.lastAggregateProgress.Load()).UnixMilli(),

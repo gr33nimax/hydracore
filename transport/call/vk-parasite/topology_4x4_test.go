@@ -147,7 +147,7 @@ func TestAuthRequestStructuralValidation(t *testing.T) {
 	// WorkerTotal > MaximumLaneCount (32)
 	invalidReq := validReq
 	invalidReq.WorkerTotal = MaximumLaneCount + 1
-	_, err = encodeAuthRequest(invalidReq)
+	_, err := encodeAuthRequest(invalidReq)
 	require.Error(t, err)
 
 	// WorkerID >= WorkerTotal
@@ -215,7 +215,7 @@ func TestWorkerTelemetrySnapshotGauges(t *testing.T) {
 	lane15.mu.Unlock()
 	lane15.flowCount.Store(5)
 
-	snapshots := tunnel.telemetryWorkerSnapshots(telemetry.LaneMetrics)
+	snapshots := tunnel.telemetryWorkerSnapshots(telemetry.TunnelMetrics)
 	require.Len(t, snapshots, int(LaneCount))
 
 	snap15 := snapshots[15]

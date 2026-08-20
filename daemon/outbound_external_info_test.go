@@ -9,9 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
-
-	"github.com/sagernet/sing-box/adapter"
 )
 
 func TestParseOutboundExternalInfo(t *testing.T) {
@@ -165,144 +162,52 @@ func TestFetchOutboundExternalInfoReportsAllSourceFailures(t *testing.T) {
 	}
 }
 
-func TestOutboundExternalInfoResolverSharesAndCachesLookup(t *testing.T) {
+func TestFetchOutboundExternalInfoRejectsOversizedResponse(t *testing.T) {
 	t.Parallel()
-	resolver := newOutboundExternalInfoResolver()
-	var fetchCount atomic.Int32
-	fetchStarted := make(chan struct{})
-	releaseFetch := make(chan struct{})
-	resolver.fetch = func(ctx context.Context, instanceContext context.Context, outbound adapter.Outbound) (outboundExternalInfo, error) {
-		if fetchCount.Add(1) == 1 {
-			close(fetchStarted)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		huge := make([]byte, externalInfoMaxBytes+100)
+		for i := range huge {
+			huge[i] = 'a'
 		}
-		select {
-		case <-ctx.Done():
-			return outboundExternalInfo{}, ctx.Err()
-		case <-releaseFetch:
-			return outboundExternalInfo{ip: "203.0.113.8", countryCode: "SE"}, nil
-		}
-	}
-	outbound := &testURLTestOutbound{tag: "proxy"}
-	instanceContext, cancelInstance := context.WithCancel(context.Background())
-	defer cancelInstance()
+		_, _ = writer.Write(huge)
+	}))
+	defer server.Close()
 
-	firstContext, cancelFirst := context.WithCancel(context.Background())
-	firstResult := make(chan error, 1)
-	go func() {
-		_, err := resolver.lookup(firstContext, instanceContext, outbound)
-		firstResult <- err
-	}()
-	<-fetchStarted
-	cancelFirst()
-	if err := <-firstResult; !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled waiter returned %v", err)
+	sources := []outboundExternalInfoSource{
+		{name: "oversized", endpoint: server.URL, parse: parsePlainExternalIP},
 	}
-
-	secondResult := make(chan struct {
-		info outboundExternalInfo
-		err  error
-	}, 1)
-	go func() {
-		info, err := resolver.lookup(context.Background(), instanceContext, outbound)
-		secondResult <- struct {
-			info outboundExternalInfo
-			err  error
-		}{info: info, err: err}
-	}()
-	close(releaseFetch)
-	result := <-secondResult
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
-	if result.info.ip != "203.0.113.8" || result.info.countryCode != "SE" {
-		t.Fatalf("unexpected lookup result: %#v", result.info)
-	}
-	if fetchCount.Load() != 1 {
-		t.Fatalf("shared lookup fetched %d times", fetchCount.Load())
-	}
-
-	cached, err := resolver.lookup(context.Background(), instanceContext, outbound)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cached != result.info || fetchCount.Load() != 1 {
-		t.Fatalf("cached lookup was not reused: info=%#v fetches=%d", cached, fetchCount.Load())
+	_, err := fetchOutboundExternalInfoFromSources(context.Background(), server.Client(), sources)
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected oversized response error, got: %v", err)
 	}
 }
 
-func TestOutboundExternalInfoResolverHonorsInstanceCancellation(t *testing.T) {
+func TestFetchOutboundExternalInfoHonorsContextCancellation(t *testing.T) {
 	t.Parallel()
-	resolver := newOutboundExternalInfoResolver()
-	resolver.fetch = func(ctx context.Context, instanceContext context.Context, outbound adapter.Outbound) (outboundExternalInfo, error) {
-		<-ctx.Done()
-		return outboundExternalInfo{}, ctx.Err()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		select {}
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	sources := []outboundExternalInfoSource{
+		{name: "cancelled", endpoint: server.URL, parse: parsePlainExternalIP},
 	}
-	instanceContext, cancelInstance := context.WithCancel(context.Background())
-	cancelInstance()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, err := resolver.lookup(ctx, instanceContext, &testURLTestOutbound{tag: "proxy"})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("instance cancellation returned %v", err)
+	_, err := fetchOutboundExternalInfoFromSources(ctx, server.Client(), sources)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
 }
 
-func TestOutboundExternalInfoResolverFallsBackToRecentStaleCache(t *testing.T) {
+func TestLookupOutboundExternalInfoRejectsInvalidRequest(t *testing.T) {
 	t.Parallel()
-	resolver := newOutboundExternalInfoResolver()
-	resolver.fetch = func(context.Context, context.Context, adapter.Outbound) (outboundExternalInfo, error) {
-		return outboundExternalInfo{}, errors.New("all external info services failed")
+	service := &StartedService{}
+	if _, err := service.LookupOutboundExternalInfo(context.Background(), nil); err == nil {
+		t.Fatal("nil request must be rejected")
 	}
-	want := outboundExternalInfo{ip: "203.0.113.11", countryCode: "SE"}
-	resolver.store("proxy", want, time.Now().Add(-externalInfoCacheTTL-time.Second))
-
-	got, err := resolver.lookup(context.Background(), context.Background(), &testURLTestOutbound{tag: "proxy"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != want {
-		t.Fatalf("unexpected stale cache result: got=%#v want=%#v", got, want)
-	}
-}
-
-func TestOutboundExternalInfoResolverRejectsExpiredStaleCache(t *testing.T) {
-	t.Parallel()
-	resolver := newOutboundExternalInfoResolver()
-	resolver.fetch = func(context.Context, context.Context, adapter.Outbound) (outboundExternalInfo, error) {
-		return outboundExternalInfo{}, errors.New("all external info services failed")
-	}
-	resolver.store("proxy", outboundExternalInfo{ip: "203.0.113.12", countryCode: "SE"}, time.Now().Add(-externalInfoStaleTTL-time.Second))
-
-	if _, err := resolver.lookup(context.Background(), context.Background(), &testURLTestOutbound{tag: "proxy"}); err == nil {
-		t.Fatal("expired stale cache must not hide a lookup failure")
-	}
-}
-
-func TestOutboundExternalInfoResolverPreservesCountryOnlyForSameIP(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name        string
-		fetchedIP   string
-		wantCountry string
-	}{
-		{name: "same IP", fetchedIP: "203.0.113.13", wantCountry: "FI"},
-		{name: "changed IP", fetchedIP: "203.0.113.14", wantCountry: ""},
-	}
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			resolver := newOutboundExternalInfoResolver()
-			resolver.store("proxy", outboundExternalInfo{ip: "203.0.113.13", countryCode: "FI"}, time.Now().Add(-externalInfoCacheTTL-time.Second))
-			resolver.fetch = func(context.Context, context.Context, adapter.Outbound) (outboundExternalInfo, error) {
-				return outboundExternalInfo{ip: test.fetchedIP}, nil
-			}
-			info, err := resolver.lookup(context.Background(), context.Background(), &testURLTestOutbound{tag: "proxy"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if info.countryCode != test.wantCountry {
-				t.Fatalf("unexpected country for %s: %q", test.fetchedIP, info.countryCode)
-			}
-		})
+	if _, err := service.LookupOutboundExternalInfo(context.Background(), &OutboundExternalInfoRequest{OutboundTag: "  "}); err == nil {
+		t.Fatal("blank outbound tag must be rejected")
 	}
 }

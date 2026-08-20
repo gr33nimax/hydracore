@@ -28,7 +28,6 @@ type Instance struct {
 	cacheFile             adapter.CacheFile
 	pauseManager          pause.Manager
 	urlTestHistoryStorage *urltest.HistoryStorage
-	externalInfoResolver  *outboundExternalInfoResolver
 }
 
 func (s *StartedService) CheckConfig(configContent string) error {
@@ -106,7 +105,6 @@ func (s *StartedService) newInstance(profileContent string, overrideOptions *Ove
 		ctx:                   ctx,
 		cancel:                cancel,
 		urlTestHistoryStorage: urlTestHistoryStorage,
-		externalInfoResolver:  newOutboundExternalInfoResolver(),
 	}
 	boxInstance, err := box.New(box.Options{
 		Context:           ctx,

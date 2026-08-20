@@ -18,7 +18,11 @@ import (
 )
 
 const (
-	LaneCount                = 4
+	LegacyLaneCount          = 4
+	CallCount                = 4
+	WorkersPerCall           = 4
+	LaneCount                = CallCount * WorkersPerCall // 16
+	MaximumLaneCount         = 32
 	laneKCPMTU               = 1000
 	laneKCPSendWindow        = 512
 	laneKCPReceiveWindow     = 512
@@ -37,7 +41,7 @@ const (
 	laneReorderFrameLimit    = 4096
 	laneSendRetryInterval    = 2 * time.Millisecond
 	laneDeliverySampleWindow = 500 * time.Millisecond
-	lanePacingInitialBPS          = 2_000_000 / 8 // Aggregate cold start across 4 lanes = 8 Mbit/s, closer to typical policer knee ~5.5 Mbit/s; accelerated via lanePacingStartupGain.
+	lanePacingInitialBPS          = lanePacingMinimumBPS // 512 Kbit/s minimum baseline.
 	lanePacingMinimumBPS          = 512_000 / 8   // 512 Kbit/s minimum baseline.
 	lanePacingMaximumBPS          = 25_000_000 / 8
 	lanePacingBucketSegments      = 16
@@ -137,7 +141,7 @@ const (
 type sendFlowState struct {
 	mu           sync.Mutex
 	nextSequence uint64
-	laneMask     uint8
+	laneMask     uint32
 	laneID       uint16
 	laneOwner    atomic.Uint32
 	abortStarted atomic.Bool
@@ -282,7 +286,7 @@ type kcpLane struct {
 type ParasiteTunnel struct {
 	logger logger.ContextLogger
 	seed   uint32
-	lanes  [LaneCount]*kcpLane
+	lanes  []*kcpLane
 
 	sendMu              sync.Mutex
 	sendFlows           map[uint32]*sendFlowState
@@ -307,20 +311,20 @@ type ParasiteTunnel struct {
 	fullyAttached         atomic.Bool
 	metrics               *telemetry.Accumulator
 
-	sendStallTimeout  time.Duration
-	laneRecoveryGrace time.Duration
-	reorderGapTimeout time.Duration
-	recoveryMu        sync.Mutex
-	recoveryActive    bool
-	recoveryLane      uint16
-	recoveryDeadline  time.Time
-	recoveryStartedAt  time.Time
+	sendStallTimeout    time.Duration
+	laneRecoveryGrace   time.Duration
+	reorderGapTimeout   time.Duration
+	recoveryMu          sync.Mutex
+	recoveryActive      bool
+	recoveryLane        uint16
+	recoveryDeadline    time.Time
+	recoveryStartedAt   time.Time
 	recoveryCooldown    time.Duration
 	recoveryReadyAt     time.Time
-	recoveryDeferred    uint8
-	recoveryPending     uint8
-	recoveryProgress    [LaneCount]int64
-	recoverySuggestedAt [LaneCount]time.Time
+	recoveryDeferred    uint32
+	recoveryPending     uint32
+	recoveryProgress    []int64
+	recoverySuggestedAt []time.Time
 	recoveryCoordinator atomic.Bool
 	sessionReplaceOnce  sync.Once
 
@@ -333,13 +337,20 @@ type ParasiteTunnel struct {
 	closeOnce               sync.Once
 }
 
-func NewParasiteTunnel(seed uint32, log logger.ContextLogger) (*ParasiteTunnel, error) {
-	return newParasiteTunnel(seed, log, nil)
+func (t *ParasiteTunnel) laneCount() uint16 {
+	return uint16(len(t.lanes))
 }
 
-func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry.Accumulator) (*ParasiteTunnel, error) {
+func NewParasiteTunnel(seed uint32, log logger.ContextLogger) (*ParasiteTunnel, error) {
+	return newParasiteTunnel(seed, LaneCount, log, nil)
+}
+
+func newParasiteTunnel(seed uint32, laneCount uint16, log logger.ContextLogger, metrics *telemetry.Accumulator) (*ParasiteTunnel, error) {
 	if seed == 0 {
 		return nil, errors.New("call vk_parasite: KCP seed must not be zero")
+	}
+	if laneCount == 0 || laneCount > MaximumLaneCount {
+		return nil, errors.New("call vk_parasite: invalid lane count")
 	}
 	if log == nil {
 		log = logger.NOP()
@@ -348,12 +359,15 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 		metrics = telemetry.NewAccumulator()
 	}
 	tunnel := &ParasiteTunnel{
-		logger:  log,
-		seed:    seed,
-		sendFlows:    make(map[uint32]*sendFlowState),
-		receiveFlows: make(map[uint32]*receiveFlowState),
-		metrics: metrics,
-		closed:  make(chan struct{}),
+		logger:              log,
+		seed:                seed,
+		lanes:               make([]*kcpLane, laneCount),
+		recoveryProgress:    make([]int64, laneCount),
+		recoverySuggestedAt: make([]time.Time, laneCount),
+		sendFlows:           make(map[uint32]*sendFlowState),
+		receiveFlows:        make(map[uint32]*receiveFlowState),
+		metrics:             metrics,
+		closed:              make(chan struct{}),
 	}
 	now := time.Now().UnixNano()
 	tunnel.lastActivity.Store(now)
@@ -364,7 +378,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 	tunnel.laneRecoveryGrace = defaultLaneRecoveryGrace
 	tunnel.recoveryCooldown = laneSendStallTimeout
 	tunnel.reorderGapTimeout = laneReorderGapTimeout
-	for index := 0; index < LaneCount; index++ {
+	for index := 0; index < int(laneCount); index++ {
 		laneNow := time.Now()
 		lane := &kcpLane{
 			id:               uint16(index),
@@ -383,7 +397,7 @@ func newParasiteTunnel(seed uint32, log logger.ContextLogger, metrics *telemetry
 			pacingTokens:     float64(lanePacingBucketSegments * (laneKCPMTU - kcpHeaderSize)),
 			pacingLastRefill: laneNow,
 			pacingStartup:    true,
-			pacingNextProbe:  laneNow.Add(lanePacingProbeInterval + time.Duration(index)*lanePacingProbeInterval/LaneCount),
+			pacingNextProbe:  laneNow.Add(lanePacingProbeInterval + time.Duration(index)*lanePacingProbeInterval/time.Duration(laneCount)),
 		}
 		lane.applicationLimited = true
 		lane.compensationCeiling = laneCompensationInitialCeiling
@@ -435,7 +449,7 @@ func (l *kcpLane) resetKCPLocked(generation uint64) {
 }
 
 func (l *kcpLane) probeOffset() time.Duration {
-	return time.Duration(l.id) * lanePacingProbeInterval / LaneCount
+	return time.Duration(l.id) * lanePacingProbeInterval / time.Duration(l.parent.laneCount())
 }
 
 func (l *kcpLane) notifyWake() {
@@ -634,7 +648,7 @@ func (t *ParasiteTunnel) SetTelemetryCollectionActive(active bool) {
 }
 
 func (t *ParasiteTunnel) telemetryWorker(id uint16) *telemetry.Accumulator {
-	if id >= LaneCount {
+	if id >= t.laneCount() {
 		return t.metrics
 	}
 	return t.lanes[id].metrics
@@ -706,7 +720,7 @@ func (t *ParasiteTunnel) reserveWorkerGeneration(id uint16, generation, epoch ui
 		return nil, errors.New("call vk_parasite: session already closed")
 	default:
 	}
-	if id >= LaneCount {
+	if id >= t.laneCount() {
 		return nil, errors.New("call vk_parasite: invalid lane id")
 	}
 	lane := t.lanes[id]
@@ -717,15 +731,15 @@ func (t *ParasiteTunnel) reserveWorkerGeneration(id uint16, generation, epoch ui
 	}
 	lane.mu.Unlock()
 	worker := &laneWorker{
-		id:        id,
-		epoch:     epoch,
+		id:         id,
+		epoch:      epoch,
 		generation: generation,
-		conn:      conn,
-		lane:      lane,
-		parent:    t,
-		metrics:   lane.metrics,
-		sendQueue: make(chan queuedSegment, laneSendQueueDepth),
-		done:      make(chan struct{}),
+		conn:       conn,
+		lane:       lane,
+		parent:     t,
+		metrics:    lane.metrics,
+		sendQueue:  make(chan queuedSegment, laneSendQueueDepth),
+		done:       make(chan struct{}),
 	}
 	worker.lastInbound.Store(time.Now().UnixNano())
 	lane.workerMu.Lock()
@@ -741,7 +755,7 @@ func (t *ParasiteTunnel) reserveWorkerGeneration(id uint16, generation, epoch ui
 	lane.worker = worker
 	lane.availabilityEpoch.Add(1)
 	lane.workerMu.Unlock()
-	if t.ActiveWorkers() == LaneCount {
+	if t.ActiveWorkers() == int(t.laneCount()) {
 		t.fullyAttached.Store(true)
 	}
 	lane.mu.Lock()
@@ -768,7 +782,7 @@ func (t *ParasiteTunnel) reserveWorkerGeneration(id uint16, generation, epoch ui
 }
 
 func (t *ParasiteTunnel) DropWorker(id uint16) {
-	if id >= LaneCount {
+	if id >= t.laneCount() {
 		return
 	}
 	lane := t.lanes[id]
@@ -893,7 +907,7 @@ func decodeLaneResetControl(payload []byte) (byte, uint16, uint64, bool) {
 	kind := payload[8]
 	laneID := binary.BigEndian.Uint16(payload[9:11])
 	generation := binary.BigEndian.Uint64(payload[11:19])
-	if laneID >= LaneCount || generation == 0 || kind < laneResetPrepare || kind > laneResetSuggest {
+	if laneID >= MaximumLaneCount || generation == 0 || kind < laneResetPrepare || kind > laneResetSuggest {
 		return 0, 0, 0, false
 	}
 	return kind, laneID, generation, true
@@ -905,7 +919,7 @@ func (t *ParasiteTunnel) broadcastLaneResetControl(kind byte, laneID uint16, gen
 		worker *laneWorker
 		depth  int
 	}
-	candidates := make([]candidate, 0, LaneCount)
+	candidates := make([]candidate, 0, len(t.lanes))
 	var targetFallback *laneWorker
 	for _, lane := range t.lanes {
 		lane.mu.Lock()
@@ -938,6 +952,9 @@ func (t *ParasiteTunnel) broadcastLaneResetControl(kind byte, laneID uint16, gen
 }
 
 func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, generation uint64) {
+	if laneID >= t.laneCount() {
+		return
+	}
 	lane := t.lanes[laneID]
 	switch kind {
 	case laneResetSuggest:
@@ -987,8 +1004,8 @@ func (t *ParasiteTunnel) handleLaneResetControl(kind byte, laneID uint16, genera
 			t.broadcastLaneResetControl(laneResetACK, laneID, generation)
 			lane.metrics.AddHot(telemetry.LaneResetAckTotal, 1)
 		}
-		if t.quarantinedLaneCount() >= 3 {
-			t.replaceSession("three_quarantined_lanes", &laneID)
+		if t.quarantinedLaneCount() >= (3*len(t.lanes)+3)/4 {
+			t.replaceSession("quarantined_lane_quorum", &laneID)
 		}
 	case laneResetACK:
 		lane.mu.Lock()
@@ -1049,7 +1066,7 @@ func (t *ParasiteTunnel) awaitPeerLaneResetCommit(laneID uint16, generation uint
 // Kept as a narrow compatibility shim for callers that still express recovery
 // in worker epochs. Wire v7 always turns that request into a generation reset.
 func (t *ParasiteTunnel) recyclePeerWorker(workerID uint16, epoch uint64) {
-	if workerID >= LaneCount {
+	if workerID >= t.laneCount() {
 		return
 	}
 	lane := t.lanes[workerID]
@@ -1408,7 +1425,7 @@ func (t *ParasiteTunnel) commitFlowFrame(connID uint32, msgType byte, state *sen
 		t.replayBytes.Add(int64(len(copy)))
 	}
 	state.nextSequence++
-	bit := uint8(1 << lane.id)
+	bit := uint32(1) << lane.id
 	if state.laneMask&bit == 0 {
 		state.laneMask |= bit
 		lane.flowCount.Add(1)
@@ -1452,8 +1469,8 @@ func (t *ParasiteTunnel) releaseFlowLanes(state *sendFlowState) {
 		state.replayBytes = 0
 		state.replay = nil
 	}
-	for laneID := uint16(0); laneID < LaneCount; laneID++ {
-		if state.laneMask&(1<<laneID) != 0 {
+	for laneID := uint16(0); laneID < t.laneCount(); laneID++ {
+		if state.laneMask&(uint32(1)<<laneID) != 0 {
 			t.lanes[laneID].flowCount.Add(-1)
 		}
 	}
@@ -1514,21 +1531,12 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 	ticker := time.NewTicker(laneSendRetryInterval)
 	timer := time.NewTimer(t.sendStallTimeout)
 	progress := func() int64 {
-		if preferred != nil && int(*preferred) < LaneCount {
+		if preferred != nil && *preferred < t.laneCount() {
 			return t.lanes[*preferred].lastAckProgress.Load()
 		}
 		return t.lastAggregateProgress.Load()
 	}
 	lastProgress := progress()
-	resetStallTimer := func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(t.sendStallTimeout)
-	}
 	defer ticker.Stop()
 	defer timer.Stop()
 	for {
@@ -1546,7 +1554,7 @@ func (t *ParasiteTunnel) sendEncoded(encoded []byte, wait bool, preferred *uint1
 			// waited longer than the fixed wall-clock interval.
 			if current := progress(); current > lastProgress {
 				lastProgress = current
-				resetStallTimer()
+				timer.Reset(t.sendStallTimeout)
 			}
 		case <-timer.C:
 			if current := progress(); current > lastProgress {
@@ -1596,17 +1604,18 @@ func (t *ParasiteTunnel) trySendEncoded(encoded []byte, required int, preferred 
 	// one TCP byte stream across independent calls converts a loss on either
 	// call into cross-lane head-of-line blocking and can no longer be recovered
 	// safely without an explicit migration fence.
-	if preferred != nil && int(*preferred) < LaneCount {
+	if preferred != nil && *preferred < t.laneCount() {
 		if t.trySendEncodedOnLane(t.lanes[*preferred], encoded, required, priority) {
 			return t.lanes[*preferred]
 		}
 		return nil
 	}
 
-	start := int((t.nextLane.Add(1) - 1) % LaneCount)
-	candidates := make([]laneCandidate, 0, LaneCount)
-	for offset := 0; offset < LaneCount; offset++ {
-		laneID := (start + offset) % LaneCount
+	count := int(t.laneCount())
+	start := int((t.nextLane.Add(1) - 1) % uint32(count))
+	candidates := make([]laneCandidate, 0, count)
+	for offset := 0; offset < count; offset++ {
+		laneID := (start + offset) % count
 		lane := t.lanes[laneID]
 		active, queueDepth := lane.workerState()
 		if !active {
@@ -1753,7 +1762,7 @@ func (t *ParasiteTunnel) recoverStalledLane(preferred *uint16) (uint16, laneReco
 
 func (t *ParasiteTunnel) recoverStalledLaneWithReason(preferred *uint16, reason string) (uint16, laneRecoveryResult) {
 	var selected *kcpLane
-	hasPreferred := preferred != nil && int(*preferred) < LaneCount
+	hasPreferred := preferred != nil && *preferred < t.laneCount()
 	if hasPreferred {
 		selected = t.lanes[*preferred]
 		active, _ := selected.workerState()
@@ -1830,15 +1839,15 @@ func (t *ParasiteTunnel) recoverStalledLaneWithReason(preferred *uint16, reason 
 		t.recoveryLane = workerID
 		t.recoveryStartedAt = now
 		t.recoveryDeadline = now.Add(t.laneResetHandshakeDeadline(workerID) + t.laneRecoveryGrace)
-		t.recoveryPending &^= uint8(1 << workerID)
+		t.recoveryPending &^= uint32(1) << workerID
 		t.recoveryProgress[workerID] = 0
 		t.recoveryDeferred = t.recoveryPending
 	}
 	if deferredReason != "" && !deferredDuplicate {
 		t.recoveryProgress[workerID] = selected.lastAckProgress.Load()
-		if t.recoveryDeferred&uint8(1<<workerID) == 0 {
-			t.recoveryDeferred |= uint8(1 << workerID)
-			t.recoveryPending |= uint8(1 << workerID)
+		if t.recoveryDeferred&(uint32(1)<<workerID) == 0 {
+			t.recoveryDeferred |= uint32(1) << workerID
+			t.recoveryPending |= uint32(1) << workerID
 			recordDeferred = true
 		}
 	}
@@ -1872,7 +1881,7 @@ func (t *ParasiteTunnel) recoverStalledLaneWithReason(preferred *uint16, reason 
 }
 
 func (t *ParasiteTunnel) medianActiveRetryRatio(excludeLane uint16) float64 {
-	retries := make([]float64, 0, LaneCount)
+	retries := make([]float64, 0, len(t.lanes))
 	for _, lane := range t.lanes {
 		if lane.id == excludeLane {
 			continue
@@ -1908,8 +1917,8 @@ func (t *ParasiteTunnel) completeLaneRecovery(laneID uint16) {
 		t.recoveryStartedAt = time.Time{}
 		t.recoveryReadyAt = time.Now().Add(t.recoveryCooldown)
 		t.recoveryDeferred = t.recoveryPending
-		for candidate := uint16(0); candidate < LaneCount; candidate++ {
-			if t.recoveryPending&uint8(1<<candidate) != 0 {
+		for candidate := uint16(0); candidate < t.laneCount(); candidate++ {
+			if t.recoveryPending&(uint32(1)<<candidate) != 0 {
 				nextLane = candidate
 				hasNext = true
 				delay = time.Until(t.recoveryReadyAt)
@@ -1939,10 +1948,10 @@ func (t *ParasiteTunnel) scheduleLaneRecovery(laneID uint16, delay time.Duration
 }
 
 func (t *ParasiteTunnel) resumeDeferredLaneRecovery(laneID uint16) {
-	if laneID >= LaneCount {
+	if laneID >= t.laneCount() {
 		return
 	}
-	bit := uint8(1 << laneID)
+	bit := uint32(1) << laneID
 	now := time.Now()
 	t.recoveryMu.Lock()
 	if t.recoveryPending&bit == 0 {
@@ -1980,8 +1989,8 @@ func (t *ParasiteTunnel) resumeDeferredLaneRecovery(laneID uint16) {
 	}
 	var nextLane uint16
 	hasNext := false
-	for candidate := uint16(0); candidate < LaneCount; candidate++ {
-		if t.recoveryPending&uint8(1<<candidate) != 0 {
+	for candidate := uint16(0); candidate < t.laneCount(); candidate++ {
+		if t.recoveryPending&(uint32(1)<<candidate) != 0 {
 			nextLane = candidate
 			hasNext = true
 			break
@@ -2020,7 +2029,7 @@ func (t *ParasiteTunnel) deferredLaneStillStalled(laneID uint16, progress int64,
 }
 
 func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
-	if laneID >= LaneCount {
+	if laneID >= t.laneCount() {
 		return false
 	}
 	if !t.recoveryCoordinator.Load() {
@@ -2060,7 +2069,7 @@ func (t *ParasiteTunnel) initiateLaneReset(laneID uint16, reason string) bool {
 }
 
 func (t *ParasiteTunnel) suggestLaneReset(laneID uint16) bool {
-	if laneID >= LaneCount {
+	if laneID >= t.laneCount() {
 		return false
 	}
 	lane := t.lanes[laneID]
@@ -2089,7 +2098,7 @@ func (t *ParasiteTunnel) suggestLaneReset(laneID uint16) bool {
 }
 
 func (t *ParasiteTunnel) laneResetHandshakeDeadline(laneID uint16) time.Duration {
-	if laneID >= LaneCount {
+	if laneID >= t.laneCount() {
 		return laneResetMinimumDeadline
 	}
 	lane := t.lanes[laneID]
@@ -2327,7 +2336,7 @@ func decodeLaneProbe(payload []byte) (byte, uint64, bool) {
 }
 
 func (t *ParasiteTunnel) sendLaneProbe(laneID uint16) {
-	if laneID >= LaneCount {
+	if laneID >= t.laneCount() {
 		return
 	}
 	lane := t.lanes[laneID]
@@ -2558,7 +2567,7 @@ func (t *ParasiteTunnel) UsableLanes() int {
 }
 
 func (t *ParasiteTunnel) WorkerEpoch(id uint16) (uint64, bool) {
-	if id >= LaneCount {
+	if id >= t.laneCount() {
 		return 0, false
 	}
 	lane := t.lanes[id]
@@ -2571,7 +2580,7 @@ func (t *ParasiteTunnel) WorkerEpoch(id uint16) (uint64, bool) {
 }
 
 func (t *ParasiteTunnel) workerReadyAfter(id uint16, previousEpoch uint64) bool {
-	if id >= LaneCount {
+	if id >= t.laneCount() {
 		return false
 	}
 	lane := t.lanes[id]
@@ -2589,7 +2598,7 @@ func (t *ParasiteTunnel) workerReadyAfter(id uint16, previousEpoch uint64) bool 
 }
 
 func (t *ParasiteTunnel) LaneGeneration(id uint16) uint64 {
-	if id >= LaneCount {
+	if id >= t.laneCount() {
 		return 0
 	}
 	lane := t.lanes[id]
@@ -2600,15 +2609,16 @@ func (t *ParasiteTunnel) LaneGeneration(id uint16) uint64 {
 }
 
 func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
+	count := float64(t.laneCount())
 	t.metrics.Set(telemetry.KCPMTUBytes, laneKCPMTU)
-	t.metrics.Set(telemetry.KCPSendWindowSegments, LaneCount*laneKCPSendWindow)
-	t.metrics.Set(telemetry.KCPReceiveWindowSegments, LaneCount*laneKCPReceiveWindow)
-	t.metrics.Set(telemetry.KCPMaxPendingSegments, LaneCount*laneKCPMaximumAdmission)
+	t.metrics.Set(telemetry.KCPSendWindowSegments, count*laneKCPSendWindow)
+	t.metrics.Set(telemetry.KCPReceiveWindowSegments, count*laneKCPReceiveWindow)
+	t.metrics.Set(telemetry.KCPMaxPendingSegments, count*laneKCPMaximumAdmission)
 	t.metrics.Set(telemetry.KCPUpdateIntervalMS, float64(laneKCPUpdateInterval/time.Millisecond))
 	t.metrics.Set(telemetry.KCPFastResend, laneKCPFastResend)
 	t.metrics.Set(telemetry.KCPCongestionControl, 0)
-	t.metrics.Set(telemetry.WorkerSendQueueCapacity, LaneCount*laneSendQueueDepth)
-	t.metrics.Set(telemetry.KCPOutputQueueCapacity, LaneCount*laneKCPOutputBacklog)
+	t.metrics.Set(telemetry.WorkerSendQueueCapacity, count*laneSendQueueDepth)
+	t.metrics.Set(telemetry.KCPOutputQueueCapacity, count*laneKCPOutputBacklog)
 	t.metrics.Set(telemetry.WorkerHeartbeatIntervalMS, float64(workerHeartbeatInterval/time.Millisecond))
 	t.metrics.Set(telemetry.WorkerLivenessTimeoutMS, float64(workerLivenessTimeout/time.Millisecond))
 	t.metrics.Set(telemetry.OuterRTPPayloadType, rtpPayloadTypeVideo)
@@ -2623,57 +2633,37 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	minimumRTT := 0.0
 	maxGeneration := uint64(0)
 	maxLaneState := laneStateActive
-	maxAckAge := 0.0
 	applicationLimited := 0
+	maxAckAge := 0.0
 	for _, lane := range t.lanes {
 		lane.mu.Lock()
-		laneWait := lane.kcp.WaitSnd()
-		waitSnd += laneWait
-		rtt := lane.kcpSRTTMS
-		rttVar := lane.kcpRTTVARMS
-		rto := 200.0
-		if rtt > 0 {
-			rto = max(30, rtt+max(10, 4*lane.kcpRTTVARMS))
+		waitSnd += lane.kcp.WaitSnd()
+		if lane.kcpSRTTMS > maxRTT {
+			maxRTT = lane.kcpSRTTMS
 		}
-		lane.metrics.Set(telemetry.KCPWaitSnd, float64(laneWait))
-		lane.metrics.Set(telemetry.KCPRTTMS, rtt)
-		lane.metrics.Set(telemetry.KCPRTOMS, rto)
-		lane.metrics.Set(telemetry.KCPRTTVarMS, rttVar)
-		lane.metrics.Set(telemetry.KCPInflightSegments, float64(len(lane.kcpSent)))
-		lane.metrics.Set(telemetry.KCPSendWindowSegments, laneKCPSendWindow)
-		lane.metrics.Set(telemetry.KCPReceiveWindowSegments, laneKCPReceiveWindow)
-		lane.metrics.Set(telemetry.KCPMaxPendingSegments, laneKCPMaximumAdmission)
-		lane.metrics.Set(telemetry.LaneCount, 1)
-		lane.metrics.Set(telemetry.LaneFlowCount, float64(lane.flowCount.Load()))
-		lane.metrics.Set(telemetry.LaneAdmissionRateBPS, lane.pacingRateBPS)
-		lane.metrics.Set(telemetry.LaneAdmissionWindowSegments, float64(lane.admissionWindow))
-		lane.metrics.Set(telemetry.LaneGeneration, float64(lane.generation))
-		lane.metrics.Set(telemetry.LaneState, float64(lane.state))
-		lane.metrics.Set(telemetry.LanePacingRateBPS, lane.pacingRateBPS)
-		lane.metrics.Set(telemetry.LaneDeliveredRateBPS, lane.deliveryRateBPS)
-		lane.metrics.Set(telemetry.LaneMinRTTMS, lane.minRTTMS)
-		lane.metrics.Set(telemetry.LaneInflightLimitSegments, float64(lane.admissionWindow))
-		lane.metrics.Set(telemetry.LaneApplicationLimited, boolFloat(lane.applicationLimited))
-		lane.metrics.Set(telemetry.LaneAckAgeSeconds, time.Since(time.Unix(0, lane.lastAckProgress.Load())).Seconds())
-		lane.metrics.Set(telemetry.KCPOutputQueueDepth, float64(len(lane.outputPending)))
-		lane.metrics.Set(telemetry.KCPOutputQueueCapacity, laneKCPOutputBacklog)
+		if rto := float64(lane.estimatedKCPRTO() / time.Millisecond); rto > maxRTO {
+			maxRTO = rto
+		}
 		outputDepth += len(lane.outputPending)
 		admissionWindow += lane.admissionWindow
 		admissionRate += lane.pacingRateBPS
 		deliveredRate += lane.deliveryRateBPS
-		if lane.minRTTMS > 0 && (minimumRTT == 0 || lane.minRTTMS < minimumRTT) {
+		if minimumRTT == 0 || (lane.minRTTMS > 0 && lane.minRTTMS < minimumRTT) {
 			minimumRTT = lane.minRTTMS
 		}
-		maxGeneration = max(maxGeneration, lane.generation)
-		maxLaneState = max(maxLaneState, lane.state)
-		maxAckAge = max(maxAckAge, time.Since(time.Unix(0, lane.lastAckProgress.Load())).Seconds())
+		if lane.generation > maxGeneration {
+			maxGeneration = lane.generation
+		}
+		if lane.state > maxLaneState {
+			maxLaneState = lane.state
+		}
 		if lane.applicationLimited {
 			applicationLimited++
 		}
-		lane.metrics.Set(telemetry.OuterRTPPayloadType, rtpPayloadTypeVideo)
+		if age := time.Since(time.Unix(0, lane.lastAckProgress.Load())).Seconds(); age > maxAckAge {
+			maxAckAge = age
+		}
 		lane.mu.Unlock()
-		maxRTT = max(maxRTT, rtt)
-		maxRTO = max(maxRTO, rto)
 		lane.workerMu.RLock()
 		if lane.worker != nil {
 			queueDepth += len(lane.worker.sendQueue)
@@ -2694,9 +2684,9 @@ func (t *ParasiteTunnel) TelemetryValues() map[telemetry.Metric]float64 {
 	t.metrics.Set(telemetry.LaneDeliveredRateBPS, deliveredRate)
 	t.metrics.Set(telemetry.LaneMinRTTMS, minimumRTT)
 	t.metrics.Set(telemetry.LaneInflightLimitSegments, float64(admissionWindow))
-	t.metrics.Set(telemetry.LaneApplicationLimited, float64(applicationLimited)/float64(LaneCount))
+	t.metrics.Set(telemetry.LaneApplicationLimited, float64(applicationLimited)/count)
 	t.metrics.Set(telemetry.LaneAckAgeSeconds, maxAckAge)
-	t.metrics.Set(telemetry.LaneCount, LaneCount)
+	t.metrics.Set(telemetry.LaneCount, count)
 	t.metrics.Set(telemetry.AggregateProgressAgeSeconds, time.Since(time.Unix(0, t.lastAggregateProgress.Load())).Seconds())
 	t.metrics.Set(telemetry.QuarantinedLanes, float64(t.quarantinedLaneCount()))
 	t.sendMu.Lock()
@@ -2715,7 +2705,7 @@ type workerTelemetrySnapshot struct {
 }
 
 func (t *ParasiteTunnel) telemetryWorkerSnapshots(metrics []telemetry.Metric) []workerTelemetrySnapshot {
-	result := make([]workerTelemetrySnapshot, 0, LaneCount)
+	result := make([]workerTelemetrySnapshot, 0, len(t.lanes))
 	for _, lane := range t.lanes {
 		lane.workerMu.RLock()
 		worker := lane.worker
@@ -2725,6 +2715,11 @@ func (t *ParasiteTunnel) telemetryWorkerSnapshots(metrics []telemetry.Metric) []
 		}
 		lane.workerMu.RUnlock()
 		lane.mu.Lock()
+		laneWait := lane.kcp.WaitSnd()
+		rtt := lane.kcpSRTTMS
+		rttVar := lane.kcpRTTVARMS
+		rto := float64(lane.estimatedKCPRTO()) / float64(time.Millisecond)
+		inflight := float64(len(lane.kcpSent))
 		outputDepth := float64(len(lane.outputPending))
 		admissionWindow := float64(lane.admissionWindow)
 		deliveryRate := lane.deliveryRateBPS
@@ -2735,10 +2730,21 @@ func (t *ParasiteTunnel) telemetryWorkerSnapshots(metrics []telemetry.Metric) []
 		applicationLimited := lane.applicationLimited
 		ackAge := time.Since(time.Unix(0, lane.lastAckProgress.Load())).Seconds()
 		lane.mu.Unlock()
+
 		lane.metrics.Set(telemetry.WorkerActive, boolFloat(worker != nil))
 		lane.metrics.Set(telemetry.WorkerSendQueueDepth, queueDepth)
+		lane.metrics.Set(telemetry.KCPWaitSnd, float64(laneWait))
+		lane.metrics.Set(telemetry.KCPRTTMS, rtt)
+		lane.metrics.Set(telemetry.KCPRTOMS, rto)
+		lane.metrics.Set(telemetry.KCPRTTVarMS, rttVar)
+		lane.metrics.Set(telemetry.KCPInflightSegments, inflight)
+		lane.metrics.Set(telemetry.KCPSendWindowSegments, laneKCPSendWindow)
+		lane.metrics.Set(telemetry.KCPReceiveWindowSegments, laneKCPReceiveWindow)
+		lane.metrics.Set(telemetry.KCPMaxPendingSegments, laneKCPMaximumAdmission)
 		lane.metrics.Set(telemetry.KCPOutputQueueDepth, outputDepth)
 		lane.metrics.Set(telemetry.KCPOutputQueueCapacity, laneKCPOutputBacklog)
+		lane.metrics.Set(telemetry.LaneCount, 1)
+		lane.metrics.Set(telemetry.LaneFlowCount, float64(lane.flowCount.Load()))
 		lane.metrics.Set(telemetry.LaneAdmissionWindowSegments, admissionWindow)
 		lane.metrics.Set(telemetry.LaneAdmissionRateBPS, pacingRate)
 		lane.metrics.Set(telemetry.LaneGeneration, float64(generation))
@@ -2749,6 +2755,7 @@ func (t *ParasiteTunnel) telemetryWorkerSnapshots(metrics []telemetry.Metric) []
 		lane.metrics.Set(telemetry.LaneInflightLimitSegments, admissionWindow)
 		lane.metrics.Set(telemetry.LaneApplicationLimited, boolFloat(applicationLimited))
 		lane.metrics.Set(telemetry.LaneAckAgeSeconds, ackAge)
+		lane.metrics.Set(telemetry.OuterRTPPayloadType, rtpPayloadTypeVideo)
 		result = append(result, workerTelemetrySnapshot{id: lane.id, metrics: lane.metrics.Snapshot(metrics)})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].id < result[j].id })
@@ -2784,7 +2791,7 @@ func (t *ParasiteTunnel) transportHealthSnapshot() HC.TransportHealthSnapshot {
 	lastDemand := t.lastApplicationDemand.Load()
 	return HC.TransportHealthSnapshot{
 		ActiveLanes:             int32(t.UsableLanes()),
-		TotalLanes:              LaneCount,
+		TotalLanes:              int(t.laneCount()),
 		Demand:                  lastDemand != 0 && now.Sub(time.Unix(0, lastDemand)) <= transportFailureLimit,
 		LastProgressAt:          time.Unix(0, t.lastProgress.Load()).UnixMilli(),
 		LastAggregateProgressAt: time.Unix(0, t.lastAggregateProgress.Load()).UnixMilli(),
@@ -2885,7 +2892,7 @@ func sessionNoProgressThreshold() time.Duration {
 
 func (t *ParasiteTunnel) pendingDataAndMedianRTO() (bool, time.Duration) {
 	pending := t.metrics.Value(telemetry.RelayQueueDepth) > 0
-	rtos := make([]float64, 0, LaneCount)
+	rtos := make([]float64, 0, len(t.lanes))
 	for _, lane := range t.lanes {
 		lane.mu.Lock()
 		pending = pending || lane.kcp.WaitSnd() > 0 || len(lane.outputPending) > 0
@@ -2932,7 +2939,7 @@ func (t *ParasiteTunnel) Close() error {
 		t.recoveryReadyAt = time.Time{}
 		t.recoveryDeferred = 0
 		t.recoveryPending = 0
-		t.recoverySuggestedAt = [LaneCount]time.Time{}
+		t.recoverySuggestedAt = make([]time.Time, len(t.lanes))
 		t.recoveryMu.Unlock()
 		if recoveryActive {
 			t.recordEvent("lane_send_recovery_escalated", "session", "session_close", &recoveryLane)

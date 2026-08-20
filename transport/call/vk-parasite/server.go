@@ -162,6 +162,10 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 	return server, nil
 }
 
+func supportedSessionLaneCount(total uint16) bool {
+	return total == LegacyLaneCount || total == LaneCount
+}
+
 func validateServerOptions(options ServerOptions) (ServerOptions, map[string]serverUser, error) {
 	if options.SessionHandler == nil {
 		return options, nil, errors.New("call vk_parasite: missing session handler")
@@ -181,8 +185,8 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	if options.MaxWorkersPerSession == 0 {
 		options.MaxWorkersPerSession = defaultMaxWorkers
 	}
-	if options.MaxWorkersPerSession != LaneCount {
-		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be four")
+	if options.MaxWorkersPerSession != LegacyLaneCount && options.MaxWorkersPerSession != LaneCount {
+		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be 4 or 16")
 	}
 	if options.MaxPendingHandshakes == 0 {
 		options.MaxPendingHandshakes = defaultMaxPendingHandshakes
@@ -552,7 +556,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		return
 	}
 	request, err := decodeAuthRequest(authBuffer[:n])
-	if err != nil || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
+	if err != nil || !supportedSessionLaneCount(request.WorkerTotal) || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
 		s.telemetry.metrics.Add(telemetry.AuthFailureTotal, 1)
 		s.telemetry.event("auth_failed", "inner_auth", "rejected", "", [16]byte{}, nil)
 		_, _ = conn.Write(encodeAuthAck(false, 0))
@@ -658,7 +662,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		closeServerSessions(evicted)
 		return nil, false, errors.New("call vk_parasite: initial lane generation must be one")
 	}
-	tunnel, err := NewParasiteTunnel(request.Conv, s.logger)
+	tunnel, err := newParasiteTunnel(request.Conv, request.WorkerTotal, s.logger, nil)
 	if err != nil {
 		s.sessionsMu.Unlock()
 		closeServerSessions(evicted)

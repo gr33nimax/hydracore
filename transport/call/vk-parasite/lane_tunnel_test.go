@@ -139,16 +139,16 @@ func TestParasiteTunnelUsesFourIndependentLanes(t *testing.T) {
 	})
 	connectTestLanes(t, client, server)
 
-	received := make(chan uint32, 8)
+	received := make(chan uint32, LaneCount)
 	server.SetOnData(func(frame []byte) {
 		_, _, ok := relayFrameIdentity(frame)
 		require.True(t, ok)
 		received <- binary.BigEndian.Uint32(frame[4:8])
 	})
-	for connID := uint32(1); connID <= 8; connID++ {
+	for connID := uint32(1); connID <= LaneCount; connID++ {
 		client.SendData(calltunnel.EncodeFrame(connID, calltunnel.MsgData, []byte{byte(connID)}))
 	}
-	for count := 0; count < 8; count++ {
+	for count := 0; count < LaneCount; count++ {
 		select {
 		case <-received:
 		case <-time.After(5 * time.Second):
@@ -269,7 +269,7 @@ func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T
 	})
 	connectTestLanes(t, client, server)
 
-	const packetCount = 8
+	const packetCount = LaneCount
 	received := make(chan byte, packetCount)
 	server.SetOnData(func(frame []byte) { received <- frame[9] })
 	seen := make(map[byte]struct{}, packetCount)
@@ -285,7 +285,7 @@ func TestParasiteTunnelStripesUDPWithoutCrossLaneHeadOfLineBlocking(t *testing.T
 	}
 	require.Len(t, seen, packetCount)
 	client.sendMu.Lock()
-	require.Equal(t, uint8((1<<LaneCount)-1), client.sendFlows[100].laneMask)
+	require.Equal(t, uint32((1<<LaneCount)-1), client.sendFlows[100].laneMask)
 	require.True(t, client.sendFlows[100].laneAssigned)
 	client.sendMu.Unlock()
 }
@@ -653,17 +653,24 @@ func TestParasiteTunnelRecycleSignalDetachesPeerLane(t *testing.T) {
 	})
 
 	leftConn, rightConn := newTestDatagramPair()
-	_, err = left.AddWorkerEpoch(0, 1, leftConn)
+	workerID := uint16(LaneCount - 1)
+	_, err = left.AddWorkerEpoch(workerID, 1, leftConn)
 	require.NoError(t, err)
-	_, err = right.AddWorkerEpoch(0, 1, rightConn)
+	_, err = right.AddWorkerEpoch(workerID, 1, rightConn)
 	require.NoError(t, err)
-	workerID := uint16(0)
 	recoveredID, result := left.recoverStalledLane(&workerID)
 	require.Equal(t, laneRecoveryStarted, result)
 	require.Equal(t, workerID, recoveredID)
 	require.Eventually(t, func() bool {
 		return left.ActiveWorkers() == 0 && right.ActiveWorkers() == 0
 	}, time.Second, 10*time.Millisecond)
+	replacementLeft, replacementRight := newTestDatagramPair()
+	_, err = left.AddWorkerEpoch(workerID, 2, replacementLeft)
+	require.NoError(t, err)
+	_, err = right.AddWorkerEpoch(workerID, 2, replacementRight)
+	require.NoError(t, err)
+	require.Equal(t, 1, left.ActiveWorkers())
+	require.Equal(t, 1, right.ActiveWorkers())
 	select {
 	case <-left.Done():
 		t.Fatal("lane recycle closed the left logical session")
@@ -836,7 +843,7 @@ func TestParasiteTunnelCancelsDeferredRecoveryAfterACKProgress(t *testing.T) {
 	tunnel.resumeDeferredLaneRecovery(second)
 
 	tunnel.recoveryMu.Lock()
-	require.Zero(t, tunnel.recoveryPending&uint8(1<<second))
+	require.Zero(t, tunnel.recoveryPending&(uint32(1)<<second))
 	tunnel.recoveryMu.Unlock()
 	tunnel.lanes[second].mu.Lock()
 	require.Equal(t, laneStateActive, tunnel.lanes[second].state)
@@ -1278,7 +1285,7 @@ func TestClientClosesImmediatelyWithLogicalTunnel(t *testing.T) {
 	}
 }
 
-func TestServerRequiresExactlyFourLanes(t *testing.T) {
+func TestServerWorkerBounds(t *testing.T) {
 	t.Parallel()
 	base := ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -1289,12 +1296,21 @@ func TestServerRequiresExactlyFourLanes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, LaneCount, normalized.MaxWorkersPerSession)
 	require.Equal(t, minimumPeerReadQueuePackets, normalized.PeerReadQueuePackets)
+	base.MaxWorkersPerSession = LegacyLaneCount - 1
+	_, _, err = validateServerOptions(base)
+	require.ErrorContains(t, err, "must be 4 or 16")
 	base.MaxWorkersPerSession = 8
 	_, _, err = validateServerOptions(base)
-	require.ErrorContains(t, err, "must be four")
-	base.MaxWorkersPerSession = LaneCount - 1
+	require.ErrorContains(t, err, "must be 4 or 16")
+	base.MaxWorkersPerSession = LegacyLaneCount
 	_, _, err = validateServerOptions(base)
-	require.ErrorContains(t, err, "must be four")
+	require.NoError(t, err)
+	base.MaxWorkersPerSession = LaneCount
+	_, _, err = validateServerOptions(base)
+	require.NoError(t, err)
+	base.MaxWorkersPerSession = HardMaxWorkers + 1
+	_, _, err = validateServerOptions(base)
+	require.ErrorContains(t, err, "must be 4 or 16")
 
 	server, err := NewServer(context.Background(), ServerOptions{
 		ObfsPassword: "outer-secret",
@@ -1545,8 +1561,8 @@ func TestLaneProbeDesynchronization(t *testing.T) {
 		lane.mu.Unlock()
 	}
 
-	stepDuration := 500 * time.Millisecond
-	for step := 1; step <= 24; step++ { // 12 seconds
+	stepDuration := 250 * time.Millisecond
+	for step := 1; step <= 48; step++ { // 12 seconds
 		now := start.Add(time.Duration(step) * stepDuration)
 		for i := uint16(0); i < LaneCount; i++ {
 			lane := tunnel.lanes[i]
@@ -1570,22 +1586,38 @@ func TestLaneProbeDesynchronization(t *testing.T) {
 		require.NotEmpty(t, windows[i], "lane %d should have probed", i)
 	}
 
-	// Verify no pair of lanes has overlapping probe windows within 500ms
-	for i := uint16(0); i < LaneCount; i++ {
-		for j := i + 1; j < LaneCount; j++ {
-			for _, w1 := range windows[i] {
-				for _, w2 := range windows[j] {
-					// Check distance between probe starts >= 500ms
-					diff := w1.start.Sub(w2.start)
-					if diff < 0 {
-						diff = -diff
+	// Verify probes within the same call slot (slot, slot+4, slot+8, slot+12) are spaced by ~1s,
+	// and adjacent lane IDs across different calls are spaced by ~250ms.
+	for callSlot := 0; callSlot < CallCount; callSlot++ {
+		for stepI := 0; stepI < WorkersPerCall; stepI++ {
+			i := uint16(callSlot + stepI*CallCount)
+			for stepJ := stepI + 1; stepJ < WorkersPerCall; stepJ++ {
+				j := uint16(callSlot + stepJ*CallCount)
+				for _, w1 := range windows[i] {
+					for _, w2 := range windows[j] {
+						diff := w1.start.Sub(w2.start)
+						if diff < 0 {
+							diff = -diff
+						}
+						require.GreaterOrEqual(t, diff, 500*time.Millisecond,
+							"same-call lane %d and lane %d probe start diff should be >= 500ms (expected ~1s)", i, j)
+						require.True(t, w1.until.Before(w2.start) || w2.until.Before(w1.start) || w1.until.Equal(w2.start) || w2.until.Equal(w1.start),
+							"same-call lane %d and lane %d probe windows overlap", i, j)
 					}
-					require.GreaterOrEqual(t, diff, 500*time.Millisecond,
-						"lane %d and lane %d probe start diff should be >= 500ms", i, j)
-					// Check windows do not overlap
-					require.True(t, w1.until.Before(w2.start) || w2.until.Before(w1.start) || w1.until.Equal(w2.start) || w2.until.Equal(w1.start),
-						"lane %d and lane %d probe windows overlap", i, j)
 				}
+			}
+		}
+	}
+	for i := uint16(0); i < LaneCount-1; i++ {
+		j := i + 1
+		for _, w1 := range windows[i] {
+			for _, w2 := range windows[j] {
+				diff := w1.start.Sub(w2.start)
+				if diff < 0 {
+					diff = -diff
+				}
+				require.GreaterOrEqual(t, diff, 200*time.Millisecond,
+					"adjacent lane %d and lane %d probe start diff should be >= 200ms (expected ~250ms)", i, j)
 			}
 		}
 	}

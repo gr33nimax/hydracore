@@ -32,6 +32,13 @@ type authRequest struct {
 	Password        string
 }
 
+func validWorkerMetadata(request authRequest) bool {
+	return request.Conv != 0 &&
+		request.WorkerTotal > 0 &&
+		request.WorkerTotal <= MaximumLaneCount &&
+		request.WorkerID < request.WorkerTotal
+}
+
 func encodeAuthRequest(request authRequest) ([]byte, error) {
 	if err := validateAuthStrings(request.User, request.Password); err != nil {
 		return nil, err
@@ -39,7 +46,7 @@ func encodeAuthRequest(request authRequest) ([]byte, error) {
 	if request.SessionID == ([16]byte{}) {
 		return nil, errors.New("call vk_parasite: zero session id")
 	}
-	if request.Conv == 0 || request.WorkerTotal != LaneCount || request.WorkerID >= LaneCount {
+	if !validWorkerMetadata(request) {
 		return nil, errors.New("call vk_parasite: invalid worker auth metadata")
 	}
 	if request.WorkerEpoch == 0 {
@@ -105,7 +112,7 @@ func decodeAuthRequest(frame []byte) (authRequest, error) {
 	if err := validateAuthStrings(request.User, request.Password); err != nil {
 		return request, err
 	}
-	if request.Conv == 0 || request.WorkerTotal != LaneCount || request.WorkerID >= LaneCount {
+	if !validWorkerMetadata(request) {
 		return request, errors.New("call vk_parasite: invalid auth worker metadata")
 	}
 	return request, nil

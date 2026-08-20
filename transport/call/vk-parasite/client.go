@@ -139,7 +139,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	if metrics == nil {
 		metrics = telemetry.NewAccumulator()
 	}
-	tunnel, err := newParasiteTunnel(conv, log, metrics)
+	tunnel, err := newParasiteTunnel(conv, uint16(options.Workers), log, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	go client.healthLoop()
 	for workerID := 0; workerID < options.Workers; workerID++ {
 		client.workers[workerID] = newClientWorkerControl()
-		go client.maintainWorker(uint16(workerID), options.JoinLinks[workerID%len(options.JoinLinks)])
+		go client.maintainWorker(uint16(workerID), workerJoinLink(options.JoinLinks, uint16(workerID)))
 	}
 	go client.monitorConnectivity()
 	deadline := time.Now().Add(options.WorkerConnectTimeout)
@@ -237,9 +237,9 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 		return options, errors.New("call vk_parasite: invalid obfs_password length")
 	}
 	if options.Workers == 0 {
-		options.Workers = LaneCount
+		options.Workers = LegacyLaneCount
 	}
-	if options.Workers != LaneCount {
+	if options.Workers != LegacyLaneCount {
 		return options, errors.New("call vk_parasite: exactly four VK lanes are required")
 	}
 	if options.WorkerConnectTimeout == 0 {
@@ -252,6 +252,11 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 		return options, errors.New("call vk_parasite: missing network dependencies")
 	}
 	return options, nil
+}
+
+func workerJoinLink(links []string, workerID uint16) string {
+	callIndex := int(workerID) % CallCount
+	return links[callIndex%len(links)]
 }
 
 func (c *Client) maintainWorker(workerID uint16, joinLink string) {

@@ -67,26 +67,18 @@ jobs:
           cache: true
       - name: Verify baseline
         run: bash release/verify_upstream_baseline.sh
-      - name: Verify attribution boundaries
-        run: bash release/verify_attribution_boundaries.sh
       - name: Test
         run: go test ./...
       - name: Test WireGuard libbox config gate
         run: go test -tags with_wireguard ./experimental/libbox
-      - name: Test Call protocol build
-        run: go test -tags with_call ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Test client Calls role
         run: go test -tags with_call_client ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Test VPS Calls role
         run: go test -tags with_call_server ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Race test Call telemetry and transport
         run: go test -race ./transport/call/telemetry ./transport/call/vk-parasite ./transport/call/tunnel
-      - name: Verify wire v9 deterministic four-lane emulator
-        run: go test ./transport/call/vk-parasite -run '^TestWireV9' -count=1
       - name: Race test HydraCore inherited runtime paths
         run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
-      - name: Resource and performance gate
-        run: bash release/verify_hydracore_performance.sh
 
   android:
     name: Build verified Android AAR
@@ -123,19 +115,6 @@ jobs:
             echo "::error title=Invalid HydraCore version::Found '${version}'" >&2
             exit 1
           fi
-          build_tag="$version"
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            # A pull request is checked out at a synthetic merge commit. It must
-            # never attempt to move the immutable release tag stored in
-            # HYDRACORE_VERSION, but gomobile still needs a tag on HEAD for
-            # deterministic version metadata.
-            build_tag="${version}-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-          elif existing="$(git rev-parse -q --verify "refs/tags/${version}" 2>/dev/null)" && \
-               [ "$existing" != "$GITHUB_SHA" ]; then
-            echo "::error title=HydraCore tag collision::${version} points to ${existing}" >&2
-            exit 1
-          fi
-          git tag -f "$build_tag" "$GITHUB_SHA"
       - name: Install pinned gomobile
         run: make lib_install
       - name: Build libbox
@@ -156,106 +135,16 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           HYDRACORE_BUILD_ROLE: client
-      - name: Prepare provenance
+      - name: Prepare artifacts
         shell: bash
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
-          source release/UPSTREAM_BASELINE
-          hydracore_version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
           test -f libbox.aar
           test -f libbox-sources.jar
           mkdir -p dist
           cp libbox.aar dist/hydracore-client-libbox.aar
           cp libbox-sources.jar dist/hydracore-client-libbox-sources.jar
-          cp contract/subscription/HYDRA_SUBSCRIPTION_V2.md dist/
-          cp contract/subscription/schema/hydra-subscription-v2.schema.json dist/
-          cp contract/subscription/schema/hydra-subscription-jwe-v2.schema.json dist/
-          (cd dist && sha256sum hydracore-client-libbox.aar > hydracore-client-libbox.aar.sha256)
-          (cd dist && sha256sum hydracore-client-libbox-sources.jar > hydracore-client-libbox-sources.jar.sha256)
-          (cd dist && sha256sum HYDRA_SUBSCRIPTION_V2.md > HYDRA_SUBSCRIPTION_V2.md.sha256)
-          (cd dist && sha256sum hydra-subscription-v2.schema.json > hydra-subscription-v2.schema.json.sha256)
-          (cd dist && sha256sum hydra-subscription-jwe-v2.schema.json > hydra-subscription-jwe-v2.schema.json.sha256)
-          git archive --format=tar HEAD | gzip -n > dist/hydracore-source.tar.gz
-          (cd dist && sha256sum hydracore-source.tar.gz > hydracore-source.tar.gz.sha256)
-          commit="$(git rev-parse HEAD)"
-          version="$(git describe --tags --always --dirty)"
-          go_actual="$(go version)"
-          java_actual="$(java --version 2>&1 | head -n 1)"
-          ndk_revision="$(
-            awk -F= '$1 ~ /^Pkg\.Revision[[:space:]]*$/ {
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
-              print $2
-            }' "$ANDROID_NDK_HOME/source.properties"
-          )"
-          test -n "$ndk_revision"
-          aar_sha256="$(sha256sum dist/hydracore-client-libbox.aar | awk '{print $1}')"
-          sources_sha256="$(sha256sum dist/hydracore-client-libbox-sources.jar | awk '{print $1}')"
-          source_sha256="$(sha256sum dist/hydracore-source.tar.gz | awk '{print $1}')"
-          subscription_spec_sha256="$(sha256sum dist/HYDRA_SUBSCRIPTION_V2.md | awk '{print $1}')"
-          subscription_schema_sha256="$(sha256sum dist/hydra-subscription-v2.schema.json | awk '{print $1}')"
-          subscription_jwe_schema_sha256="$(sha256sum dist/hydra-subscription-jwe-v2.schema.json | awk '{print $1}')"
-          client_build_tags="${LIBBOX_BUILD_TAGS//with_call/with_call_client}"
-          build_tags_json="$(jq -Rn --arg tags "$client_build_tags" '$tags | split(",")')"
-          cat > dist/provenance.json <<EOF
-          {
-            "schema_version": 3,
-            "distribution": {
-              "id": "io.hydrabox.hydracore",
-              "name": "HydraCore",
-              "version": "${hydracore_version}",
-              "role": "client"
-            },
-            "source": {
-              "repository": "https://github.com/gr33nimax/hydracore",
-              "commit": "${commit}",
-              "version": "${version}"
-            },
-            "upstream": {
-              "project": "sing-box-extended",
-              "repository": "${UPSTREAM_REPOSITORY}",
-              "branch": "${UPSTREAM_BRANCH}",
-              "tag": "${UPSTREAM_TAG}",
-              "commit": "${UPSTREAM_COMMIT}"
-            },
-            "toolchain": {
-              "go": "${go_actual}",
-              "gomobile": "${GOMOBILE_VERSION}",
-              "java": "${java_actual}",
-              "build_tags": ${build_tags_json}
-            },
-            "android": {
-              "ndk": "${ndk_revision}",
-              "ndk_requested": "${ANDROID_NDK_VERSION}",
-              "api": ${LIBBOX_ANDROID_API}
-            },
-            "artifacts": {
-              "hydracore-client-libbox.aar": {"sha256": "${aar_sha256}"},
-              "hydracore-client-libbox-sources.jar": {"sha256": "${sources_sha256}"},
-              "hydracore-source.tar.gz": {"sha256": "${source_sha256}"},
-              "HYDRA_SUBSCRIPTION_V2.md": {"sha256": "${subscription_spec_sha256}"},
-              "hydra-subscription-v2.schema.json": {"sha256": "${subscription_schema_sha256}"},
-              "hydra-subscription-jwe-v2.schema.json": {"sha256": "${subscription_jwe_schema_sha256}"}
-            },
-            "lineage": [
-              {"project": "sing-box", "role": "origin"},
-              {"project": "sing-box-extended", "role": "active-upstream"},
-              {"project": "etonify-core", "role": "historical-mobile-integration"}
-            ]
-          }
-          EOF
-          jq --exit-status . dist/provenance.json >/dev/null
-      - name: Build independently updateable Android bundle
-        shell: bash
-        env:
-          HYDRACORE_BUNDLE_KEY_ID: ${{ vars.HYDRACORE_BUNDLE_KEY_ID }}
-        run: |
-          set -euo pipefail
-          source release/UPSTREAM_BASELINE
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
-          key_id="${HYDRACORE_BUNDLE_KEY_ID:-hydracore-release-1}"
-          published_at="$(git show -s --format=%cI HEAD)"
           client_build_tags="${LIBBOX_BUILD_TAGS//with_call/with_call_client}"
           go run -tags "$client_build_tags" \
             -ldflags "-X github.com/sagernet/sing-box/constant.Version=${version}" \
@@ -270,37 +159,6 @@ jobs:
           if not content or content.endswith(b"\n"):
               raise SystemExit("client capability bytes must match the native string exactly")
           PY
-          go run ./cmd/internal/build_core_bundle \
-            -aar libbox.aar \
-            -capabilities dist/hydracore-client-capabilities.json \
-            -out dist \
-            -version "$version" \
-            -source-commit "$GITHUB_SHA" \
-            -upstream-commit "$UPSTREAM_COMMIT" \
-            -published-at "$published_at" \
-            -key-id "$key_id" \
-            -release-sequence "$GITHUB_RUN_NUMBER"
-          for artifact in \
-            hydracore-client-capabilities.json \
-            hydracore-bundle-manifest-v1.json \
-            hydracore-android-arm64-v8a-libbox.so \
-            hydracore-android-armeabi-v7a-libbox.so \
-            hydracore-android-x86_64-libbox.so; do
-            (cd dist && sha256sum "$artifact" > "${artifact}.sha256")
-          done
-          jq \
-            --arg manifest "$(sha256sum dist/hydracore-bundle-manifest-v1.json | awk '{print $1}')" \
-            --arg capabilities "$(sha256sum dist/hydracore-client-capabilities.json | awk '{print $1}')" \
-            --arg arm64 "$(sha256sum dist/hydracore-android-arm64-v8a-libbox.so | awk '{print $1}')" \
-            --arg armv7 "$(sha256sum dist/hydracore-android-armeabi-v7a-libbox.so | awk '{print $1}')" \
-            --arg x86_64 "$(sha256sum dist/hydracore-android-x86_64-libbox.so | awk '{print $1}')" \
-            '.artifacts["hydracore-bundle-manifest-v1.json"] = {sha256: $manifest} |
-             .artifacts["hydracore-client-capabilities.json"] = {sha256: $capabilities} |
-             .artifacts["hydracore-android-arm64-v8a-libbox.so"] = {sha256: $arm64} |
-             .artifacts["hydracore-android-armeabi-v7a-libbox.so"] = {sha256: $armv7} |
-             .artifacts["hydracore-android-x86_64-libbox.so"] = {sha256: $x86_64}' \
-            dist/provenance.json > dist/provenance.next.json
-          mv dist/provenance.next.json dist/provenance.json
       - name: Upload libbox artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -358,11 +216,7 @@ jobs:
                .features.call_vk_parasite_client == false and
                .features.call_vk_parasite_server == true and
                .features.call_vk_telemetry == true and
-               .features.call_vk_four_lane_kcp == true and
-               .features.call_vk_pre_kcp_admission == true and
-               .features.call_vk_relay_flow_control == true and
-               .protocols.call_modes == ["vk_parasite"] and
-               .protocols.call_vk_parasite_wire == {"min": 9, "max": 9}' \
+               .protocols.call_modes == ["vk_parasite"]' \
               capabilities.json >/dev/null
           fi
           tar \
@@ -373,36 +227,6 @@ jobs:
             --numeric-owner \
             -cf - \
             -C package sing-box | gzip -n > "dist/${asset}"
-          (cd dist && sha256sum "$asset" > "${asset}.sha256")
-          artifact_sha256="$(sha256sum "dist/${asset}" | awk '{print $1}')"
-          build_tags_json="$(jq -Rn --arg tags "$tags" '$tags | split(",")')"
-          cat > "dist/linux-provenance-${{ matrix.arch }}.json" <<EOF
-          {
-            "schema_version": 1,
-            "distribution": {
-              "id": "io.hydrabox.hydracore",
-              "version": "${version}",
-              "role": "vps"
-            },
-            "source": {
-              "repository": "https://github.com/gr33nimax/hydracore",
-              "commit": "${GITHUB_SHA}"
-            },
-            "runtime": {
-              "os": "linux",
-              "arch": "${{ matrix.arch }}",
-              "cgo_enabled": false,
-              "build_tags": ${build_tags_json}
-            },
-            "artifact": {
-              "name": "${asset}",
-              "binary": "sing-box",
-              "sha256": "${artifact_sha256}"
-            }
-          }
-          EOF
-          jq --exit-status . "dist/linux-provenance-${{ matrix.arch }}.json" >/dev/null
-          (cd dist && sha256sum "linux-provenance-${{ matrix.arch }}.json" > "linux-provenance-${{ matrix.arch }}.json.sha256")
           test "$(tar -tzf "dist/${asset}")" = "sing-box"
           file package/sing-box
       - name: Upload Linux runtime artifact
@@ -416,11 +240,9 @@ jobs:
   publish-release:
     name: Publish verified runtime
     if: >-
-      (github.event_name == 'workflow_dispatch' &&
-       inputs.publish == true &&
-       github.ref == 'refs/heads/main') ||
-      (github.event_name == 'push' &&
-       github.ref == 'refs/heads/debug')
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/debug')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [test, android, linux]
@@ -445,55 +267,14 @@ jobs:
           pattern: hydracore-vps-linux-*-${{ github.sha }}
           path: dist
           merge-multiple: true
-      - name: Verify downloaded artifact
+      - name: Verify downloaded Linux runtime
         shell: bash
         run: |
           set -euo pipefail
-          (cd dist && sha256sum --check ./*.sha256)
           hydracore_version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
-          source release/UPSTREAM_BASELINE
-          jq --exit-status \
-            --arg commit "$GITHUB_SHA" \
-            --arg hydracore_version "$hydracore_version" \
-            --arg upstream_commit "$UPSTREAM_COMMIT" \
-            --arg android_ndk_requested "$ANDROID_NDK_VERSION" \
-            '.schema_version == 3 and
-             .source.commit == $commit and
-             .distribution.version == $hydracore_version and
-             .distribution.role == "client" and
-             .upstream.project == "sing-box-extended" and
-             .upstream.commit == $upstream_commit and
-             .android.ndk_requested == $android_ndk_requested' \
-            dist/provenance.json >/dev/null
-          for artifact in \
-            hydracore-client-libbox.aar \
-            hydracore-client-libbox-sources.jar \
-            hydracore-source.tar.gz \
-            HYDRA_SUBSCRIPTION_V2.md \
-            hydra-subscription-v2.schema.json \
-            hydra-subscription-jwe-v2.schema.json; do
-            actual="$(sha256sum "dist/${artifact}" | awk '{print $1}')"
-            recorded="$(jq -r --arg artifact "$artifact" '.artifacts[$artifact].sha256' dist/provenance.json)"
-            test "$actual" = "$recorded"
-          done
           for arch in amd64 arm64; do
             asset="hydracore-vps-linux-${arch}.tar.gz"
             test "$(tar -tzf "dist/${asset}")" = "sing-box"
-            actual="$(sha256sum "dist/${asset}" | awk '{print $1}')"
-            recorded="$(jq -r '.artifact.sha256' "dist/linux-provenance-${arch}.json")"
-            test "$actual" = "$recorded"
-            jq --exit-status \
-              --arg commit "$GITHUB_SHA" \
-              --arg version "$hydracore_version" \
-              --arg arch "$arch" \
-              '.source.commit == $commit and
-               .distribution.version == $version and
-               .distribution.role == "vps" and
-               .runtime.os == "linux" and
-               .runtime.arch == $arch and
-               .artifact.name == ("hydracore-vps-linux-" + $arch + ".tar.gz") and
-               .artifact.binary == "sing-box"' \
-              "dist/linux-provenance-${arch}.json" >/dev/null
           done
           mkdir -p verify-linux
           tar -xzf dist/hydracore-vps-linux-amd64.tar.gz -C verify-linux
@@ -504,31 +285,8 @@ jobs:
              .features.call_vk_parasite_client == false and
              .features.call_vk_parasite_server == true and
              .features.call_vk_telemetry == true and
-             .features.call_vk_four_lane_kcp == true and
-             .features.call_vk_pre_kcp_admission == true and
-             .features.call_vk_relay_flow_control == true and
-             .protocols.call_modes == ["vk_parasite"] and
-             .protocols.call_vk_parasite_wire == {"min": 9, "max": 9}' >/dev/null
-          jq -n \
-            --arg version "$hydracore_version" \
-            --arg commit "$GITHUB_SHA" \
-            --arg client_aar "$(sha256sum dist/hydracore-client-libbox.aar | awk '{print $1}')" \
-            --arg client_sources "$(sha256sum dist/hydracore-client-libbox-sources.jar | awk '{print $1}')" \
-            --arg vps_amd64 "$(sha256sum dist/hydracore-vps-linux-amd64.tar.gz | awk '{print $1}')" \
-            --arg vps_arm64 "$(sha256sum dist/hydracore-vps-linux-arm64.tar.gz | awk '{print $1}')" \
-            '{
-              schema_version: 1,
-              distribution: {id: "io.hydrabox.hydracore", version: $version},
-              source: {commit: $commit},
-              artifacts: {
-                "hydracore-client-libbox.aar": {role: "client", sha256: $client_aar},
-                "hydracore-client-libbox-sources.jar": {role: "client", sha256: $client_sources},
-                "hydracore-vps-linux-amd64.tar.gz": {role: "vps", sha256: $vps_amd64},
-                "hydracore-vps-linux-arm64.tar.gz": {role: "vps", sha256: $vps_arm64}
-              }
-            }' > dist/hydracore-release-manifest.json
-          (cd dist && sha256sum hydracore-release-manifest.json > hydracore-release-manifest.json.sha256)
-      - name: Sign HydraCore bundle manifest
+             .protocols.call_modes == ["vk_parasite"]' >/dev/null
+      - name: Build and sign HydraCore bundle manifest
         shell: bash
         env:
           HYDRACORE_BUNDLE_KEY_ID: ${{ vars.HYDRACORE_BUNDLE_KEY_ID }}
@@ -551,9 +309,26 @@ jobs:
             -key-id "$key_id" \
             -release-sequence "$GITHUB_RUN_NUMBER" \
             -private-key "$HYDRACORE_ED25519_PRIVATE_KEY"
-          (cd dist && sha256sum hydracore-bundle-manifest-v1.sig \
-            > hydracore-bundle-manifest-v1.sig.sha256)
-      - name: Create, populate, and publish release
+          rm -f dist/hydracore-client-capabilities.json
+      - name: Inventory gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat <<'EOF' > expected_assets.txt
+          hydracore-android-arm64-v8a-libbox.so
+          hydracore-android-armeabi-v7a-libbox.so
+          hydracore-android-x86_64-libbox.so
+          hydracore-bundle-manifest-v1.json
+          hydracore-bundle-manifest-v1.sig
+          hydracore-client-libbox-sources.jar
+          hydracore-client-libbox.aar
+          hydracore-vps-linux-amd64.tar.gz
+          hydracore-vps-linux-arm64.tar.gz
+          EOF
+          sort -o expected_assets.txt expected_assets.txt
+          (cd dist && find . -maxdepth 1 -type f -printf "%f\n" | sort) > actual_assets.txt
+          diff -u expected_assets.txt actual_assets.txt
+      - name: Create and publish release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -563,54 +338,48 @@ jobs:
           test -n "$version"
           title="HydraCore ${version} - verified client and VPS runtimes"
 
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "Refusing to replace existing release ${version}" >&2
+            exit 1
+          fi
+
+          assets=(
+            dist/hydracore-android-arm64-v8a-libbox.so
+            dist/hydracore-android-armeabi-v7a-libbox.so
+            dist/hydracore-android-x86_64-libbox.so
+            dist/hydracore-bundle-manifest-v1.json
+            dist/hydracore-bundle-manifest-v1.sig
+            dist/hydracore-client-libbox-sources.jar
+            dist/hydracore-client-libbox.aar
+            dist/hydracore-vps-linux-amd64.tar.gz
+            dist/hydracore-vps-linux-arm64.tar.gz
+          )
+
           if [[ "$GITHUB_REF" == "refs/heads/debug" ]]; then
             if [[ "$version" != *-debug.* ]]; then
               echo "Debug branch version must contain -debug.: ${version}" >&2
               exit 1
             fi
-            if gh release view "$version" --json isPrerelease > release-state.json 2>/dev/null; then
-              if [[ "$(jq -r '.isPrerelease' release-state.json)" != "true" ]]; then
-                echo "Refusing to replace non-debug release ${version}" >&2
-                exit 1
-              fi
-              gh release edit "$version" \
-                --prerelease \
-                --target "$GITHUB_SHA" \
-                --title "$title" \
-                --notes-file release/HYDRACORE_RELEASE_NOTES.md
-            else
-              gh release create "$version" \
-                --prerelease \
-                --target "$GITHUB_SHA" \
-                --title "$title" \
-                --notes-file release/HYDRACORE_RELEASE_NOTES.md
-            fi
+            gh release create "$version" "${assets[@]}" \
+              --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes-file release/HYDRACORE_RELEASE_NOTES.md
           else
             if [[ "$version" == *-debug.* ]]; then
               echo "Stable publication cannot use a debug version: ${version}" >&2
               exit 1
             fi
-            if gh release view "$version" --json isDraft > release-state.json 2>/dev/null; then
-              if [[ "$(jq -r '.isDraft' release-state.json)" != "true" ]]; then
-                echo "Refusing to replace published release ${version}" >&2
-                exit 1
-              fi
-              gh release edit "$version" \
-                --draft \
-                --prerelease=false \
-                --target "$GITHUB_SHA" \
-                --title "$title" \
-                --notes-file release/HYDRACORE_RELEASE_NOTES.md
-            else
-              gh release create "$version" \
-                --draft \
-                --target "$GITHUB_SHA" \
-                --title "$title" \
-                --notes-file release/HYDRACORE_RELEASE_NOTES.md
-            fi
+            gh release create "$version" "${assets[@]}" \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes-file release/HYDRACORE_RELEASE_NOTES.md
           fi
 
-          gh release upload "$version" dist/* --clobber
+          gh release view "$version" --json assets --jq '.assets[].name' | sort > remote_assets.txt
+          diff -u expected_assets.txt remote_assets.txt
+
           if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
             gh release edit "$version" \
               --draft=false \

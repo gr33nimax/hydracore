@@ -117,7 +117,7 @@ func (c *Client) healthLoop() {
 			case health.Demand && progressAge >= transportFailureLimit:
 				health.State = HC.TransportStateFailed
 				health.Failure = &HC.TransportFailure{Stage: "transport", Kind: "no_progress", Code: "aggregate_timeout"}
-			case health.ActiveLanes == LaneCount && (!health.Demand || progressAge < transportDegradedLimit):
+			case health.ActiveLanes == health.TotalLanes && (!health.Demand || progressAge < transportDegradedLimit):
 				health.State = HC.TransportStateHealthy
 			case health.ActiveLanes > 0 && !rebinding:
 				health.State = HC.TransportStateDegraded

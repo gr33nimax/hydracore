@@ -47,7 +47,7 @@ func (t *ParasiteTunnel) handleFlowControlMessage(frame []byte) bool {
 		return false
 	}
 	targetConnID, sequence, laneID, valid := decodeFlowControlPayload(frame[9:])
-	if !valid || targetConnID == calltunnel.ControlConnID || laneID >= LaneCount && laneID != ^uint16(0) {
+	if !valid || targetConnID == calltunnel.ControlConnID || laneID >= t.laneCount() && laneID != ^uint16(0) {
 		return true
 	}
 	switch msgType {
@@ -196,7 +196,7 @@ func (t *ParasiteTunnel) migrateOrderedFlowContext(ctx context.Context, connID u
 	_ = t.sendFlowControl(calltunnel.MsgFlowState, connID, progress, target.id)
 	state.laneID = target.id
 	state.laneOwner.Store(uint32(target.id) + 1)
-	bit := uint8(1 << target.id)
+	bit := uint32(1) << target.id
 	if state.laneMask&bit == 0 {
 		state.laneMask |= bit
 		target.flowCount.Add(1)

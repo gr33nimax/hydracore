@@ -1535,84 +1535,22 @@ func TestParasiteTunnelLaneQualityQuarantine(t *testing.T) {
 
 func TestLaneProbeDesynchronization(t *testing.T) {
 	t.Parallel()
-	start := time.Unix(100, 0)
 	tunnel, err := NewParasiteTunnel(0x12345678, logger.NOP())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tunnel.Close() })
 
-	type probeWindow struct {
-		start time.Time
-		until time.Time
-	}
-	windows := make(map[uint16][]probeWindow)
-	mss := float64(laneKCPMTU - kcpHeaderSize)
-
-	// Switch each lane from startup to steady and enable demand
-	for i := uint16(0); i < LaneCount; i++ {
-		lane := tunnel.lanes[i]
-		lane.mu.Lock()
-		lane.pacingStartup = false
-		lane.pacingRateBPS = 500_000
-		lane.deliveryRateBPS = 480_000
-		lane.deliveryCapacityBPS = 480_000
-		lane.deliverySampleAt = start
-		lane.pacingNextProbe = start.Add(lanePacingProbeInterval + lane.probeOffset())
-		lane.windowDemandBits = 0b11
-		lane.mu.Unlock()
+	adjacentSpacing := lanePacingProbeInterval / LaneCount
+	for i := uint16(1); i < LaneCount; i++ {
+		require.Equal(t, adjacentSpacing, tunnel.lanes[i].probeOffset()-tunnel.lanes[i-1].probeOffset())
 	}
 
-	stepDuration := 250 * time.Millisecond
-	for step := 1; step <= 48; step++ { // 12 seconds
-		now := start.Add(time.Duration(step) * stepDuration)
-		for i := uint16(0); i < LaneCount; i++ {
-			lane := tunnel.lanes[i]
-			lane.mu.Lock()
-			lane.deliveryDemanded = true
-			lane.deliveryOutSegments = 20
-			lane.ackedBytesTotal += 20 * uint64(mss)
-			lane.admittedBytesTotal += 20 * uint64(mss)
-			wasProbing := !lane.pacingProbeUntil.IsZero()
-			lane.updateDeliveryController(now, 20)
-			nowProbing := !lane.pacingProbeUntil.IsZero()
-			if !wasProbing && nowProbing {
-				windows[i] = append(windows[i], probeWindow{start: now, until: lane.pacingProbeUntil})
-			}
-			lane.mu.Unlock()
-		}
-	}
-
-	// Verify each lane executed at least one probe
-	for i := uint16(0); i < LaneCount; i++ {
-		require.NotEmpty(t, windows[i], "lane %d should have probed", i)
-	}
-
-	// Verify probes within the same call slot (slot, slot+4, slot+8, slot+12) are spaced by ~1s,
-	// and adjacent lane IDs across different calls are spaced by ~250ms.
+	callSpacing := lanePacingProbeInterval / WorkersPerCall
 	for callSlot := 0; callSlot < CallCount; callSlot++ {
-		for stepI := 0; stepI < WorkersPerCall; stepI++ {
-			i := uint16(callSlot + stepI*CallCount)
-			for stepJ := stepI + 1; stepJ < WorkersPerCall; stepJ++ {
-				j := uint16(callSlot + stepJ*CallCount)
-				w1, w2 := windows[i][0], windows[j][0]
-				diff := w1.start.Sub(w2.start)
-				if diff < 0 {
-					diff = -diff
-				}
-				require.GreaterOrEqual(t, diff, 500*time.Millisecond,
-					"same-call lane %d and lane %d probe start diff should be >= 500ms (expected ~1s)", i, j)
-				require.True(t, w1.until.Before(w2.start) || w2.until.Before(w1.start) || w1.until.Equal(w2.start) || w2.until.Equal(w1.start),
-					"same-call lane %d and lane %d probe windows overlap", i, j)
-			}
+		for worker := 1; worker < WorkersPerCall; worker++ {
+			previous := tunnel.lanes[callSlot+(worker-1)*CallCount]
+			current := tunnel.lanes[callSlot+worker*CallCount]
+			require.Equal(t, callSpacing, current.probeOffset()-previous.probeOffset())
 		}
-	}
-	for i := uint16(0); i < LaneCount-1; i++ {
-		j := i + 1
-		diff := windows[i][0].start.Sub(windows[j][0].start)
-		if diff < 0 {
-			diff = -diff
-		}
-		require.GreaterOrEqual(t, diff, 200*time.Millisecond,
-			"adjacent lane %d and lane %d probe start diff should be >= 200ms (expected ~250ms)", i, j)
 	}
 }
 

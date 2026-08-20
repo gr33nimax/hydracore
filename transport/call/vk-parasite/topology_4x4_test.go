@@ -173,7 +173,7 @@ func TestQuarantineQuorumThresholds(t *testing.T) {
 	t.Parallel()
 
 	for _, laneCount := range []int{LegacyLaneCount, LaneCount} {
-		tunnel, err := newParasiteTunnel(uint32(laneCount), laneCount, logger.NOP(), nil)
+		tunnel, err := newParasiteTunnel(uint32(laneCount), uint16(laneCount), logger.NOP(), nil)
 		require.NoError(t, err)
 		quorum := (3*laneCount + 3) / 4
 		for laneID := 0; laneID < quorum-1; laneID++ {

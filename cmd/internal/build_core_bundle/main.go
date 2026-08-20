@@ -128,7 +128,7 @@ func run() error {
 		SourceCommit:          sourceCommit,
 		UpstreamCommit:        upstreamCommit,
 		PublishedAt:           published.UTC().Format(time.RFC3339),
-		CoreAPIMajor:          1,
+		CoreAPIMajor:          2,
 		CoreAPIMinor:          0,
 		RuntimeSnapshotSchema: schemaRange{Min: 1, Max: 1},
 		RuntimeEventSchema:    schemaRange{Min: 1, Max: 1},

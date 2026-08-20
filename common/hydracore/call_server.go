@@ -7,8 +7,6 @@ const (
 	callClientEnabled = false
 	callServerEnabled = true
 	distributionRole  = "vps"
-	callWireMin       = 9
-	callWireMax       = 9
 )
 
 var (

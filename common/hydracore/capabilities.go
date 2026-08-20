@@ -35,30 +35,16 @@ type FeatureSet struct {
 	CallVKParasiteClient         bool `json:"call_vk_parasite_client"`
 	CallVKParasiteServer         bool `json:"call_vk_parasite_server"`
 	CallVKTelemetry              bool `json:"call_vk_telemetry"`
-	CallVKEightLaneKCP           bool `json:"call_vk_eight_lane_kcp"`
-	CallVKFourLaneKCP            bool `json:"call_vk_four_lane_kcp"`
-	CallVKPreKCPAdmission        bool `json:"call_vk_pre_kcp_admission"`
-	CallVKRelayFlowControl       bool `json:"call_vk_relay_flow_control"`
-	CallVKWorkerHotSwap          bool `json:"call_vk_worker_hot_swap"`
-	CallVKFlowMigration          bool `json:"call_vk_flow_migration"`
-	CallVKTurnTCPFallback        bool `json:"call_vk_turn_tcp_fallback"`
-	CallVKTransportHealth        bool `json:"call_vk_transport_health"`
 	VKAuthChallenges             bool `json:"vk_auth_challenges"`
 	AmneziaVersion               int  `json:"amnezia_version"`
 }
 
 type ProtocolSet struct {
-	Inbounds            []string          `json:"inbounds"`
-	Outbounds           []string          `json:"outbounds"`
-	Endpoints           []string          `json:"endpoints"`
-	CallPlatforms       []string          `json:"call_platforms"`
-	CallModes           []string          `json:"call_modes"`
-	CallVKParasiteWire  WireCompatibility `json:"call_vk_parasite_wire"`
-}
-
-type WireCompatibility struct {
-	Min int `json:"min"`
-	Max int `json:"max"`
+	Inbounds      []string `json:"inbounds"`
+	Outbounds     []string `json:"outbounds"`
+	Endpoints     []string `json:"endpoints"`
+	CallPlatforms []string `json:"call_platforms"`
+	CallModes     []string `json:"call_modes"`
 }
 
 type RemotePolicy struct {
@@ -136,24 +122,15 @@ func Capabilities() CapabilitySet {
 			CallVKParasiteClient:         callClientEnabled,
 			CallVKParasiteServer:         callServerEnabled,
 			CallVKTelemetry:              callEnabled,
-			CallVKEightLaneKCP:           false,
-			CallVKFourLaneKCP:            callEnabled,
-			CallVKPreKCPAdmission:        callEnabled,
-			CallVKRelayFlowControl:       callEnabled,
-			CallVKWorkerHotSwap:          callEnabled,
-			CallVKFlowMigration:          callEnabled,
-			CallVKTurnTCPFallback:        callEnabled,
-			CallVKTransportHealth:        callEnabled,
 			VKAuthChallenges:             callClientEnabled,
 			AmneziaVersion:               3,
 		},
 		Protocols: ProtocolSet{
-			Inbounds:            append([]string(nil), safeInboundTypes...),
-			Outbounds:           append([]string(nil), safeOutboundTypes...),
-			Endpoints:           []string{"wireguard"},
-			CallPlatforms:       append([]string(nil), callPlatforms...),
-			CallModes:           append([]string(nil), callModes...),
-			CallVKParasiteWire:  WireCompatibility{Min: callWireMin, Max: callWireMax},
+			Inbounds:      append([]string(nil), safeInboundTypes...),
+			Outbounds:     append([]string(nil), safeOutboundTypes...),
+			Endpoints:     []string{"wireguard"},
+			CallPlatforms: append([]string(nil), callPlatforms...),
+			CallModes:     append([]string(nil), callModes...),
 		},
 		TUNStacks:              []string{"system", "gvisor", "mixed"},
 		XHTTPModes:             []string{"packet-up", "stream-up", "stream-one"},

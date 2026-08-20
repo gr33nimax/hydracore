@@ -47,7 +47,7 @@ func TestHydraSubscriptionV2AcceptsCallInboundAndOutbound(t *testing.T) {
 func TestHydraSubscriptionV2AcceptsVKParasiteCall(t *testing.T) {
 	content := strings.Replace(validHydraSubscriptionJSON(),
 		`"features":["rmux"]`,
-		`"features":["rmux","call","call_vk_parasite","call_vk_four_lane_kcp","call_vk_pre_kcp_admission","call_vk_relay_flow_control"]`,
+		`"features":["rmux","call","call_vk_parasite"]`,
 		1,
 	)
 	content = strings.Replace(content,

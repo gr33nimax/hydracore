@@ -237,10 +237,10 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 		return options, errors.New("call vk_parasite: invalid obfs_password length")
 	}
 	if options.Workers == 0 {
-		options.Workers = LegacyLaneCount
+		options.Workers = LaneCount
 	}
-	if options.Workers != LegacyLaneCount {
-		return options, errors.New("call vk_parasite: exactly four VK lanes are required")
+	if options.Workers != LaneCount {
+		return options, errors.New("call vk_parasite: exactly sixteen VK lanes are required")
 	}
 	if options.WorkerConnectTimeout == 0 {
 		options.WorkerConnectTimeout = 30 * time.Second

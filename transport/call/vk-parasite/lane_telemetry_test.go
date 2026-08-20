@@ -179,6 +179,7 @@ func TestAdaptivePacingFloorFollowsCapacity(t *testing.T) {
 
 	// 1. High capacity: floor is raised to 0.25 * deliveryCapacityBPS
 	lane := &kcpLane{
+		parent:              &ParasiteTunnel{lanes: make([]*kcpLane, LaneCount)},
 		metrics:             telemetry.NewAccumulator(),
 		pacingStartup:       false,
 		pacingRateBPS:       100_000,

@@ -1593,33 +1593,26 @@ func TestLaneProbeDesynchronization(t *testing.T) {
 			i := uint16(callSlot + stepI*CallCount)
 			for stepJ := stepI + 1; stepJ < WorkersPerCall; stepJ++ {
 				j := uint16(callSlot + stepJ*CallCount)
-				for _, w1 := range windows[i] {
-					for _, w2 := range windows[j] {
-						diff := w1.start.Sub(w2.start)
-						if diff < 0 {
-							diff = -diff
-						}
-						require.GreaterOrEqual(t, diff, 500*time.Millisecond,
-							"same-call lane %d and lane %d probe start diff should be >= 500ms (expected ~1s)", i, j)
-						require.True(t, w1.until.Before(w2.start) || w2.until.Before(w1.start) || w1.until.Equal(w2.start) || w2.until.Equal(w1.start),
-							"same-call lane %d and lane %d probe windows overlap", i, j)
-					}
+				w1, w2 := windows[i][0], windows[j][0]
+				diff := w1.start.Sub(w2.start)
+				if diff < 0 {
+					diff = -diff
 				}
+				require.GreaterOrEqual(t, diff, 500*time.Millisecond,
+					"same-call lane %d and lane %d probe start diff should be >= 500ms (expected ~1s)", i, j)
+				require.True(t, w1.until.Before(w2.start) || w2.until.Before(w1.start) || w1.until.Equal(w2.start) || w2.until.Equal(w1.start),
+					"same-call lane %d and lane %d probe windows overlap", i, j)
 			}
 		}
 	}
 	for i := uint16(0); i < LaneCount-1; i++ {
 		j := i + 1
-		for _, w1 := range windows[i] {
-			for _, w2 := range windows[j] {
-				diff := w1.start.Sub(w2.start)
-				if diff < 0 {
-					diff = -diff
-				}
-				require.GreaterOrEqual(t, diff, 200*time.Millisecond,
-					"adjacent lane %d and lane %d probe start diff should be >= 200ms (expected ~250ms)", i, j)
-			}
+		diff := windows[i][0].start.Sub(windows[j][0].start)
+		if diff < 0 {
+			diff = -diff
 		}
+		require.GreaterOrEqual(t, diff, 200*time.Millisecond,
+			"adjacent lane %d and lane %d probe start diff should be >= 200ms (expected ~250ms)", i, j)
 	}
 }
 

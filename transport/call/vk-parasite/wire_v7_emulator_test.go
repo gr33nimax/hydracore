@@ -95,7 +95,6 @@ func driveByteWindow(lane *kcpLane, emulator *deterministicLaneEmulator, now tim
 
 func newControllerLane(now time.Time) *kcpLane {
 	lane := &kcpLane{
-		parent:           &ParasiteTunnel{lanes: make([]*kcpLane, LaneCount)},
 		metrics:          telemetry.NewAccumulator(),
 		admissionWindow:  laneKCPInitialAdmission,
 		deliverySampleAt: now,
@@ -106,6 +105,7 @@ func newControllerLane(now time.Time) *kcpLane {
 		pacingStartup:    true,
 		pacingNextProbe:  now.Add(lanePacingProbeInterval),
 	}
+	lane.parent = &ParasiteTunnel{lanes: []*kcpLane{lane}}
 	lane.applicationLimited = true
 	lane.compensationCeiling = laneCompensationInitialCeiling
 	return lane

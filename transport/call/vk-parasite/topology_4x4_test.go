@@ -128,6 +128,7 @@ func TestAuthRequestStructuralValidation(t *testing.T) {
 	var validReq authRequest
 	for _, workerTotal := range []uint16{LegacyLaneCount, LaneCount} {
 		validReq = authRequest{
+			ProtocolVersion: authProtocolVersion,
 			SessionID:      [16]byte{1},
 			Conv:           1,
 			WorkerID:       workerTotal - 1,

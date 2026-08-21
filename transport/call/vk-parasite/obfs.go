@@ -22,15 +22,13 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
+// ai-generated: RTP obfuscation codec with dynamic Opus PT and RFC 8285 extension support
 const (
-	wrapKeyLength       = 32
-	rtpHeaderLength     = 12
-	rtpExtendedHdrLen   = 24
-	defaultRTPPadding   = 24
-	maxCodecWireBuffer  = 1536
-	maximumWirePacket   = 64 * 1024
-	rtpPayloadTypeVideo       = 96
-	rtpPayloadTypeLegacyAudio = 111
+	wrapKeyLength      = 32
+	rtpHeaderLength    = 12
+	defaultRTPPadding  = 24
+	maxCodecWireBuffer = 1536
+	maximumWirePacket  = 64 * 1024
 )
 
 type wireBuffer [maxCodecWireBuffer]byte
@@ -53,15 +51,16 @@ func deriveWrapKey(password string) ([wrapKeyLength]byte, error) {
 }
 
 type rtpCodec struct {
-	aead       cipher.AEAD
-	ssrc       uint32
-	initialSeq uint16
-	initialTS  uint32
-	startedAt  time.Time
-	count      uint64
-	prngMu     sync.Mutex
-	prng       *randv2.ChaCha8
-	pool       sync.Pool
+	aead        cipher.AEAD
+	ssrc        uint32
+	initialSeq  uint16
+	initialTS   uint32
+	payloadType byte
+	startedAt   time.Time
+	count       uint64
+	prngMu      sync.Mutex
+	prng        *randv2.ChaCha8
+	pool        sync.Pool
 }
 
 func newRTPCodec(key [wrapKeyLength]byte) (*rtpCodec, error) {
@@ -78,12 +77,13 @@ func newRTPCodec(key [wrapKeyLength]byte) (*rtpCodec, error) {
 		return nil, fmt.Errorf("initialize RTP wrapper PRNG: %w", err)
 	}
 	codec := &rtpCodec{
-		aead:       aead,
-		ssrc:       binary.BigEndian.Uint32(seed[0:4]),
-		initialSeq: binary.BigEndian.Uint16(seed[4:6]),
-		initialTS:  binary.BigEndian.Uint32(seed[6:10]),
-		startedAt:  time.Now(),
-		prng:       randv2.NewChaCha8(prngSeed),
+		aead:        aead,
+		ssrc:        binary.BigEndian.Uint32(seed[0:4]),
+		initialSeq:  binary.BigEndian.Uint16(seed[4:6]),
+		initialTS:   binary.BigEndian.Uint32(seed[6:10]),
+		payloadType: 96 + byte(binary.BigEndian.Uint16(seed[4:6])%32), // Dynamic PT in range [96, 127]
+		startedAt:   time.Now(),
+		prng:        randv2.NewChaCha8(prngSeed),
 	}
 	codec.pool.New = func() any {
 		return new(wireBuffer)
@@ -158,7 +158,7 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, *wireBuffer, error) {
 	nonce := buildRTPNonce(c.ssrc, sequence, timestamp)
 
 	out[0] = 0x80 | 0x20
-	out[1] = rtpPayloadTypeVideo
+	out[1] = c.payloadType
 	binary.BigEndian.PutUint16(out[2:4], sequence)
 	binary.BigEndian.PutUint32(out[4:8], timestamp)
 	binary.BigEndian.PutUint32(out[8:12], c.ssrc)
@@ -175,12 +175,16 @@ func (c *rtpCodec) unwrap(wire []byte) ([]byte, error) {
 		return nil, errors.New("RTP wrapper: invalid version")
 	}
 	payloadType := wire[1] & 0x7f
-	if payloadType != rtpPayloadTypeVideo && payloadType != rtpPayloadTypeLegacyAudio {
+	if payloadType < 96 || payloadType > 127 {
 		return nil, errors.New("RTP wrapper: unexpected payload type")
 	}
 	headerLength := rtpHeaderLength
 	if wire[0]&0x10 != 0 {
-		headerLength = rtpExtendedHdrLen
+		if len(wire) < rtpHeaderLength+4 {
+			return nil, errors.New("RTP wrapper: truncated extension header")
+		}
+		extWords := int(binary.BigEndian.Uint16(wire[rtpHeaderLength+2 : rtpHeaderLength+4]))
+		headerLength = rtpHeaderLength + 4 + extWords*4
 	}
 	if len(wire) < headerLength+chacha20poly1305.Overhead+1 {
 		return nil, errors.New("RTP wrapper: truncated header")

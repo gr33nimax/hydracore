@@ -128,3 +128,28 @@ func TestRTPCodecConcurrentWrap(t *testing.T) {
 		require.NoError(t, <-done)
 	}
 }
+
+func TestRTPCodecRFC8285ExtensionAndDynamicPT(t *testing.T) {
+	t.Parallel()
+	var key [wrapKeyLength]byte
+	for i := range key {
+		key[i] = byte(i + 9)
+	}
+	codec, err := newRTPCodec(key)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, codec.payloadType, byte(96))
+	require.LessOrEqual(t, codec.payloadType, byte(127))
+
+	receiver, err := newRTPCodec(key)
+	require.NoError(t, err)
+
+	payload := []byte("rfc-8285-test-payload")
+	wire, raw, err := codec.wrap(payload)
+	require.NoError(t, err)
+	defer codec.putBuffer(raw)
+
+	plain, err := receiver.unwrap(wire)
+	require.NoError(t, err)
+	require.Equal(t, payload, plain)
+}
+

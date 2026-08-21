@@ -95,7 +95,7 @@ type testAddr string
 func (a testAddr) Network() string { return "test" }
 func (a testAddr) String() string  { return string(a) }
 
-func connectTestLanes(t *testing.T, left, right *ParasiteTunnel) {
+func connectTestLanes(t testing.TB, left, right *ParasiteTunnel) {
 	t.Helper()
 	for laneID := uint16(0); laneID < LaneCount; laneID++ {
 		leftConn, rightConn := newTestDatagramPair()

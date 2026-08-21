@@ -63,7 +63,7 @@ func TestAuthRequestRejectsInvalidBounds(t *testing.T) {
 	_, err = encodeAuthRequest(authRequest{
 		SessionID:   [16]byte{1},
 		Conv:        1,
-		WorkerID:    1,
+		WorkerID:    LaneCount,
 		WorkerTotal: LaneCount,
 		User:        "alice",
 		Password:    "secret",
@@ -88,7 +88,7 @@ func TestRTPWrapperRoundTripAndWrongKey(t *testing.T) {
 	receiver, err := newRTPCodec(key)
 	require.NoError(t, err)
 	payload := []byte("dtls application record")
-	wire, err := sender.wrap(payload)
+	wire, _, err := sender.wrap(payload)
 	require.NoError(t, err)
 	require.Equal(t, byte(2), wire[0]>>6)
 	require.Equal(t, byte(rtpPayloadTypeVideo), wire[1]&0x7f)

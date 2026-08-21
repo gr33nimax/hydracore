@@ -27,12 +27,14 @@ func (l *kcpLane) observeKCPOutput(packet []byte) {
 		if previous, exists := l.kcpSent[sequence]; exists {
 			l.deliveryRetrans++
 			l.deliveryRetransBytes += uint64(size)
-			if isEstimatedRTO(now.Sub(previous.lastSentAt), l.estimatedKCPRTO()) {
-				l.metrics.AddHot(telemetry.KCPRTORetransEstimateSegmentsTotal, 1)
-				l.metrics.AddHot(telemetry.KCPRTORetransEstimateBytesTotal, uint64(size))
-			} else {
-				l.metrics.AddHot(telemetry.KCPFastRetransEstimateSegmentsTotal, 1)
-				l.metrics.AddHot(telemetry.KCPFastRetransEstimateBytesTotal, uint64(size))
+			if l.metrics.CollectionActive() {
+				if isEstimatedRTO(now.Sub(previous.lastSentAt), l.estimatedKCPRTO()) {
+					l.metrics.AddHot(telemetry.KCPRTORetransEstimateSegmentsTotal, 1)
+					l.metrics.AddHot(telemetry.KCPRTORetransEstimateBytesTotal, uint64(size))
+				} else {
+					l.metrics.AddHot(telemetry.KCPFastRetransEstimateSegmentsTotal, 1)
+					l.metrics.AddHot(telemetry.KCPFastRetransEstimateBytesTotal, uint64(size))
+				}
 			}
 			previous.lastSentAt = now
 			previous.attempts = append(previous.attempts, kcpSendAttempt{timestamp: timestamp, sentAt: now})
@@ -73,17 +75,27 @@ func (l *kcpLane) observeKCPInput(packet []byte) {
 	var cumulativeACK uint32
 	hasCumulativeACK := false
 	type acknowledgement struct{ sequence, timestamp uint32 }
-	acknowledgements := make([]acknowledgement, 0, 1)
-	forEachKCPSegmentHeader(packet, func(command byte, sequence, una, timestamp uint32, _ int) {
+	var inlineAcks [8]acknowledgement
+	acknowledgements := inlineAcks[:0]
+	for len(packet) >= kcpHeaderSize {
+		length := int(binary.LittleEndian.Uint32(packet[20:24]))
+		if length < 0 || kcpHeaderSize+length > len(packet) {
+			break
+		}
+		segmentSize := kcpHeaderSize + length
+		command := packet[4]
+		sequence := binary.LittleEndian.Uint32(packet[12:16])
+		una := binary.LittleEndian.Uint32(packet[16:20])
+		timestamp := binary.LittleEndian.Uint32(packet[8:12])
 		if !hasCumulativeACK || kcpSequenceAfter(una, cumulativeACK) {
 			cumulativeACK = una
 			hasCumulativeACK = true
 		}
-		if command != kcpCommandACK {
-			return
+		if command == kcpCommandACK {
+			acknowledgements = append(acknowledgements, acknowledgement{sequence, timestamp})
 		}
-		acknowledgements = append(acknowledgements, acknowledgement{sequence, timestamp})
-	})
+		packet = packet[segmentSize:]
+	}
 	for _, ack := range acknowledgements {
 		l.metrics.AddHot(telemetry.KCPAckSegmentsTotal, 1)
 		sent, exists := l.kcpSent[ack.sequence]

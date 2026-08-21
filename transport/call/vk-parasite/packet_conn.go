@@ -128,12 +128,14 @@ func (c *peerPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
 		return 0, errPacketConnClosed
 	default:
 	}
-	wire, err := c.codec.wrap(payload)
+	wire, rawBuf, err := c.codec.wrap(payload)
 	if err != nil {
 		c.telemetryMetrics().AddHot(telemetry.OuterWrapFailuresTotal, 1)
 		return 0, err
 	}
-	if _, err = c.base.WriteTo(wire, c.remote); err != nil {
+	_, err = c.base.WriteTo(wire, c.remote)
+	c.codec.putBuffer(rawBuf)
+	if err != nil {
 		return 0, err
 	}
 	c.telemetryMetrics().AddHot(telemetry.OuterPacketsOutTotal, 1)
@@ -224,12 +226,14 @@ func (c *obfsPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	if !samePacketAddress(addr, c.remote) {
 		return 0, errors.New("call vk_parasite: unexpected DTLS destination")
 	}
-	wire, err := c.codec.wrap(payload)
+	wire, rawBuf, err := c.codec.wrap(payload)
 	if err != nil {
 		c.metrics.AddHot(telemetry.OuterWrapFailuresTotal, 1)
 		return 0, err
 	}
-	if _, err = c.base.WriteTo(wire, c.remote); err != nil {
+	_, err = c.base.WriteTo(wire, c.remote)
+	c.codec.putBuffer(rawBuf)
+	if err != nil {
 		return 0, err
 	}
 	c.metrics.AddHot(telemetry.OuterPacketsOutTotal, 1)

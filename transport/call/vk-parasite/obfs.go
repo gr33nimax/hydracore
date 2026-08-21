@@ -8,12 +8,13 @@ package vkparasite
 
 import (
 	"crypto/cipher"
-	"crypto/rand"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	randv2 "math/rand/v2"
 	"sync"
 	"time"
 
@@ -26,10 +27,13 @@ const (
 	rtpHeaderLength     = 12
 	rtpExtendedHdrLen   = 24
 	defaultRTPPadding   = 24
+	maxCodecWireBuffer  = 1536
 	maximumWirePacket   = 64 * 1024
 	rtpPayloadTypeVideo       = 96
 	rtpPayloadTypeLegacyAudio = 111
 )
+
+type wireBuffer [maxCodecWireBuffer]byte
 
 func deriveWrapKey(password string) ([wrapKeyLength]byte, error) {
 	var key [wrapKeyLength]byte
@@ -55,7 +59,9 @@ type rtpCodec struct {
 	initialTS  uint32
 	startedAt  time.Time
 	count      uint64
-	mu         sync.Mutex
+	prngMu     sync.Mutex
+	prng       *randv2.ChaCha8
+	pool       sync.Pool
 }
 
 func newRTPCodec(key [wrapKeyLength]byte) (*rtpCodec, error) {
@@ -64,54 +70,101 @@ func newRTPCodec(key [wrapKeyLength]byte) (*rtpCodec, error) {
 		return nil, err
 	}
 	var seed [10]byte
-	if _, err = rand.Read(seed[:]); err != nil {
+	if _, err = cryptorand.Read(seed[:]); err != nil {
 		return nil, fmt.Errorf("initialize RTP wrapper: %w", err)
 	}
-	return &rtpCodec{
+	var prngSeed [32]byte
+	if _, err = cryptorand.Read(prngSeed[:]); err != nil {
+		return nil, fmt.Errorf("initialize RTP wrapper PRNG: %w", err)
+	}
+	codec := &rtpCodec{
 		aead:       aead,
 		ssrc:       binary.BigEndian.Uint32(seed[0:4]),
 		initialSeq: binary.BigEndian.Uint16(seed[4:6]),
 		initialTS:  binary.BigEndian.Uint32(seed[6:10]),
 		startedAt:  time.Now(),
-	}, nil
+		prng:       randv2.NewChaCha8(prngSeed),
+	}
+	codec.pool.New = func() any {
+		return new(wireBuffer)
+	}
+	return codec, nil
 }
 
-func (c *rtpCodec) wrap(payload []byte) ([]byte, error) {
+func (c *rtpCodec) getBuffer() *wireBuffer {
+	if buf := c.pool.Get(); buf != nil {
+		return buf.(*wireBuffer)
+	}
+	return new(wireBuffer)
+}
+
+func (c *rtpCodec) putBuffer(buf *wireBuffer) {
+	if buf != nil {
+		c.pool.Put(buf)
+	}
+}
+
+func (c *rtpCodec) wrap(payload []byte) ([]byte, *wireBuffer, error) {
 	if len(payload) == 0 {
-		return nil, errors.New("RTP wrapper: empty payload")
+		return nil, nil, errors.New("RTP wrapper: empty payload")
 	}
 	if len(payload)+rtpHeaderLength+chacha20poly1305.Overhead+defaultRTPPadding+1 > maximumWirePacket {
-		return nil, errors.New("RTP wrapper: payload too large")
+		return nil, nil, errors.New("RTP wrapper: payload too large")
 	}
 
-	c.mu.Lock()
+	c.prngMu.Lock()
 	packetIndex := c.count
 	c.count++
-	timestamp := c.initialTS + uint32(time.Since(c.startedAt).Seconds()*90_000)
-	c.mu.Unlock()
+	elapsed := time.Since(c.startedAt)
+	sec := uint64(elapsed / time.Second)
+	nsec := uint64(elapsed % time.Second)
+	ticks := sec*90_000 + nsec*90_000/uint64(time.Second)
+	timestamp := c.initialTS + uint32(ticks)
+	r := c.prng.Uint64()
+	paddingLength := int(byte(r))%defaultRTPPadding + 1
+	r >>= 8
+	rem := 7
+	totalLen := rtpHeaderLength + len(payload) + chacha20poly1305.Overhead + paddingLength
+
+	var out []byte
+	var rawBuf *wireBuffer
+	if totalLen <= maxCodecWireBuffer {
+		rawBuf = c.getBuffer()
+		out = rawBuf[:totalLen]
+	} else {
+		out = make([]byte, totalLen)
+	}
+
+	paddingStart := rtpHeaderLength + len(payload) + chacha20poly1305.Overhead
+	if paddingLength > 1 {
+		padBytes := out[paddingStart : totalLen-1]
+		for len(padBytes) > 0 {
+			if rem == 0 {
+				r = c.prng.Uint64()
+				rem = 8
+			}
+			n := min(len(padBytes), rem)
+			for i := 0; i < n; i++ {
+				padBytes[i] = byte(r)
+				r >>= 8
+			}
+			rem -= n
+			padBytes = padBytes[n:]
+		}
+	}
+	c.prngMu.Unlock()
 
 	sequence := c.initialSeq + uint16(packetIndex)
 	nonce := buildRTPNonce(c.ssrc, sequence, timestamp)
-	var randomPadding [1]byte
-	if _, err := rand.Read(randomPadding[:]); err != nil {
-		return nil, err
-	}
-	paddingLength := int(randomPadding[0])%defaultRTPPadding + 1
-	out := make([]byte, rtpHeaderLength+len(payload)+chacha20poly1305.Overhead+paddingLength)
+
 	out[0] = 0x80 | 0x20
 	out[1] = rtpPayloadTypeVideo
 	binary.BigEndian.PutUint16(out[2:4], sequence)
 	binary.BigEndian.PutUint32(out[4:8], timestamp)
 	binary.BigEndian.PutUint32(out[8:12], c.ssrc)
-	sealed := c.aead.Seal(out[rtpHeaderLength:rtpHeaderLength], nonce[:], payload, out[:rtpHeaderLength])
-	paddingStart := rtpHeaderLength + len(sealed)
-	if paddingLength > 1 {
-		if _, err := rand.Read(out[paddingStart : len(out)-1]); err != nil {
-			return nil, err
-		}
-	}
-	out[len(out)-1] = byte(paddingLength)
-	return out, nil
+	c.aead.Seal(out[rtpHeaderLength:rtpHeaderLength], nonce[:], payload, out[:rtpHeaderLength])
+	out[totalLen-1] = byte(paddingLength)
+	return out, rawBuf, nil
 }
 
 func (c *rtpCodec) unwrap(wire []byte) ([]byte, error) {

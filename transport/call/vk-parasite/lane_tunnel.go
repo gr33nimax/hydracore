@@ -173,18 +173,19 @@ type receiveFlowState struct {
 }
 
 type laneWorker struct {
-	id          uint16
-	epoch       uint64
-	generation  uint64
-	conn        net.Conn
-	lane        *kcpLane
-	parent      *ParasiteTunnel
-	metrics     *telemetry.Accumulator
-	sendQueue   chan queuedSegment
-	done        chan struct{}
-	closeOnce   sync.Once
-	writeMu     sync.Mutex
-	lastInbound atomic.Int64
+	id            uint16
+	epoch         uint64
+	generation    uint64
+	conn          net.Conn
+	lane          *kcpLane
+	parent        *ParasiteTunnel
+	metrics       *telemetry.Accumulator
+	sendQueue     chan queuedSegment
+	done          chan struct{}
+	closeOnce     sync.Once
+	writeMu       sync.Mutex
+	writeDeadline time.Time
+	lastInbound   atomic.Int64
 }
 
 func (w *laneWorker) close() {
@@ -207,15 +208,16 @@ type kcpLane struct {
 	workerMu sync.RWMutex
 	worker   *laneWorker
 
-	metrics     *telemetry.Accumulator
-	kcpSent     map[uint32]kcpSentSegment
-	kcpSRTTMS   float64
-	kcpRTTVARMS float64
-	kcpLastUNA  uint32
-	kcpHasUNA   bool
-	generation  uint64
-	state       laneState
-	flowCount   atomic.Int64
+	metrics      *telemetry.Accumulator
+	kcpSent      map[uint32]kcpSentSegment
+	kcpSRTTMS    float64
+	kcpRTTVARMS  float64
+	kcpLastUNA   uint32
+	kcpHasUNA    bool
+	generation   uint64
+	conversation uint32
+	state        laneState
+	flowCount    atomic.Int64
 
 	admissionWindow       int
 	deliveryRateBPS       float64
@@ -435,7 +437,8 @@ func laneConversationGeneration(seed uint32, laneID uint16, generation uint64) u
 
 func (l *kcpLane) resetKCPLocked(generation uint64) {
 	l.generation = generation
-	l.kcp = kcp.NewKCP(laneConversationGeneration(l.parent.seed, l.id, generation), func(buffer []byte, size int) {
+	l.conversation = laneConversationGeneration(l.parent.seed, l.id, generation)
+	l.kcp = kcp.NewKCP(l.conversation, func(buffer []byte, size int) {
 		if size > 0 {
 			l.stageSegment(buffer[:size])
 		}
@@ -870,9 +873,12 @@ func (w *laneWorker) write(payload []byte) error {
 func (w *laneWorker) writeWithTimeout(payload []byte, timeout time.Duration) error {
 	w.writeMu.Lock()
 	defer w.writeMu.Unlock()
-	_ = w.conn.SetWriteDeadline(time.Now().Add(timeout))
+	now := time.Now()
+	if w.writeDeadline.IsZero() || w.writeDeadline.Sub(now) < timeout {
+		w.writeDeadline = now.Add(2 * timeout)
+		_ = w.conn.SetWriteDeadline(w.writeDeadline)
+	}
 	_, err := w.conn.Write(payload)
-	_ = w.conn.SetWriteDeadline(time.Time{})
 	return err
 }
 
@@ -886,8 +892,8 @@ func (w *laneWorker) writeRecycleControl(payload []byte) bool {
 	}
 	defer w.writeMu.Unlock()
 	_ = w.conn.SetWriteDeadline(deadline)
+	w.writeDeadline = time.Time{}
 	n, err := w.conn.Write(payload)
-	_ = w.conn.SetWriteDeadline(time.Time{})
 	return err == nil && n == len(payload)
 }
 
@@ -1161,12 +1167,18 @@ func (l *kcpLane) outputLoop() {
 }
 
 func (l *kcpLane) inputSegment(segment []byte) {
-	lockStarted := time.Now()
-	l.mu.Lock()
-	if waited := time.Since(lockStarted); waited >= laneSendRetryInterval {
-		l.metrics.AddHotMonotonic(telemetry.KCPMutexBlockedSecondsTotal, waited.Seconds())
+	var lockStarted time.Time
+	collectMetrics := l.metrics.CollectionActive()
+	if collectMetrics {
+		lockStarted = time.Now()
 	}
-	expectedConversation := laneConversationGeneration(l.parent.seed, l.id, l.generation)
+	l.mu.Lock()
+	if collectMetrics {
+		if waited := time.Since(lockStarted); waited >= laneSendRetryInterval {
+			l.metrics.AddHotMonotonic(telemetry.KCPMutexBlockedSecondsTotal, waited.Seconds())
+		}
+	}
+	expectedConversation := l.conversation
 	if len(segment) < 4 || binary.LittleEndian.Uint32(segment[:4]) != expectedConversation {
 		l.metrics.AddHot(telemetry.LaneStaleGenerationDropsTotal, 1)
 		l.mu.Unlock()
@@ -1178,7 +1190,8 @@ func (l *kcpLane) inputSegment(segment []byte) {
 		l.mu.Unlock()
 		return
 	}
-	messages := make([][]byte, 0, 2)
+	var inlineMsgs [4][]byte
+	messages := inlineMsgs[:0]
 	for {
 		size := l.kcp.PeekSize()
 		if size <= 0 {
@@ -2983,10 +2996,16 @@ func (l *kcpLane) updateLoop() {
 			return
 		}
 		now := time.Now()
-		lockStarted := time.Now()
+		var lockStarted time.Time
+		collectMetrics := l.metrics.CollectionActive()
+		if collectMetrics {
+			lockStarted = time.Now()
+		}
 		l.mu.Lock()
-		if waited := time.Since(lockStarted); waited >= laneSendRetryInterval {
-			l.metrics.AddHotMonotonic(telemetry.KCPMutexBlockedSecondsTotal, waited.Seconds())
+		if collectMetrics {
+			if waited := time.Since(lockStarted); waited >= laneSendRetryInterval {
+				l.metrics.AddHotMonotonic(telemetry.KCPMutexBlockedSecondsTotal, waited.Seconds())
+			}
 		}
 		// Do not let kcp-go start another transmission burst while the
 		// previous one is still waiting for the physical writer. Input keeps

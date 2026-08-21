@@ -104,6 +104,7 @@ func newControllerLane(now time.Time) *kcpLane {
 		pacingLastRefill: now,
 		pacingStartup:    true,
 		pacingNextProbe:  now.Add(lanePacingProbeInterval),
+		conversation:     1,
 	}
 	lane.parent = &ParasiteTunnel{lanes: []*kcpLane{lane}}
 	lane.applicationLimited = true

@@ -435,15 +435,64 @@ type turnTLSSplitConn struct {
 func (c *turnTLSSplitConn) Write(b []byte) (int, error) {
 	if !c.splitDone && len(b) > 5 && b[0] == 0x16 && b[1] == 0x03 {
 		c.splitDone = true
-		splitPoint := min(len(b)/2, 64)
+		splitPoint := len(b) / 2
+		if hostOffset, hostLen := findSNIOffset(b); hostOffset > 0 && hostLen > 2 {
+			splitPoint = hostOffset + hostLen/2
+		}
 		if splitPoint > 0 && splitPoint < len(b) {
 			n1, err := c.Conn.Write(b[:splitPoint])
 			if err != nil {
 				return n1, err
 			}
+			time.Sleep(3 * time.Millisecond)
 			n2, err := c.Conn.Write(b[splitPoint:])
 			return n1 + n2, err
 		}
 	}
 	return c.Conn.Write(b)
+}
+
+func findSNIOffset(data []byte) (int, int) {
+	if len(data) < 44 || data[0] != 0x16 || data[5] != 0x01 {
+		return 0, 0
+	}
+	offset := 43
+	if offset >= len(data) {
+		return 0, 0
+	}
+	sessionIDLen := int(data[offset])
+	offset += 1 + sessionIDLen
+	if offset+2 > len(data) {
+		return 0, 0
+	}
+	cipherSuitesLen := int(data[offset])<<8 | int(data[offset+1])
+	offset += 2 + cipherSuitesLen
+	if offset+1 > len(data) {
+		return 0, 0
+	}
+	compLen := int(data[offset])
+	offset += 1 + compLen
+	if offset+2 > len(data) {
+		return 0, 0
+	}
+	extTotalLen := int(data[offset])<<8 | int(data[offset+1])
+	offset += 2
+	end := min(offset+extTotalLen, len(data))
+
+	for offset+4 <= end {
+		extType := int(data[offset])<<8 | int(data[offset+1])
+		extLen := int(data[offset+2])<<8 | int(data[offset+3])
+		offset += 4
+		if extType == 0 {
+			if offset+5 <= end {
+				hostLen := int(data[offset+3])<<8 | int(data[offset+4])
+				hostOffset := offset + 5
+				if hostOffset+hostLen <= end && hostLen > 0 {
+					return hostOffset, hostLen
+				}
+			}
+		}
+		offset += extLen
+	}
+	return 0, 0
 }

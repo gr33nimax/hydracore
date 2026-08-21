@@ -1,7 +1,6 @@
 package vkparasite
 
 import (
-	"encoding/binary"
 	"errors"
 	"io"
 	"net"

@@ -444,7 +444,10 @@ func (c *turnTLSSplitConn) Write(b []byte) (int, error) {
 			if err != nil {
 				return n1, err
 			}
-			time.Sleep(3 * time.Millisecond)
+			var rnd [1]byte
+			_, _ = rand.Read(rnd[:])
+			delay := 3*time.Millisecond + time.Duration(rnd[0]%4)*time.Millisecond
+			time.Sleep(delay)
 			n2, err := c.Conn.Write(b[splitPoint:])
 			return n1 + n2, err
 		}

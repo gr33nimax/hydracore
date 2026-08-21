@@ -292,3 +292,16 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 	}
 	return options, nil
 }
+
+func (c *Client) recordInnerAuthFailure(metrics *telemetry.Accumulator, ctx context.Context, started time.Time, workerID uint16, reason string) {
+	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(started))
+	if errors.Is(ctx.Err(), context.Canceled) {
+		metrics.RecordEvent("inner_auth_interrupted", "inner_auth", "rebind", &workerID)
+		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		reason = "timeout"
+	}
+	metrics.Add(telemetry.InnerAuthFailureTotal, 1)
+	metrics.RecordEvent("inner_auth_failed", "inner_auth", reason, &workerID)
+}

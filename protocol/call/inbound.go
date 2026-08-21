@@ -173,7 +173,7 @@ func (h *Inbound) run() {
 	})
 }
 
-func (h *Inbound) handleParasiteSession(info vkparasite.SessionInfo, relay call.RelayTransport) error {
+func (h *Inbound) handleParasiteSession(info vkparasite.SessionInfo, relay *vkparasite.QUICRelay) error {
 	relay.SetAcceptHandler(func(conn net.Conn, destination string) {
 		h.handleConnection(conn, M.ParseSocksaddr(destination), info.User)
 	})

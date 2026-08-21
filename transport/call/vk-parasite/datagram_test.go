@@ -2,7 +2,6 @@ package vkparasite
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 

@@ -3,6 +3,7 @@ package vkparasite
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"io"
 	"net"
 	"sync"
@@ -42,7 +43,7 @@ func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, se
 		sObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), sCodec, nil)
 
 		sDTLSConfig := &dtls.Config{
-			Certificates:         []dtls.Certificate{cert},
+			Certificates:         []tls.Certificate{cert},
 			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 			FlightInterval:       100 * time.Millisecond,
 			MTU:                  dtlsMTU,

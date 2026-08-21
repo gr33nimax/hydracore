@@ -91,7 +91,9 @@ func TestRTPWrapperRoundTripAndWrongKey(t *testing.T) {
 	wire, _, err := sender.wrap(payload)
 	require.NoError(t, err)
 	require.Equal(t, byte(2), wire[0]>>6)
-	require.Equal(t, byte(rtpPayloadTypeVideo), wire[1]&0x7f)
+	pt := wire[1] & 0x7f
+	require.GreaterOrEqual(t, pt, byte(96))
+	require.LessOrEqual(t, pt, byte(127))
 	plain, err := receiver.unwrap(wire)
 	require.NoError(t, err)
 	require.Equal(t, payload, plain)

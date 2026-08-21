@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"io"
 	"net"
 	"testing"
@@ -65,7 +66,7 @@ func TestQUICOverDTLSEcho(t *testing.T) {
 	require.NoError(t, err)
 
 	serverDTLSConfig := &dtls.Config{
-		Certificates:         []dtls.Certificate{cert},
+		Certificates:         []tls.Certificate{cert},
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 		FlightInterval:       100 * time.Millisecond,
 		MTU:                  dtlsMTU,

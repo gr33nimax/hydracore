@@ -46,6 +46,11 @@ func TestPeerPacketConnDistinguishesRetransmittedAndNewClientHello(t *testing.T)
 	require.True(t, peer.rememberClientHello(second))
 }
 
+type testAddr string
+
+func (a testAddr) Network() string { return "udp" }
+func (a testAddr) String() string  { return string(a) }
+
 type inertPacketConn struct{}
 
 func (inertPacketConn) ReadFrom([]byte) (int, net.Addr, error) {

@@ -2,6 +2,7 @@ package vkparasite
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"

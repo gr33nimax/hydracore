@@ -13,6 +13,9 @@ const (
 	maximumUserLength     = 64
 	maximumPasswordLen    = 256
 	maximumAuthFrameLen   = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
+	LegacyLaneCount       = 4
+	LaneCount             = 16
+	MaximumLaneCount      = 16
 )
 
 var (

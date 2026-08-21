@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/sagernet/sing-box/transport/call/telemetry"
@@ -52,7 +53,7 @@ type SessionInfo struct {
 	User string
 }
 
-type SessionHandler func(info SessionInfo, tunnel *ParasiteTunnel) error
+type SessionHandler func(info SessionInfo, relay *QUICRelay) error
 
 type ServerOptions struct {
 	ObfsPassword             string
@@ -83,7 +84,7 @@ type serverSession struct {
 	user            string
 	conv            uint32
 	expected        uint16
-	tunnel          *ParasiteTunnel
+	relay           *QUICRelay
 	ready           chan struct{}
 	setupErr        error
 	generation      uint64
@@ -571,33 +572,41 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		_, _ = conn.Write(encodeAuthAck(false, 0))
 		return
 	}
-	workerMetrics := session.tunnel.telemetryWorker(request.WorkerID)
-	peer.setTelemetryMetrics(workerMetrics)
-	done, err := session.tunnel.AttachWorkerGenerationEpoch(request.WorkerID, request.LaneGeneration, request.WorkerEpoch, conn, func() error {
-		_, writeErr := conn.Write(encodeAuthAck(true, session.generation))
-		if writeErr == nil {
-			writeErr = conn.SetDeadline(time.Time{})
-		}
-		return writeErr
-	})
-	s.releaseSessionAttach(session)
-	if err != nil {
-		workerMetrics.Add(telemetry.WorkerAttachFailureTotal, 1)
-		s.telemetry.event("worker_attach_failed", "worker", "attach", request.User, request.SessionID, &request.WorkerID)
+	_, writeErr := conn.Write(encodeAuthAck(true, session.generation))
+	if writeErr != nil {
+		s.releaseSessionAttach(session)
 		if created {
 			s.deleteSessionIfUnattached(request.SessionID, session)
 		}
-		_, _ = conn.Write(encodeAuthAck(false, 0))
 		return
 	}
+	_ = conn.SetDeadline(time.Time{})
+	quicListener, err := listenQUIC(conn, s.dtlsConfig.Certificates[0])
+	if err != nil {
+		s.releaseSessionAttach(session)
+		if created {
+			s.deleteSessionIfUnattached(request.SessionID, session)
+		}
+		return
+	}
+	defer quicListener.Close()
+	quicConn, err := quicListener.Accept(s.ctx)
+	s.releaseSessionAttach(session)
+	if err != nil {
+		if created {
+			s.deleteSessionIfUnattached(request.SessionID, session)
+		}
+		return
+	}
+	session.relay.AttachServerConn(quicConn, conn)
 	peer.markEstablished()
-	workerMetrics.Add(telemetry.WorkerAttachSuccessTotal, 1)
+	s.telemetry.metrics.Add(telemetry.WorkerAttachSuccessTotal, 1)
 	s.telemetry.event("worker_attached", "worker", "success", request.User, request.SessionID, &request.WorkerID)
 	s.telemetry.metrics.Set(telemetry.HandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 	handshakeMeasured = true
 	releasePending()
 	select {
-	case <-done:
+	case <-quicConn.Context().Done():
 	case <-s.ctx.Done():
 	}
 }
@@ -631,10 +640,6 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 				s.sessionsMu.Unlock()
 				return nil, false, sessionsErr
 			}
-			if session.tunnel.LaneGeneration(request.WorkerID) != request.LaneGeneration {
-				s.sessionsMu.Unlock()
-				return nil, false, errors.New("call vk_parasite: lane generation mismatch")
-			}
 			session.pendingAttaches++
 			s.sessionsMu.Unlock()
 			return session, false, nil
@@ -657,24 +662,14 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		closeServerSessions(evicted)
 		return nil, false, errors.New("call vk_parasite: user session limit reached")
 	}
-	if request.LaneGeneration != 1 {
-		s.sessionsMu.Unlock()
-		closeServerSessions(evicted)
-		return nil, false, errors.New("call vk_parasite: initial lane generation must be one")
-	}
-	tunnel, err := newParasiteTunnel(request.Conv, request.WorkerTotal, s.logger, nil)
-	if err != nil {
-		s.sessionsMu.Unlock()
-		closeServerSessions(evicted)
-		return nil, false, err
-	}
-	tunnel.SetRecoveryCoordinator(false)
-	tunnel.SetTelemetryCounterParent(s.telemetry.metrics)
-	tunnel.SetTelemetryCollectionActive(s.telemetry.metrics.CollectionActive())
+	relay := NewQUICRelay(s.ctx, QUICRelayOptions{
+		PathCount: int(request.WorkerTotal),
+		Logger:    s.logger,
+	})
 	generation, err := randomSessionGeneration()
 	if err != nil {
 		s.sessionsMu.Unlock()
-		_ = tunnel.Close()
+		relay.Close()
 		closeServerSessions(evicted)
 		return nil, false, err
 	}
@@ -683,31 +678,18 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 		user:       request.User,
 		conv:       request.Conv,
 		expected:   request.WorkerTotal,
-		tunnel:     tunnel,
+		relay:      relay,
 		ready:      make(chan struct{}),
 		generation: generation,
 		createdAt:  time.Now(),
 	}
-	tunnel.SetTelemetryEventHandler(func(event telemetry.Event) {
-		s.telemetry.event(
-			event.Event,
-			event.Stage,
-			event.Reason,
-			session.user,
-			session.id,
-			event.WorkerID,
-		)
-	})
-	tunnel.SetTelemetryClientRecordHandler(func(payload []byte) {
-		s.telemetry.clientRecord(session, payload)
-	})
 	s.sessions[request.SessionID] = session
 	s.userSessions[request.User]++
 	s.telemetry.metrics.Add(telemetry.SessionCreatedTotal, 1)
 	s.sessionsMu.Unlock()
 	closeServerSessions(evicted)
 
-	err = s.options.SessionHandler(SessionInfo{ID: request.SessionID, User: request.User}, session.tunnel)
+	err = s.options.SessionHandler(SessionInfo{ID: request.SessionID, User: request.User}, session.relay)
 	s.sessionsMu.Lock()
 	session.setupErr = err
 	close(session.ready)
@@ -724,7 +706,7 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	}
 	s.sessionsMu.Unlock()
 	if err != nil {
-		_ = tunnel.Close()
+		relay.Close()
 		return nil, false, err
 	}
 	return session, true, nil
@@ -773,7 +755,11 @@ func closeServerSessions(sessions []*serverSession) {
 		// Admission of a fully authenticated replacement session must not wait
 		// for callbacks owned by the superseded relay. The old session has
 		// already been removed from both accounting maps, so cleanup is isolated.
-		go func(stale *serverSession) { _ = stale.tunnel.Close() }(session)
+		go func(stale *serverSession) {
+			if stale.relay != nil {
+				stale.relay.Close()
+			}
+		}(session)
 	}
 }
 
@@ -793,7 +779,7 @@ func randomSessionGeneration() (uint64, error) {
 func (s *Server) deleteIdleSession(id [16]byte, expected *serverSession, idleCutoff time.Time) {
 	s.sessionsMu.Lock()
 	session := s.sessions[id]
-	if session == nil || session != expected || session.pendingAttaches != 0 || session.tunnel.ActiveWorkers() != 0 || session.tunnel.LastActivity().After(idleCutoff) {
+	if session == nil || session != expected || session.pendingAttaches != 0 || (session.relay != nil && session.relay.ActivePaths() != 0) {
 		s.sessionsMu.Unlock()
 		return
 	}
@@ -805,13 +791,15 @@ func (s *Server) deleteIdleSession(id [16]byte, expected *serverSession, idleCut
 		s.userSessions[session.user]--
 	}
 	s.sessionsMu.Unlock()
-	_ = session.tunnel.Close()
+	if session.relay != nil {
+		session.relay.Close()
+	}
 }
 
 func (s *Server) deleteSessionIfUnattached(id [16]byte, expected *serverSession) {
 	s.sessionsMu.Lock()
 	session := s.sessions[id]
-	if session == nil || session != expected || session.pendingAttaches != 0 || session.tunnel.ActiveWorkers() != 0 {
+	if session == nil || session != expected || session.pendingAttaches != 0 || (session.relay != nil && session.relay.ActivePaths() != 0) {
 		s.sessionsMu.Unlock()
 		return
 	}
@@ -823,7 +811,9 @@ func (s *Server) deleteSessionIfUnattached(id [16]byte, expected *serverSession)
 		s.userSessions[session.user]--
 	}
 	s.sessionsMu.Unlock()
-	_ = session.tunnel.Close()
+	if session.relay != nil {
+		session.relay.Close()
+	}
 }
 
 func (s *Server) reapLoop() {
@@ -840,7 +830,7 @@ func (s *Server) reapLoop() {
 			s.sessionsMu.Lock()
 			stale := make([]*serverSession, 0)
 			for _, session := range s.sessions {
-				if session.pendingAttaches == 0 && session.tunnel.ActiveWorkers() == 0 && !session.tunnel.LastActivity().After(idleCutoff) {
+				if session.pendingAttaches == 0 && (session.relay == nil || session.relay.ActivePaths() == 0) && session.createdAt.Before(idleCutoff) {
 					stale = append(stale, session)
 				}
 			}
@@ -883,7 +873,9 @@ func (s *Server) Close() error {
 		s.sessionsMu.Unlock()
 		s.telemetry.metrics.Add(telemetry.SessionClosedTotal, uint64(len(sessions)))
 		for _, session := range sessions {
-			_ = session.tunnel.Close()
+			if session.relay != nil {
+				session.relay.Close()
+			}
 		}
 		_ = s.telemetry.close()
 	})

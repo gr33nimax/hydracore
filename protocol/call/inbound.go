@@ -17,7 +17,6 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/call"
 	vkparasite "github.com/sagernet/sing-box/transport/call/vk-parasite"
-	calltunnel "github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/bufio/deadline"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -174,16 +173,14 @@ func (h *Inbound) run() {
 	})
 }
 
-func (h *Inbound) handleParasiteSession(info vkparasite.SessionInfo, dataTunnel *vkparasite.ParasiteTunnel) error {
-	bridge := calltunnel.NewRelayBridge(dataTunnel, "creator", normalizedReadBuffer(h.options.ReadBuffer), h.dialer, h.logger)
-	bridge.SetAcceptHandler(func(conn net.Conn, destination string) {
+func (h *Inbound) handleParasiteSession(info vkparasite.SessionInfo, relay call.RelayTransport) error {
+	relay.SetAcceptHandler(func(conn net.Conn, destination string) {
 		h.handleConnection(conn, M.ParseSocksaddr(destination), info.User)
 	})
-	bridge.SetUDPAcceptHandler(func(conn net.Conn, destination string) {
+	relay.SetUDPAcceptHandler(func(conn net.Conn, destination string) {
 		parsed := M.ParseSocksaddr(destination)
 		h.handlePacketConnection(bufio.NewUnbindPacketConnWithAddr(conn, parsed), parsed, info.User)
 	})
-	bridge.MarkReady()
 	return nil
 }
 

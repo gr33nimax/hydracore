@@ -6,6 +6,7 @@ import (
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 )
 
+// ai-generated: client telemetry collector for vk_parasite QUICRelay transport
 const (
 	clientTelemetryInterval     = 2 * time.Second
 	clientEventsPerInterval     = 16
@@ -20,11 +21,7 @@ func (c *Client) enableTelemetry(lease time.Duration) {
 	if lease > 120*time.Second {
 		lease = 120 * time.Second
 	}
-	c.telemetryLease.Store(time.Now().Add(lease).UnixNano())
-	if c.telemetryLeaseExpired.Swap(false) {
-		c.metrics.RecordEvent("telemetry_lease_resumed", "telemetry", "control_received", nil)
-	}
-	c.tunnel.SetTelemetryCollectionActive(true)
+	c.metrics.SetCollectionActive(true)
 }
 
 func (c *Client) telemetryLoop() {
@@ -32,18 +29,11 @@ func (c *Client) telemetryLoop() {
 	defer ticker.Stop()
 	for {
 		select {
-		case now := <-ticker.C:
+		case <-ticker.C:
 			select {
 			case <-c.ctx.Done():
 				return
 			default:
-			}
-			if now.UnixNano() >= c.telemetryLease.Load() {
-				if c.telemetryLease.Load() > 0 && c.telemetryLeaseExpired.CompareAndSwap(false, true) {
-					c.metrics.Add(telemetry.TelemetryLeaseExpiredTotal, 1)
-					c.tunnel.SetTelemetryCollectionActive(false)
-				}
-				continue
 			}
 			c.emitTelemetry()
 		case <-c.ctx.Done():
@@ -53,236 +43,37 @@ func (c *Client) telemetryLoop() {
 }
 
 func (c *Client) emitTelemetry() {
-	sequence := c.telemetrySequence.Add(1)
-	c.metrics.Set(telemetry.WorkerDesired, float64(c.options.Workers))
-	c.metrics.Set(telemetry.WorkerActive, float64(c.tunnel.ActiveWorkers()))
-	c.processSampler.Sample(c.metrics)
-	c.tunnel.TelemetryValues()
-	workers := c.tunnel.telemetryWorkerSnapshots(clientWorkerSnapshotMetrics())
-	mergeWorkerNetworkGauges(c.metrics, workers)
-	for _, event := range c.metrics.DrainEvents(clientEventsPerInterval) {
-		record := telemetry.EventRecord("client", "", "", event)
-		c.sendTelemetryRecord(record)
-	}
-	metrics := c.metrics.Snapshot(clientSnapshotMetrics())
-	metrics[telemetry.Name(telemetry.TelemetrySequence)] = sequence
-	record := telemetry.Snapshot("client", "", "", metrics)
-	c.sendTelemetryRecord(record)
-	for _, worker := range workers {
-		worker.metrics[telemetry.Name(telemetry.TelemetrySequence)] = sequence
-		for _, event := range c.tunnel.telemetryWorker(worker.id).DrainEvents(clientEventsPerInterval) {
-			if event.WorkerID == nil {
-				workerID := worker.id
-				event.WorkerID = &workerID
-			}
-			c.sendTelemetryRecord(telemetry.EventRecord("client", "", "", event))
-		}
-		workerID := worker.id
-		workerRecord := telemetry.Snapshot("client", "", "", worker.metrics)
-		workerRecord.WorkerID = &workerID
-		c.sendTelemetryRecord(workerRecord)
-	}
-	c.flushTelemetryRecords()
-}
-
-func mergeWorkerNetworkGauges(
-	metrics *telemetry.Accumulator,
-	workers []workerTelemetrySnapshot,
-) {
-	maxLoss := 0.0
-	maxJitter := 0.0
-	for _, worker := range workers {
-		maxLoss = max(maxLoss, metricNumber(worker.metrics[telemetry.Name(telemetry.NetworkLossRatio)]))
-		maxJitter = max(maxJitter, metricNumber(worker.metrics[telemetry.Name(telemetry.NetworkJitterMS)]))
-	}
-	metrics.Set(telemetry.NetworkLossRatio, maxLoss)
-	metrics.Set(telemetry.NetworkJitterMS, maxJitter)
-}
-
-func (c *Client) sendTelemetryRecord(record telemetry.Record) {
-	payload, err := telemetry.Marshal(record)
-	if err != nil {
-		c.metrics.Add(telemetry.TelemetryRecordDropsTotal, 1)
+	if c.relay == nil {
 		return
 	}
-	c.telemetryBacklogMu.Lock()
-	if record.Kind == "event" {
-		if len(c.telemetryEvents) == clientTelemetryEventBacklog {
-			copy(c.telemetryEvents, c.telemetryEvents[1:])
-			c.telemetryEvents = c.telemetryEvents[:clientTelemetryEventBacklog-1]
-			c.metrics.Add(telemetry.TelemetryRecordDropsTotal, 1)
-		}
-		c.telemetryEvents = append(c.telemetryEvents, payload)
-	} else {
-		key := -1
-		if record.WorkerID != nil {
-			key = int(*record.WorkerID)
-		}
-		if c.telemetrySnapshots == nil {
-			c.telemetrySnapshots = make(map[int][]byte, c.options.Workers+1)
-		}
-		if _, coalesced := c.telemetrySnapshots[key]; coalesced {
-			c.metrics.Add(telemetry.TelemetrySnapshotCoalescedTotal, 1)
-		}
-		c.telemetrySnapshots[key] = payload
-	}
-	c.updateTelemetryPendingLocked()
-	c.telemetryBacklogMu.Unlock()
-}
-
-func (c *Client) flushTelemetryRecords() {
-	c.telemetryBacklogMu.Lock()
-	defer c.telemetryBacklogMu.Unlock()
-	for sent := 0; sent < clientTelemetryFlushBudget; sent++ {
-		if len(c.telemetryEvents) > 0 {
-			if !c.tunnel.SendClientTelemetry(c.telemetryEvents[0]) {
-				c.updateTelemetryPendingLocked()
-				return
-			}
-			copy(c.telemetryEvents, c.telemetryEvents[1:])
-			c.telemetryEvents = c.telemetryEvents[:len(c.telemetryEvents)-1]
-			continue
-		}
-		key, payload, ok := c.nextTelemetrySnapshotLocked()
-		if !ok {
-			break
-		}
-		if !c.tunnel.SendClientTelemetry(payload) {
-			c.updateTelemetryPendingLocked()
-			return
-		}
-		delete(c.telemetrySnapshots, key)
-	}
-	c.updateTelemetryPendingLocked()
-}
-
-func (c *Client) nextTelemetrySnapshotLocked() (int, []byte, bool) {
-	if payload, exists := c.telemetrySnapshots[-1]; exists {
-		return -1, payload, true
-	}
-	for workerID := 0; workerID < c.options.Workers; workerID++ {
-		if payload, exists := c.telemetrySnapshots[workerID]; exists {
-			return workerID, payload, true
-		}
-	}
-	for key, payload := range c.telemetrySnapshots {
-		return key, payload, true
-	}
-	return 0, nil, false
-}
-
-func (c *Client) updateTelemetryPendingLocked() {
-	c.metrics.Set(
-		telemetry.TelemetryPendingRecords,
-		float64(len(c.telemetryEvents)+len(c.telemetrySnapshots)),
-	)
+	c.metrics.Set(telemetry.WorkerDesired, float64(c.options.Workers))
+	c.metrics.Set(telemetry.WorkerActive, float64(c.relay.ActivePaths()))
+	c.metrics.Set(telemetry.QUICConnCount, float64(c.relay.ActivePaths()))
 }
 
 func clientSnapshotMetrics() []telemetry.Metric {
 	metrics := append([]telemetry.Metric(nil), telemetry.ClientRequired...)
 	return append(metrics,
-		telemetry.OuterWrapFailuresTotal,
-		telemetry.OuterReorderedPacketsTotal,
-		telemetry.OuterDuplicatePacketsTotal,
-		telemetry.RuntimeThermalAvailable,
-		telemetry.WorkerNoAvailableDropsTotal,
-	)
-}
-
-func clientWorkerSnapshotMetrics() []telemetry.Metric {
-	return []telemetry.Metric{
-		telemetry.VKAuthSuccessTotal,
-		telemetry.VKAuthFailureTotal,
-		telemetry.VKAuthLatencyMS,
-		telemetry.VKAuthAnonymTokenLatencyMS,
-		telemetry.VKCallPreviewLatencyMS,
-		telemetry.VKAnonymCallTokenLatencyMS,
-		telemetry.VKAnonymLoginLatencyMS,
-		telemetry.VKJoinConversationLatencyMS,
-		telemetry.VKCredentialRequestTotal,
-		telemetry.VKCredentialFetchTotal,
-		telemetry.VKCredentialCacheHitTotal,
-		telemetry.TURNAllocateSuccessTotal,
-		telemetry.TURNAllocateFailureTotal,
-		telemetry.TURNAllocateLatencyMS,
-		telemetry.TURNEndpointsTriedTotal,
-		telemetry.TURNEndpointCount,
-		telemetry.TURNSelectedEndpointOrdinal,
-		telemetry.DTLSHandshakeSuccessTotal,
-		telemetry.DTLSHandshakeFailureTotal,
-		telemetry.DTLSHandshakeLatencyMS,
-		telemetry.InnerAuthSuccessTotal,
-		telemetry.InnerAuthFailureTotal,
-		telemetry.InnerAuthLatencyMS,
-		telemetry.WorkerActive,
-		telemetry.WorkerReconnectTotal,
-		telemetry.WorkerReconnectBackoffMS,
-		telemetry.WorkerSendQueueDepth,
-		telemetry.WorkerSendQueueDropsTotal,
-		telemetry.WorkerLivenessExpiredTotal,
-		telemetry.LaneCount,
-		telemetry.LaneFlowCount,
-		telemetry.KCPWaitSnd,
-		telemetry.KCPOutSegmentsTotal,
-		telemetry.KCPRetransSegmentsTotal,
-		telemetry.KCPOutBytesTotal,
-		telemetry.KCPRetransBytesTotal,
-		telemetry.KCPFastRetransEstimateSegmentsTotal,
-		telemetry.KCPFastRetransEstimateBytesTotal,
-		telemetry.KCPRTORetransEstimateSegmentsTotal,
-		telemetry.KCPRTORetransEstimateBytesTotal,
-		telemetry.KCPRTTMS,
-		telemetry.KCPRTOMS,
-		telemetry.KCPRTTVarMS,
-		telemetry.KCPRTTSamplesTotal,
-		telemetry.KCPAckSegmentsTotal,
-		telemetry.KCPAckProgressSegmentsTotal,
-		telemetry.KCPInflightSegments,
-		telemetry.KCPOutputQueueDepth,
-		telemetry.KCPOutputQueueCapacity,
-		telemetry.KCPUpdateBackpressureTotal,
-		telemetry.KCPMutexBlockedSecondsTotal,
-		telemetry.WorkerOutputQueueDelayMS,
-		telemetry.WorkerOutputQueueLateTotal,
-		telemetry.WorkerWriteLatencyMS,
-		telemetry.LaneAdmissionRateBPS,
-		telemetry.LaneAdmissionWindowSegments,
-		telemetry.LaneGeneration,
-		telemetry.LaneState,
-		telemetry.LanePacingRateBPS,
-		telemetry.LaneDeliveredRateBPS,
-		telemetry.LaneMinRTTMS,
-		telemetry.LaneInflightLimitSegments,
-		telemetry.LaneTokenStarvationTotal,
-		telemetry.LaneApplicationLimited,
-		telemetry.LaneRecoveryDeferredTotal,
-		telemetry.LaneAckAgeSeconds,
-		telemetry.LaneResetRequestTotal,
-		telemetry.LaneResetRetryTotal,
-		telemetry.LaneResetAckTotal,
-		telemetry.LaneResetCommitTotal,
-		telemetry.LaneResetDurationMS,
-		telemetry.LaneStaleGenerationDropsTotal,
-		telemetry.LaneProbeResult,
-		telemetry.LaneAdmittedBytesTotal,
-		telemetry.KCPAckedBytesTotal,
-		telemetry.LaneRecoveryAttemptID,
-		telemetry.LaneRecoveryLastOutcome,
-		telemetry.FlowReorderAbortTotal,
-		telemetry.OuterPacketsInTotal,
-		telemetry.OuterPacketsOutTotal,
-		telemetry.OuterBytesInTotal,
-		telemetry.OuterBytesOutTotal,
-		telemetry.OuterPayloadBytesInTotal,
-		telemetry.OuterPayloadBytesOutTotal,
-		telemetry.OuterOverheadBytesInTotal,
-		telemetry.OuterOverheadBytesOutTotal,
-		telemetry.OuterAuthFailuresTotal,
-		telemetry.OuterWrapFailuresTotal,
 		telemetry.OuterReorderedPacketsTotal,
 		telemetry.OuterDuplicatePacketsTotal,
 		telemetry.NetworkLossRatio,
 		telemetry.NetworkJitterMS,
-		telemetry.TelemetrySequence,
-	}
+		telemetry.NetworkHandoverTotal,
+		telemetry.NetworkChangeTotal,
+		telemetry.RuntimeCPUPercent,
+		telemetry.RuntimeRSSBytes,
+		telemetry.RuntimeThermalState,
+		telemetry.RuntimeThermalAvailable,
+		telemetry.QUICConnCount,
+		telemetry.QUICStreamsActive,
+		telemetry.QUICStreamsOpenedTotal,
+		telemetry.QUICRTTMS,
+		telemetry.QUICRTTVarMS,
+		telemetry.QUICPacketsLostTotal,
+		telemetry.QUICBytesRetransTotal,
+		telemetry.QUICCongestionWindowBytes,
+		telemetry.QUICDatagramsSentTotal,
+		telemetry.QUICDatagramsDroppedTotal,
+		telemetry.PathReplacementsTotal,
+	)
 }

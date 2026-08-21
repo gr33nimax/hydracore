@@ -125,41 +125,4 @@ func TestPeerPacketConnIgnoresSupersededDeadlineTimer(t *testing.T) {
 	}
 }
 
-func TestLaneStagesOutputWithoutHoldingKCPMutexOnFullPhysicalQueue(t *testing.T) {
-	t.Parallel()
-	tunnel, err := NewParasiteTunnel(0x10203040, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = tunnel.Close() })
-	tunnel.SetTelemetryCollectionActive(true)
 
-	connection, peer := newTestDatagramPair()
-	t.Cleanup(func() { _ = peer.Close() })
-	lane := tunnel.lanes[0]
-	worker := &laneWorker{
-		id:        0,
-		conn:      connection,
-		lane:      lane,
-		parent:    tunnel,
-		metrics:   lane.metrics,
-		sendQueue: make(chan queuedSegment, 1),
-		done:      make(chan struct{}),
-	}
-	worker.sendQueue <- queuedSegment{payload: []byte("already-full")}
-	lane.workerMu.Lock()
-	lane.worker = worker
-	lane.workerMu.Unlock()
-	lane.mu.Lock()
-	lane.stageSegment([]byte("delayed"))
-	lane.mu.Unlock()
-	lane.mu.Lock()
-	require.Len(t, lane.outputPending, 1, "KCP output must be staged while the physical queue is full")
-	lane.mu.Unlock()
-	<-worker.sendQueue
-	require.Eventually(t, func() bool {
-		return len(worker.sendQueue) == 1
-	}, time.Second, time.Millisecond)
-	require.Equal(t, "delayed", string((<-worker.sendQueue).payload))
-
-	require.Zero(t, lane.metrics.Value(telemetry.WorkerSendQueueDropsTotal))
-	require.Zero(t, tunnel.metrics.Value(telemetry.WorkerNoAvailableDropsTotal))
-}

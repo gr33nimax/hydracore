@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	qtls "github.com/sagernet/sing-quic"
 )
 
 // ai-generated: QUIC connection layer over DTLS datagram stream
@@ -76,7 +75,7 @@ func dialQUIC(ctx context.Context, dtlsConn net.Conn, closer io.Closer) (*quic.C
 		NextProtos:         []string{quicALPN},
 		MinVersion:         tls.VersionTLS13,
 	}
-	quicConn, err := qtls.Dial(ctx, packetConn, dtlsConn.RemoteAddr(), tlsConfig, quicConfig())
+	quicConn, err := quic.Dial(ctx, packetConn, dtlsConn.RemoteAddr(), tlsConfig, quicConfig())
 	if err != nil {
 		_ = packetConn.Close()
 		return nil, err
@@ -92,12 +91,12 @@ func dialQUIC(ctx context.Context, dtlsConn net.Conn, closer io.Closer) (*quic.C
 }
 
 // listenQUIC creates a QUIC listener over a server-side DTLS connection.
-func listenQUIC(dtlsConn net.Conn, cert tls.Certificate) (qtls.Listener, error) {
+func listenQUIC(dtlsConn net.Conn, cert tls.Certificate) (*quic.Listener, error) {
 	packetConn := newDatagramPacketConn(dtlsConn)
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{quicALPN},
 		MinVersion:   tls.VersionTLS13,
 	}
-	return qtls.Listen(packetConn, tlsConfig, quicConfig())
+	return quic.Listen(packetConn, tlsConfig, quicConfig())
 }

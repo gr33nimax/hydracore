@@ -132,7 +132,6 @@ func (a *datagramAssociation) Write(p []byte) (int, error) {
 	totalLen := varLen + addrBuf.Len() + len(p)
 	const maxAllowedDatagram = quicPacketSize
 	if totalLen > maxAllowedDatagram {
-		logger.Default().Warn("call vk_parasite: UDP datagram oversize (", totalLen, " > ", maxAllowedDatagram, ") dropped for destination ", a.destination)
 		return 0, fmt.Errorf("call vk_parasite: datagram oversize for %s: %d > %d", a.destination, totalLen, maxAllowedDatagram)
 	}
 
@@ -159,7 +158,7 @@ func (a *datagramAssociation) LocalAddr() net.Addr {
 	if a.conn != nil {
 		return a.conn.LocalAddr()
 	}
-	return testAddr("local")
+	return &net.UDPAddr{}
 }
 
 func (a *datagramAssociation) RemoteAddr() net.Addr {

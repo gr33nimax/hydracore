@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/sagernet/quic-go"
-	qtls "github.com/sagernet/sing-quic"
-	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 )
@@ -302,6 +300,13 @@ func (r *QUICRelay) Close() {
 	})
 }
 
+// ActivePaths returns the current number of active QUIC paths in the pool.
+func (r *QUICRelay) ActivePaths() int {
+	r.pathsMu.RLock()
+	defer r.pathsMu.RUnlock()
+	return len(r.paths)
+}
+
 // AttachServerConn adds an accepted server-side QUIC connection to the relay pool.
 func (r *QUICRelay) AttachServerConn(conn *quic.Conn, closer io.Closer) {
 	pathCtx, pathCancel := context.WithCancel(r.ctx)
@@ -319,13 +324,11 @@ type quicStreamConn struct {
 }
 
 func (s *quicStreamConn) Read(p []byte) (n int, err error) {
-	n, err = s.Stream.Read(p)
-	return n, qtls.WrapError(err)
+	return s.Stream.Read(p)
 }
 
 func (s *quicStreamConn) Write(p []byte) (n int, err error) {
-	n, err = s.Stream.Write(p)
-	return n, qtls.WrapError(err)
+	return s.Stream.Write(p)
 }
 
 func (s *quicStreamConn) LocalAddr() net.Addr {
@@ -345,14 +348,4 @@ func (s *quicStreamConn) Close() error {
 	s.Stream.Close()
 	s.Stream.SetWriteDeadline(time.Now())
 	return nil
-}
-
-var _ bufio.ExtendedConn = (*quicStreamConn)(nil)
-
-func (s *quicStreamConn) ReaderReplaceable() bool {
-	return true
-}
-
-func (s *quicStreamConn) WriterReplaceable() bool {
-	return true
 }

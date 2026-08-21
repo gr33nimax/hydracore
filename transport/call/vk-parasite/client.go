@@ -371,7 +371,7 @@ func (c *Client) connectWorker(workerID uint16, joinLink string, control *client
 		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 		FlightInterval:       500 * time.Millisecond,
-		MTU:                  1100,
+		MTU:                  dtlsMTU,
 	})
 	if err != nil {
 		releaseDTLS()

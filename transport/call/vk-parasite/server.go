@@ -149,7 +149,7 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 			CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 			FlightInterval:       500 * time.Millisecond,
-			MTU:                  1100,
+			MTU:                  dtlsMTU,
 		},
 		peers:        make(map[string]*peerPacketConn),
 		helloPeers:   make(map[[32]byte]*peerPacketConn),

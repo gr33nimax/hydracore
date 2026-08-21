@@ -40,6 +40,7 @@ func TestHydraCoreCapabilities(t *testing.T) {
 	require.Equal(t, 64, capabilities.Runtime.RetainedURLTestSessions)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.Call)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKParasite)
+	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKParasiteQUIC)
 	require.Equal(t, hydraCoreCallEnabled, capabilities.Features.CallVKTelemetry)
 	switch capabilities.Identity.Role {
 	case "client":

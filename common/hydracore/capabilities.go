@@ -32,6 +32,7 @@ type FeatureSet struct {
 	Rmux                         bool `json:"rmux"`
 	Call                         bool `json:"call"`
 	CallVKParasite               bool `json:"call_vk_parasite"`
+	CallVKParasiteQUIC           bool `json:"call_vk_parasite_quic"`
 	CallVKParasiteClient         bool `json:"call_vk_parasite_client"`
 	CallVKParasiteServer         bool `json:"call_vk_parasite_server"`
 	CallVKTelemetry              bool `json:"call_vk_telemetry"`
@@ -119,6 +120,7 @@ func Capabilities() CapabilitySet {
 			Rmux:                         true,
 			Call:                         callEnabled,
 			CallVKParasite:               callEnabled,
+			CallVKParasiteQUIC:           callEnabled,
 			CallVKParasiteClient:         callClientEnabled,
 			CallVKParasiteServer:         callServerEnabled,
 			CallVKTelemetry:              callEnabled,

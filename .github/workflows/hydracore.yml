@@ -283,6 +283,7 @@ jobs:
           verify-linux/sing-box hydra capabilities --json | jq --exit-status \
             '.identity.role == "vps" and
              .features.call_vk_parasite == true and
+             .features.call_vk_parasite_quic == true and
              .features.call_vk_parasite_client == false and
              .features.call_vk_parasite_server == true and
              .features.call_vk_telemetry == true and

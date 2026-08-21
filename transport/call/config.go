@@ -162,8 +162,20 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 	return nil, E.New("call: unsupported platform ", cfg.Platform)
 }
 
+// ai-generated: RelayTransport interface extraction for decoupling proxy logic and underlying transport
+// RelayTransport - seam between call proxy logic and underlying transport.
+// Implementations: tunnel.RelayBridge (for telemost/dion/vk-p2p/wbstream),
+// vkparasite.QUICRelay (step 6).
+type RelayTransport interface {
+	DialContext(ctx context.Context, destination string) (net.Conn, error)
+	ListenPacket(ctx context.Context, destination string) (net.Conn, error)
+	SetAcceptHandler(fn func(conn net.Conn, destination string))
+	SetUDPAcceptHandler(fn func(conn net.Conn, destination string))
+	Close()
+}
+
 type Bridge struct {
-	relay  *tunnel.RelayBridge
+	relay  RelayTransport
 	closer interface{ Close() error }
 }
 
@@ -171,7 +183,7 @@ type networkRebinder interface {
 	RebindNetwork()
 }
 
-func NewBridge(relay *tunnel.RelayBridge) *Bridge {
+func NewBridge(relay RelayTransport) *Bridge {
 	return &Bridge{relay: relay}
 }
 

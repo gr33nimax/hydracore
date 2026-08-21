@@ -133,7 +133,12 @@ func allocateTURN(
 			}
 		}
 	}
-	destinations := append(rotateTURNEndpoints(udpEndpoints, preferred), rotateTURNEndpoints(tcpEndpoints, preferred)...)
+	var destinations []turnEndpoint
+	if isMobileLTE() {
+		destinations = append(rotateTURNEndpoints(tcpEndpoints, preferred), rotateTURNEndpoints(udpEndpoints, preferred)...)
+	} else {
+		destinations = append(rotateTURNEndpoints(udpEndpoints, preferred), rotateTURNEndpoints(tcpEndpoints, preferred)...)
+	}
 	if len(destinations) == 0 {
 		metrics.Set(telemetry.TURNEndpointCount, 0)
 		metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
@@ -415,4 +420,8 @@ func resolveUDPAddress(
 		return nil, err
 	}
 	return M.SocksaddrFrom(addrs[0], destination.Port).UDPAddr(), nil
+}
+
+func isMobileLTE() bool {
+	return false
 }

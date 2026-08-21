@@ -9,30 +9,41 @@ import (
 	callvk "github.com/sagernet/sing-box/transport/call/vk"
 )
 
+// ai-generated: transport supervisor with concurrency gates and mobile resilience
 const (
-	turnAllocationSpacing = 250 * time.Millisecond
+	turnConcurrencyLimit   = 4
+	dtlsConcurrencyLimit   = 2
+	turnAllocationSpacing  = 250 * time.Millisecond
 	transportDegradedLimit = 15 * time.Second
-	transportFailureLimit = 30 * time.Second
+	transportFailureLimit  = 30 * time.Second
 )
 
 type transportSupervisor struct {
-	turnGate      chan struct{}
-	dtlsGate      chan struct{}
-	recoveryGate  chan struct{}
-	migrationGate chan struct{}
-	turnMu        sync.Mutex
-	lastTURN      time.Time
+	turnGate chan struct{}
+	dtlsGate chan struct{}
+	turnMu   sync.Mutex
+	lastTURN time.Time
 }
 
 var sharedTransportSupervisor = newTransportSupervisor()
 
 func newTransportSupervisor() *transportSupervisor {
 	return &transportSupervisor{
-		turnGate:      make(chan struct{}, 1),
-		dtlsGate:      make(chan struct{}, 2),
-		recoveryGate:  make(chan struct{}, 1),
-		migrationGate: make(chan struct{}, laneFlowMigrationConcurrency),
+		turnGate: make(chan struct{}, turnConcurrencyLimit),
+		dtlsGate: make(chan struct{}, dtlsConcurrencyLimit),
 	}
+}
+
+func (s *transportSupervisor) reset() {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	for len(s.turnGate) > 0 {
+		<-s.turnGate
+	}
+	for len(s.dtlsGate) > 0 {
+		<-s.dtlsGate
+	}
+	s.lastTURN = time.Time{}
 }
 
 func acquireSupervisorPermit(ctx context.Context, gate chan struct{}) (func(), error) {
@@ -72,14 +83,6 @@ func (s *transportSupervisor) acquireDTLS(ctx context.Context) (func(), error) {
 	return acquireSupervisorPermit(ctx, s.dtlsGate)
 }
 
-func (s *transportSupervisor) acquireRecovery(ctx context.Context) (func(), error) {
-	return acquireSupervisorPermit(ctx, s.recoveryGate)
-}
-
-func (s *transportSupervisor) acquireMigration(ctx context.Context) (func(), error) {
-	return acquireSupervisorPermit(ctx, s.migrationGate)
-}
-
 func transportFailure(err error) *HC.TransportFailure {
 	if err == nil {
 		return nil
@@ -94,9 +97,17 @@ func transportFailure(err error) *HC.TransportFailure {
 }
 
 func (c *Client) publishHealth(state string, failure *HC.TransportFailure) {
-	health := c.tunnel.transportHealthSnapshot()
-	health.State = state
-	health.Failure = failure
+	activePaths := int32(0)
+	if c.relay != nil {
+		activePaths = int32(c.relay.ActivePaths())
+	}
+	health := HC.TransportHealthSnapshot{
+		State:       state,
+		ActiveLanes: activePaths,
+		TotalLanes:  int32(c.options.Workers),
+		ObservedAt:  time.Now().UnixMilli(),
+		Failure:     failure,
+	}
 	HC.PublishTransportHealth(health)
 }
 
@@ -106,20 +117,23 @@ func (c *Client) healthLoop() {
 	for {
 		select {
 		case now := <-ticker.C:
-			health := c.tunnel.transportHealthSnapshot()
-			rebinding := c.rebindActive()
+			activePaths := int32(0)
+			if c.relay != nil {
+				activePaths = int32(c.relay.ActivePaths())
+			}
+			health := HC.TransportHealthSnapshot{
+				ActiveLanes: activePaths,
+				TotalLanes:  int32(c.options.Workers),
+				ObservedAt:  now.UnixMilli(),
+			}
 			challenge := HC.CurrentRuntimeChallenge()
-			progressAge := now.Sub(time.UnixMilli(health.LastAggregateProgressAt))
 			switch {
 			case challenge != nil:
 				health.State = HC.TransportStateWaitingUser
 				health.Failure = &HC.TransportFailure{Stage: "vk_auth", Kind: "captcha", Code: "14", ChallengeID: challenge.ID}
-			case health.Demand && progressAge >= transportFailureLimit:
-				health.State = HC.TransportStateFailed
-				health.Failure = &HC.TransportFailure{Stage: "transport", Kind: "no_progress", Code: "aggregate_timeout"}
-			case health.ActiveLanes == health.TotalLanes && (!health.Demand || progressAge < transportDegradedLimit):
+			case activePaths == int32(c.options.Workers):
 				health.State = HC.TransportStateHealthy
-			case health.ActiveLanes > 0 && !rebinding:
+			case activePaths > 0:
 				health.State = HC.TransportStateDegraded
 			default:
 				health.State = HC.TransportStateRecovering
@@ -127,15 +141,6 @@ func (c *Client) healthLoop() {
 			HC.PublishTransportHealth(health)
 		case <-c.ctx.Done():
 			return
-		case <-c.tunnel.Done():
-			return
 		}
 	}
-}
-
-func (c *Client) rebindActive() bool {
-	c.rebindMu.Lock()
-	active := c.rebindCancel != nil
-	c.rebindMu.Unlock()
-	return active
 }

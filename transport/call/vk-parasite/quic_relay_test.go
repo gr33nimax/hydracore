@@ -1,0 +1,202 @@
+package vkparasite
+
+import (
+	"context"
+	"crypto/rand"
+	"io"
+	"net"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/pion/dtls/v3"
+	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
+	"github.com/sagernet/quic-go"
+	M "github.com/sagernet/sing/common/metadata"
+	"github.com/stretchr/testify/require"
+)
+
+// ai-generated: unit tests for QUICRelay path pool, dial and destination forwarding
+func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, serverRelay *QUICRelay, closer func()) {
+	var key [wrapKeyLength]byte
+	_, _ = rand.Read(key[:])
+
+	cert, err := selfsign.GenerateSelfSigned()
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	serverRelay = NewQUICRelay(ctx, QUICRelayOptions{
+		PathCount: pathCount,
+	})
+
+	dialPath := func(dialCtx context.Context, workerID uint16) (*quic.Conn, io.Closer, error) {
+		pair, pErr := newTestPacketConnPair()
+		if pErr != nil {
+			return nil, nil, pErr
+		}
+		cCodec, _ := newRTPCodec(key)
+		sCodec, _ := newRTPCodec(key)
+
+		cObfs := newObfsPacketConn(pair.client, pair.server.LocalAddr(), cCodec, nil)
+		sObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), sCodec, nil)
+
+		sDTLSConfig := &dtls.Config{
+			Certificates:         []dtls.Certificate{cert},
+			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
+			FlightInterval:       100 * time.Millisecond,
+			MTU:                  dtlsMTU,
+		}
+		cDTLSConfig := &dtls.Config{
+			InsecureSkipVerify:   true,
+			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
+			FlightInterval:       100 * time.Millisecond,
+			MTU:                  dtlsMTU,
+		}
+
+		sConnCh := make(chan net.Conn, 1)
+		go func() {
+			sConn, sErr := dtls.Server(sObfs, pair.client.LocalAddr(), sDTLSConfig)
+			if sErr == nil {
+				_ = sConn.HandshakeContext(dialCtx)
+			}
+			sConnCh <- sConn
+		}()
+
+		cConn, cErr := dtls.Client(cObfs, pair.server.LocalAddr(), cDTLSConfig)
+		if cErr != nil {
+			_ = cObfs.Close()
+			_ = sObfs.Close()
+			return nil, nil, cErr
+		}
+		if hsErr := cConn.HandshakeContext(dialCtx); hsErr != nil {
+			_ = cConn.Close()
+			_ = cObfs.Close()
+			_ = sObfs.Close()
+			return nil, nil, hsErr
+		}
+
+		sConn := <-sConnCh
+		sQL, qlErr := listenQUIC(sConn, cert)
+		if qlErr != nil {
+			_ = cConn.Close()
+			_ = sConn.Close()
+			return nil, nil, qlErr
+		}
+
+		sQConnCh := make(chan *quic.Conn, 1)
+		go func() {
+			sQC, _ := sQL.Accept(dialCtx)
+			sQConnCh <- sQC
+		}()
+
+		cQConn, qErr := dialQUIC(dialCtx, cConn, nil)
+		if qErr != nil {
+			_ = cConn.Close()
+			_ = sConn.Close()
+			return nil, nil, qErr
+		}
+
+		sQConn := <-sQConnCh
+		if sQConn != nil {
+			serverRelay.AttachServerConn(sQConn, sConn)
+		}
+
+		return cQConn, cConn, nil
+	}
+
+	clientRelay = NewQUICRelay(ctx, QUICRelayOptions{
+		PathCount: pathCount,
+		DialPath:  dialPath,
+	})
+	clientRelay.Start()
+
+	closer = func() {
+		clientRelay.Close()
+		serverRelay.Close()
+		cancel()
+	}
+
+	return clientRelay, serverRelay, closer
+}
+
+func TestDialContextCarriesDestination(t *testing.T) {
+	clientRelay, serverRelay, cleanup := setupTestRelayPair(t, 2)
+	defer cleanup()
+
+	targetDest := "example.com:443"
+	receivedDestCh := make(chan string, 1)
+
+	serverRelay.SetAcceptHandler(func(conn net.Conn, destination string) {
+		defer conn.Close()
+		receivedDestCh <- destination
+		_, _ = conn.Write([]byte("pong"))
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := clientRelay.DialContext(ctx, targetDest)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	var received string
+	select {
+	case received = <-receivedDestCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for server accept")
+	}
+
+	require.Equal(t, targetDest, received)
+
+	buf := make([]byte, 4)
+	_, err = io.ReadFull(conn, buf)
+	require.NoError(t, err)
+	require.Equal(t, "pong", string(buf))
+}
+
+func TestConcurrentDials(t *testing.T) {
+	clientRelay, serverRelay, cleanup := setupTestRelayPair(t, 4)
+	defer cleanup()
+
+	serverRelay.SetAcceptHandler(func(conn net.Conn, destination string) {
+		defer conn.Close()
+		buf := make([]byte, 8)
+		if _, err := io.ReadFull(conn, buf); err == nil {
+			_, _ = conn.Write(buf)
+		}
+	})
+
+	const concurrentCount = 100
+	var wg sync.WaitGroup
+	wg.Add(concurrentCount)
+
+	for i := 0; i < concurrentCount; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			dest := M.ParseSocksaddr("target.local:8080").String()
+			conn, err := clientRelay.DialContext(ctx, dest)
+			if err != nil {
+				t.Errorf("dial %d failed: %v", idx, err)
+				return
+			}
+			defer conn.Close()
+
+			msg := []byte("pingping")
+			if _, err := conn.Write(msg); err != nil {
+				t.Errorf("write %d failed: %v", idx, err)
+				return
+			}
+			recv := make([]byte, len(msg))
+			if _, err := io.ReadFull(conn, recv); err != nil {
+				t.Errorf("read %d failed: %v", idx, err)
+				return
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}

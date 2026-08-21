@@ -881,3 +881,38 @@ func (s *Server) Close() error {
 	})
 	return nil
 }
+
+func (s *Server) telemetrySessions() []*serverSession {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	sessions := make([]*serverSession, 0, len(s.sessions))
+	for _, session := range s.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
+func (s *Server) peerQueueStats() (int, int) {
+	s.peersMu.Lock()
+	defer s.peersMu.Unlock()
+	totalDepth := 0
+	totalCapacity := 0
+	for _, peer := range s.peers {
+		totalDepth += len(peer.readQueue)
+		totalCapacity += cap(peer.readQueue)
+	}
+	return totalDepth, totalCapacity
+}
+
+func telemetryFailureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return "timeout"
+	}
+	return "handshake_error"
+}

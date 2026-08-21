@@ -211,7 +211,7 @@ func (r *QUICRelay) DialContext(ctx context.Context, destination string) (net.Co
 	}
 	stream, err := path.conn.OpenStreamSync(ctx)
 	if err != nil {
-		return nil, qtls.WrapError(err)
+		return nil, err
 	}
 	dest := M.ParseSocksaddr(destination)
 	if err := writeStreamHeader(stream, streamKindTCP, dest); err != nil {
@@ -309,7 +309,7 @@ func (r *QUICRelay) ActivePaths() int {
 
 // AttachServerConn adds an accepted server-side QUIC connection to the relay pool.
 func (r *QUICRelay) AttachServerConn(conn *quic.Conn, closer io.Closer) {
-	pathCtx, pathCancel := context.WithCancel(r.ctx)
+	_, pathCancel := context.WithCancel(r.ctx)
 	path := &quicPathConn{
 		conn:   conn,
 		closer: closer,

@@ -383,6 +383,7 @@ func validateHydraSubscriptionRequirements(requirements hydraSubscriptionRequire
 	if hydraCoreCallEnabled {
 		supportedFeatures["call"] = true
 		supportedFeatures["call_vk_parasite"] = true
+		supportedFeatures["call_vk_parasite_quic"] = true
 	}
 	seen := make(map[string]bool)
 	for index, feature := range requirements.Core.Features {

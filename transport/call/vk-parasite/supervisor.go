@@ -11,8 +11,8 @@ import (
 
 // ai-generated: transport supervisor with concurrency gates and mobile resilience
 const (
-	turnConcurrencyLimit   = 4
-	dtlsConcurrencyLimit   = 2
+	turnConcurrencyLimit   = 2
+	dtlsConcurrencyLimit   = 4
 	turnAllocationSpacing  = 250 * time.Millisecond
 	transportDegradedLimit = 15 * time.Second
 	transportFailureLimit  = 30 * time.Second

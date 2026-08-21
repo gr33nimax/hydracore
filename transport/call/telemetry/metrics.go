@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// ai-generated: telemetry metric enum and descriptors for call transport with QUIC support
 type Metric uint16
 
 const (
@@ -20,23 +21,6 @@ const (
 	HandshakeRejectedTotal
 	HandshakeTimeoutTotal
 	HandshakeLatencyMS
-	KCPWaitSnd
-	KCPOutSegmentsTotal
-	KCPRetransSegmentsTotal
-	KCPOutBytesTotal
-	KCPRetransBytesTotal
-	KCPFastRetransEstimateSegmentsTotal
-	KCPFastRetransEstimateBytesTotal
-	KCPRTORetransEstimateSegmentsTotal
-	KCPRTORetransEstimateBytesTotal
-	KCPRTTMS
-	KCPRTOMS
-	KCPRTTVarMS
-	KCPRTTSamplesTotal
-	KCPAckSegmentsTotal
-	KCPAckProgressSegmentsTotal
-	KCPInflightSegments
-	KCPSendBlockedSecondsTotal
 	OuterPacketsInTotal
 	OuterPacketsOutTotal
 	OuterBytesInTotal
@@ -80,10 +64,6 @@ const (
 	WorkerAttachFailureTotal
 	WorkerReconnectTotal
 	WorkerReconnectBackoffMS
-	WorkerSendQueueDepth
-	WorkerSendQueueDropsTotal
-	WorkerNoAvailableDropsTotal
-	WorkerLivenessExpiredTotal
 	VKAuthSuccessTotal
 	VKAuthFailureTotal
 	VKAuthLatencyMS
@@ -117,53 +97,20 @@ const (
 	TelemetrySinkRotationsTotal
 	TelemetryPendingRecords
 	TelemetrySnapshotCoalescedTotal
-	KCPMTUBytes
-	KCPSendWindowSegments
-	KCPReceiveWindowSegments
-	KCPMaxPendingSegments
-	KCPUpdateIntervalMS
-	KCPFastResend
-	KCPCongestionControl
-	WorkerSendQueueCapacity
-	WorkerHeartbeatIntervalMS
-	WorkerLivenessTimeoutMS
-	LaneCount
-	LaneFlowCount
-	WorkerOutputQueueDelayMS
-	WorkerOutputQueueLateTotal
-	LaneAdmissionRateBPS
-	LaneAdmissionWindowSegments
-	KCPOutputQueueDepth
-	KCPOutputQueueCapacity
-	KCPUpdateBackpressureTotal
-	KCPMutexBlockedSecondsTotal
-	WorkerWriteLatencyMS
-	FlowReorderAbortTotal
 	OuterRTPPayloadType
-	LaneGeneration
-	LaneState
-	LanePacingRateBPS
-	LaneDeliveredRateBPS
-	LaneMinRTTMS
-	LaneInflightLimitSegments
-	LaneTokenStarvationTotal
-	LaneApplicationLimited
-	LaneRecoveryDeferredTotal
-	LaneAckAgeSeconds
-	LaneResetRequestTotal
-	LaneResetRetryTotal
-	LaneResetAckTotal
-	LaneResetCommitTotal
-	LaneResetDurationMS
-	LaneStaleGenerationDropsTotal
-	LaneProbeResult
-	LaneAdmittedBytesTotal
-	KCPAckedBytesTotal
-	LaneRecoveryAttemptID
-	LaneRecoveryLastOutcome
 	AggregateProgressAgeSeconds
-	QuarantinedLanes
 	SessionReplacementTotal
+	QUICConnCount
+	QUICStreamsActive
+	QUICStreamsOpenedTotal
+	QUICRTTMS
+	QUICRTTVarMS
+	QUICPacketsLostTotal
+	QUICBytesRetransTotal
+	QUICCongestionWindowBytes
+	QUICDatagramsSentTotal
+	QUICDatagramsDroppedTotal
+	PathReplacementsTotal
 	metricCount
 )
 
@@ -182,23 +129,6 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "handshake_rejected_total", counter: true},
 	{name: "handshake_timeout_total", counter: true},
 	{name: "handshake_latency_ms"},
-	{name: "kcp_wait_snd"},
-	{name: "kcp_out_segments_total", counter: true},
-	{name: "kcp_retrans_segments_total", counter: true},
-	{name: "kcp_out_bytes_total", counter: true},
-	{name: "kcp_retrans_bytes_total", counter: true},
-	{name: "kcp_fast_retrans_estimate_segments_total", counter: true},
-	{name: "kcp_fast_retrans_estimate_bytes_total", counter: true},
-	{name: "kcp_rto_retrans_estimate_segments_total", counter: true},
-	{name: "kcp_rto_retrans_estimate_bytes_total", counter: true},
-	{name: "kcp_rtt_ms"},
-	{name: "kcp_rto_ms"},
-	{name: "kcp_rttvar_ms"},
-	{name: "kcp_rtt_samples_total", counter: true},
-	{name: "kcp_ack_segments_total", counter: true},
-	{name: "kcp_ack_progress_segments_total", counter: true},
-	{name: "kcp_inflight_segments"},
-	{name: "kcp_send_blocked_seconds_total"},
 	{name: "outer_packets_in_total", counter: true},
 	{name: "outer_packets_out_total", counter: true},
 	{name: "outer_bytes_in_total", counter: true},
@@ -242,10 +172,6 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "worker_attach_failure_total", counter: true},
 	{name: "worker_reconnect_total", counter: true},
 	{name: "worker_reconnect_backoff_ms"},
-	{name: "worker_send_queue_depth"},
-	{name: "worker_send_queue_drops_total", counter: true},
-	{name: "worker_no_available_drops_total", counter: true},
-	{name: "worker_liveness_expired_total", counter: true},
 	{name: "vk_auth_success_total", counter: true},
 	{name: "vk_auth_failure_total", counter: true},
 	{name: "vk_auth_latency_ms"},
@@ -279,65 +205,26 @@ var metricDescriptors = [...]metricDescriptor{
 	{name: "telemetry_sink_rotations_total", counter: true},
 	{name: "telemetry_pending_records"},
 	{name: "telemetry_snapshot_coalesced_total", counter: true},
-	{name: "kcp_mtu_bytes"},
-	{name: "kcp_send_window_segments"},
-	{name: "kcp_receive_window_segments"},
-	{name: "kcp_max_pending_segments"},
-	{name: "kcp_update_interval_ms"},
-	{name: "kcp_fast_resend"},
-	{name: "kcp_congestion_control"},
-	{name: "worker_send_queue_capacity"},
-	{name: "worker_heartbeat_interval_ms"},
-	{name: "worker_liveness_timeout_ms"},
-	{name: "lane_count"},
-	{name: "lane_flow_count"},
-	{name: "worker_output_queue_delay_ms"},
-	{name: "worker_output_queue_late_total", counter: true},
-	{name: "lane_admission_bytes_per_second"},
-	{name: "lane_admission_window_segments"},
-	{name: "kcp_output_queue_depth"},
-	{name: "kcp_output_queue_capacity"},
-	{name: "kcp_update_backpressure_total", counter: true},
-	{name: "kcp_mutex_blocked_seconds_total"},
-	{name: "worker_write_latency_ms"},
-	{name: "flow_reorder_abort_total", counter: true},
 	{name: "outer_rtp_payload_type"},
-	{name: "lane_generation"},
-	{name: "lane_state"},
-	{name: "lane_pacing_bytes_per_second"},
-	{name: "lane_delivered_bytes_per_second"},
-	{name: "lane_min_rtt_ms"},
-	{name: "lane_inflight_limit_segments"},
-	{name: "lane_token_starvation_total", counter: true},
-	{name: "lane_application_limited"},
-	{name: "lane_recovery_deferred_total", counter: true},
-	{name: "lane_ack_age_seconds"},
-	{name: "lane_reset_request_total", counter: true},
-	{name: "lane_reset_retry_total", counter: true},
-	{name: "lane_reset_ack_total", counter: true},
-	{name: "lane_reset_commit_total", counter: true},
-	{name: "lane_reset_duration_ms"},
-	{name: "lane_stale_generation_drops_total", counter: true},
-	{name: "lane_probe_result"},
-	{name: "lane_admitted_bytes_total", counter: true},
-	{name: "kcp_acked_bytes_total", counter: true},
-	{name: "lane_recovery_attempt_id"},
-	{name: "lane_recovery_last_outcome"},
 	{name: "aggregate_progress_age_seconds"},
-	{name: "quarantined_lanes"},
 	{name: "session_replacement_total", counter: true},
+	{name: "quic_conn_count"},
+	{name: "quic_streams_active"},
+	{name: "quic_streams_opened_total", counter: true},
+	{name: "quic_rtt_ms"},
+	{name: "quic_rtt_var_ms"},
+	{name: "quic_packets_lost_total", counter: true},
+	{name: "quic_bytes_retrans_total", counter: true},
+	{name: "quic_congestion_window_bytes"},
+	{name: "quic_datagrams_sent_total", counter: true},
+	{name: "quic_datagrams_dropped_total", counter: true},
+	{name: "path_replacements_total", counter: true},
 }
 
 var ServerRequired = []Metric{
 	AuthSuccessTotal, AuthFailureTotal,
 	DTLSHandshakeSuccessTotal, DTLSHandshakeFailureTotal, DTLSHandshakeLatencyMS,
 	HandshakePending, HandshakeRejectedTotal, HandshakeTimeoutTotal, HandshakeLatencyMS,
-	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
-	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
-	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
-	KCPAckSegmentsTotal, KCPAckProgressSegmentsTotal, KCPInflightSegments, KCPSendBlockedSecondsTotal,
-	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
-	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
 	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal,
 	OuterPayloadBytesInTotal, OuterPayloadBytesOutTotal, OuterOverheadBytesInTotal, OuterOverheadBytesOutTotal,
 	OuterAuthFailuresTotal, OuterWrapFailuresTotal,
@@ -347,18 +234,13 @@ var ServerRequired = []Metric{
 	RelayTCPActive, RelayUDPActive, RelayBytesTotal, RelayQueueDepth, RelayQueueDropsTotal, RelayConnectFailureTotal,
 	RuntimeGoroutines, RuntimeHeapBytes, RuntimeGCPauseSecondsTotal,
 	SessionActive, SessionCreatedTotal, SessionClosedTotal,
-	WorkerActive, WorkerAttachSuccessTotal, WorkerAttachFailureTotal, WorkerSendQueueDepth,
-	WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
-	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, WorkerWriteLatencyMS,
-	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
-	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
-	FlowReorderAbortTotal, OuterRTPPayloadType,
-	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
-	LaneTokenStarvationTotal, LaneApplicationLimited, LaneRecoveryDeferredTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
-	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
-	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
+	WorkerActive, WorkerAttachSuccessTotal, WorkerAttachFailureTotal,
+	OuterRTPPayloadType,
+	AggregateProgressAgeSeconds, SessionReplacementTotal,
 	TelemetrySequence, TelemetryControlDropsTotal, TelemetryRecordDropsTotal, TelemetrySinkRotationsTotal,
+	QUICConnCount, QUICStreamsActive, QUICStreamsOpenedTotal, QUICRTTMS, QUICRTTVarMS,
+	QUICPacketsLostTotal, QUICBytesRetransTotal, QUICCongestionWindowBytes,
+	QUICDatagramsSentTotal, QUICDatagramsDroppedTotal, PathReplacementsTotal,
 }
 
 var ClientRequired = []Metric{
@@ -370,50 +252,17 @@ var ClientRequired = []Metric{
 	DTLSHandshakeSuccessTotal, DTLSHandshakeFailureTotal, DTLSHandshakeLatencyMS,
 	InnerAuthSuccessTotal, InnerAuthFailureTotal, InnerAuthLatencyMS,
 	WorkerDesired, WorkerActive, WorkerReconnectTotal, WorkerReconnectBackoffMS,
-	WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerLivenessExpiredTotal,
-	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
-	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, WorkerWriteLatencyMS,
-	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
-	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
-	FlowReorderAbortTotal, OuterRTPPayloadType,
-	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
-	LaneTokenStarvationTotal, LaneApplicationLimited, LaneRecoveryDeferredTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
-	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
-	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
-	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
-	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
-	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
-	KCPAckSegmentsTotal, KCPAckProgressSegmentsTotal, KCPInflightSegments, KCPSendBlockedSecondsTotal,
-	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
-	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
+	OuterRTPPayloadType,
+	AggregateProgressAgeSeconds, SessionReplacementTotal,
 	NetworkLossRatio, NetworkJitterMS, NetworkHandoverTotal, NetworkChangeTotal,
 	OuterPacketsInTotal, OuterPacketsOutTotal, OuterBytesInTotal, OuterBytesOutTotal,
 	OuterPayloadBytesInTotal, OuterPayloadBytesOutTotal, OuterOverheadBytesInTotal, OuterOverheadBytesOutTotal,
 	OuterAuthFailuresTotal,
 	RuntimeCPUPercent, RuntimeRSSBytes, RuntimeThermalState,
 	TelemetrySequence, TelemetryRecordDropsTotal, TelemetryLeaseExpiredTotal, TelemetryPendingRecords, TelemetrySnapshotCoalescedTotal,
-}
-
-var TunnelMetrics = []Metric{
-	KCPWaitSnd, KCPOutSegmentsTotal, KCPRetransSegmentsTotal, KCPOutBytesTotal, KCPRetransBytesTotal,
-	KCPFastRetransEstimateSegmentsTotal, KCPFastRetransEstimateBytesTotal, KCPRTORetransEstimateSegmentsTotal, KCPRTORetransEstimateBytesTotal,
-	KCPRTTMS, KCPRTOMS, KCPRTTVarMS, KCPRTTSamplesTotal,
-	KCPAckSegmentsTotal, KCPAckProgressSegmentsTotal, KCPInflightSegments, KCPSendBlockedSecondsTotal,
-	KCPMTUBytes, KCPSendWindowSegments, KCPReceiveWindowSegments, KCPMaxPendingSegments,
-	KCPUpdateIntervalMS, KCPFastResend, KCPCongestionControl,
-	RelayTCPActive, RelayUDPActive, RelayBytesTotal, RelayQueueDepth, RelayQueueDropsTotal, RelayConnectFailureTotal,
-	WorkerActive, WorkerSendQueueDepth, WorkerSendQueueDropsTotal, WorkerNoAvailableDropsTotal, WorkerLivenessExpiredTotal,
-	WorkerSendQueueCapacity, WorkerHeartbeatIntervalMS, WorkerLivenessTimeoutMS,
-	LaneCount, LaneFlowCount,
-	WorkerOutputQueueDelayMS, WorkerOutputQueueLateTotal, WorkerWriteLatencyMS,
-	LaneAdmissionRateBPS, LaneAdmissionWindowSegments,
-	KCPOutputQueueDepth, KCPOutputQueueCapacity, KCPUpdateBackpressureTotal, KCPMutexBlockedSecondsTotal,
-	FlowReorderAbortTotal, OuterRTPPayloadType,
-	LaneGeneration, LaneState, LanePacingRateBPS, LaneDeliveredRateBPS, LaneMinRTTMS, LaneInflightLimitSegments,
-	LaneTokenStarvationTotal, LaneApplicationLimited, LaneRecoveryDeferredTotal, LaneAckAgeSeconds, LaneResetRequestTotal, LaneResetRetryTotal, LaneResetAckTotal,
-	LaneResetCommitTotal, LaneResetDurationMS, LaneStaleGenerationDropsTotal, LaneProbeResult,
-	AggregateProgressAgeSeconds, QuarantinedLanes, SessionReplacementTotal,
+	QUICConnCount, QUICStreamsActive, QUICStreamsOpenedTotal, QUICRTTMS, QUICRTTVarMS,
+	QUICPacketsLostTotal, QUICBytesRetransTotal, QUICCongestionWindowBytes,
+	QUICDatagramsSentTotal, QUICDatagramsDroppedTotal, PathReplacementsTotal,
 }
 
 type Accumulator struct {

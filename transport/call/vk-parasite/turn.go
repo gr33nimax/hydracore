@@ -237,7 +237,8 @@ func allocateTURNEndpoint(
 			}
 			stream := tcpConn
 			if endpoint.secure {
-				tlsConn := tls.Client(tcpConn, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: endpoint.serverName})
+				splitConn := &turnTLSSplitConn{Conn: tcpConn}
+				tlsConn := tls.Client(splitConn, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: endpoint.serverName})
 				if handshakeErr := tlsConn.HandshakeContext(ctx); handshakeErr != nil {
 					_ = tcpConn.Close()
 					lastErr = handshakeErr
@@ -424,4 +425,25 @@ func resolveUDPAddress(
 
 func isMobileLTE() bool {
 	return false
+}
+
+type turnTLSSplitConn struct {
+	net.Conn
+	splitDone bool
+}
+
+func (c *turnTLSSplitConn) Write(b []byte) (int, error) {
+	if !c.splitDone && len(b) > 5 && b[0] == 0x16 && b[1] == 0x03 {
+		c.splitDone = true
+		splitPoint := min(len(b)/2, 64)
+		if splitPoint > 0 && splitPoint < len(b) {
+			n1, err := c.Conn.Write(b[:splitPoint])
+			if err != nil {
+				return n1, err
+			}
+			n2, err := c.Conn.Write(b[splitPoint:])
+			return n1 + n2, err
+		}
+	}
+	return c.Conn.Write(b)
 }

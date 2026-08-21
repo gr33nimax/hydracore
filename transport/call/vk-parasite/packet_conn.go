@@ -227,24 +227,6 @@ func (c *obfsPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	if !samePacketAddress(addr, c.remote) {
 		return 0, errors.New("call vk_parasite: unexpected DTLS destination")
 	}
-	if frags, ok := splitDTLSClientHello(payload); ok {
-		for _, frag := range frags {
-			wire, rawBuf, err := c.codec.wrap(frag)
-			if err != nil {
-				c.metrics.AddHot(telemetry.OuterWrapFailuresTotal, 1)
-				return 0, err
-			}
-			_, err = c.base.WriteTo(wire, c.remote)
-			c.codec.putBuffer(rawBuf)
-			if err != nil {
-				return 0, err
-			}
-			c.metrics.AddHot(telemetry.OuterPacketsOutTotal, 1)
-			c.metrics.AddHot(telemetry.OuterBytesOutTotal, uint64(len(wire)))
-		}
-		c.metrics.AddHot(telemetry.OuterPayloadBytesOutTotal, uint64(len(payload)))
-		return len(payload), nil
-	}
 	wire, rawBuf, err := c.codec.wrap(payload)
 	if err != nil {
 		c.metrics.AddHot(telemetry.OuterWrapFailuresTotal, 1)
@@ -260,44 +242,6 @@ func (c *obfsPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	c.metrics.AddHot(telemetry.OuterPayloadBytesOutTotal, uint64(len(payload)))
 	c.metrics.AddHot(telemetry.OuterOverheadBytesOutTotal, uint64(len(wire)-len(payload)))
 	return len(payload), nil
-}
-
-func splitDTLSClientHello(payload []byte) ([][]byte, bool) {
-	const dtlsRecordHeaderLength = 13
-	const dtlsHandshakeHeaderLength = 12
-	if len(payload) < dtlsRecordHeaderLength+dtlsHandshakeHeaderLength+34 || payload[0] != 22 || payload[1] != 0xfe || payload[13] != 1 {
-		return nil, false
-	}
-	hsLength := int(payload[14])<<16 | int(payload[15])<<8 | int(payload[16])
-	fragLength := int(payload[22])<<16 | int(payload[23])<<8 | int(payload[24])
-	if hsLength != fragLength || fragLength <= 64 {
-		return nil, false
-	}
-	split := fragLength / 2
-
-	frag1 := make([]byte, dtlsRecordHeaderLength+dtlsHandshakeHeaderLength+split)
-	copy(frag1[:dtlsRecordHeaderLength+dtlsHandshakeHeaderLength], payload[:dtlsRecordHeaderLength+dtlsHandshakeHeaderLength])
-	frag1[22] = byte(split >> 16)
-	frag1[23] = byte(split >> 8)
-	frag1[24] = byte(split)
-	binary.BigEndian.PutUint16(frag1[11:13], uint16(dtlsHandshakeHeaderLength+split))
-	copy(frag1[dtlsRecordHeaderLength+dtlsHandshakeHeaderLength:], payload[dtlsRecordHeaderLength+dtlsHandshakeHeaderLength:dtlsRecordHeaderLength+dtlsHandshakeHeaderLength+split])
-
-	rem := fragLength - split
-	frag2 := make([]byte, dtlsRecordHeaderLength+dtlsHandshakeHeaderLength+rem)
-	copy(frag2[:dtlsRecordHeaderLength+dtlsHandshakeHeaderLength], payload[:dtlsRecordHeaderLength+dtlsHandshakeHeaderLength])
-	seq := binary.BigEndian.Uint64(payload[3:11]) + 1
-	binary.BigEndian.PutUint64(frag2[3:11], seq)
-	frag2[19] = byte(split >> 16)
-	frag2[20] = byte(split >> 8)
-	frag2[21] = byte(split)
-	frag2[22] = byte(rem >> 16)
-	frag2[23] = byte(rem >> 8)
-	frag2[24] = byte(rem)
-	binary.BigEndian.PutUint16(frag2[11:13], uint16(dtlsHandshakeHeaderLength+rem))
-	copy(frag2[dtlsRecordHeaderLength+dtlsHandshakeHeaderLength:], payload[dtlsRecordHeaderLength+dtlsHandshakeHeaderLength+split:])
-
-	return [][]byte{frag1, frag2}, true
 }
 
 func (c *obfsPacketConn) Close() error                       { return c.base.Close() }

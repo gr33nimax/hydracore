@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -78,6 +77,17 @@ func TestRTPWireFormatStructure(t *testing.T) {
 	require.True(t, bytes.Equal(plain, payload), "Plaintext must match original payload")
 }
 
+// TestRTPWireFormatGoldenFixture фиксирует раскладку заголовка на проводе.
+//
+// Кодек строится через newRTPCodec, а не литералом: литерал уже один раз
+// оставил prng нулевым и уронил тест паникой в wrap. Пиннинг делаем поверх
+// готового кодека, подменяя только детерминированные поля.
+//
+// Timestamp и шифртекст выведены из настенных часов (nonce строится из
+// ssrc+sequence+timestamp), поэтому побайтово они не проверяются — их
+// корректность подтверждает roundtrip ниже. Всё остальное зафиксировано
+// точно: расхождение означает несовместимость с уже развёрнутыми
+// серверами профиля, гейтящегося call_vk_parasite_quic.
 func TestRTPWireFormatGoldenFixture(t *testing.T) {
 	t.Parallel()
 	key := [wrapKeyLength]byte{
@@ -87,30 +97,43 @@ func TestRTPWireFormatGoldenFixture(t *testing.T) {
 		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
 	}
 
-	aead, err := chacha20poly1305.New(key[:])
+	codec, err := newRTPCodec(key)
 	require.NoError(t, err)
-
-	codec := &rtpCodec{
-		aead:        aead,
-		ssrc:        0x12345678,
-		initialSeq:  0x0042,
-		initialTS:   0xdeadbeef,
-		payloadType: 111,
-		startedAt:   time.Now().Add(-5 * time.Second),
-	}
+	codec.ssrc = 0x12345678
+	codec.initialSeq = 0x0042
+	codec.initialTS = 0xdeadbeef
+	codec.payloadType = 111
 
 	payload := []byte("golden-fixture-payload-1234567890")
-	wire, _, err := codec.wrap(payload)
+	wire, raw, err := codec.wrap(payload)
 	require.NoError(t, err)
+	defer codec.putBuffer(raw)
 
-	require.Equal(t, byte(0xb0), wire[0]) // V=2, P=1, X=1 -> 0x80|0x20|0x10 = 0xb0
+	// Первый байт: V=2, P=1, X=1 -> 0x80|0x20|0x10.
+	require.Equal(t, byte(0xb0), wire[0])
 	require.Equal(t, byte(111), wire[1])
 	require.Equal(t, uint16(0x0042), binary.BigEndian.Uint16(wire[2:4]))
 	require.Equal(t, uint32(0x12345678), binary.BigEndian.Uint32(wire[8:12]))
-	require.Equal(t, byte(0xbe), wire[12])
-	require.Equal(t, byte(0xde), wire[13])
 
-	receiver := &rtpCodec{aead: aead}
+	// RFC 8285 One-Byte Header: profile 0xBEDE, длина 1 слово,
+	// ssrc-audio-level (id=1, len=0) с нулевым хвостом до границы слова.
+	require.Equal(t,
+		[]byte{0xbe, 0xde, 0x00, 0x01, 0x10, 0x00, 0x00, 0x00},
+		wire[rtpHeaderLength:rtpTotalHeaderLength],
+		"расширение RFC 8285 обязано лежать байт-в-байт по этому смещению")
+
+	// Длина: заголовок с расширением, шифртекст с тегом и паддинг,
+	// последний байт которого равен его собственной длине.
+	paddingLength := int(wire[len(wire)-1])
+	require.GreaterOrEqual(t, paddingLength, 1)
+	require.LessOrEqual(t, paddingLength, defaultRTPPadding)
+	require.Equal(t,
+		rtpTotalHeaderLength+len(payload)+chacha20poly1305.Overhead+paddingLength,
+		len(wire),
+		"общая длина обязана складываться из заголовка, шифртекста и паддинга")
+
+	receiver, err := newRTPCodec(key)
+	require.NoError(t, err)
 	recovered, err := receiver.unwrap(wire)
 	require.NoError(t, err)
 	require.Equal(t, payload, recovered)

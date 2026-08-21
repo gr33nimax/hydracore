@@ -6,7 +6,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ai-generated: unit test for MTU budget invariants
 func TestMTUBudget(t *testing.T) {
 	require.GreaterOrEqual(t, quicPacketSize, quicMinimumPacketSize)
 	require.LessOrEqual(t, quicPacketSize+overheadDTLSRecord, dtlsMTU)

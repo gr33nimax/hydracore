@@ -13,7 +13,6 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-// ai-generated: bridge connecting call transport layer to vk_parasite QUICRelay
 type BridgeOptions struct {
 	Server               M.Socksaddr
 	JoinLinks            []string

@@ -10,7 +10,6 @@ import (
 	"github.com/sagernet/quic-go"
 )
 
-// ai-generated: QUIC connection layer over DTLS datagram stream
 const quicALPN = "hcvk/1"
 
 type datagramPacketConn struct {

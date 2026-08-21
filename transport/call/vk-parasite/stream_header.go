@@ -8,7 +8,6 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
-// ai-generated: stream header serialization for user connections multiplexed over QUIC
 const (
 	streamKindTCP byte = 0x01
 	streamKindUDP byte = 0x02

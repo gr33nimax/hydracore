@@ -6,7 +6,6 @@ import (
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 )
 
-// ai-generated: client telemetry collector for vk_parasite QUICRelay transport
 const (
 	clientTelemetryInterval     = 2 * time.Second
 	clientEventsPerInterval     = 16

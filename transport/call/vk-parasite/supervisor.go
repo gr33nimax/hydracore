@@ -9,7 +9,6 @@ import (
 	callvk "github.com/sagernet/sing-box/transport/call/vk"
 )
 
-// ai-generated: transport supervisor with concurrency gates and mobile resilience
 const (
 	turnConcurrencyLimit   = 2
 	dtlsConcurrencyLimit   = 4

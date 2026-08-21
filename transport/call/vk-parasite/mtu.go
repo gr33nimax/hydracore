@@ -1,6 +1,5 @@
 package vkparasite
 
-// ai-generated: MTU budget constants and calculations for QUIC over DTLS/RTP/TURN
 // Бюджет пути от QUIC-пакета до IP-датаграммы наружу.
 //
 //	IP + UDP до TURN                      28

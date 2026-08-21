@@ -14,7 +14,6 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
-// ai-generated: QUICRelay transport implementation fulfilling call.RelayTransport seam
 const (
 	defaultQUICPathCount = 16
 	pathDialTimeout      = 30 * time.Second

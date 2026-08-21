@@ -22,13 +22,14 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// ai-generated: RTP obfuscation codec with dynamic Opus PT and RFC 8285 extension support
 const (
-	wrapKeyLength      = 32
-	rtpHeaderLength    = 12
-	defaultRTPPadding  = 24
-	maxCodecWireBuffer = 1536
-	maximumWirePacket  = 64 * 1024
+	wrapKeyLength        = 32
+	rtpHeaderLength      = 12
+	rtpExtensionLength   = 8 // RFC 8285 One-Byte Header: 0xBEDE (2B) + len (2B) + ssrc-audio-level (4B)
+	rtpTotalHeaderLength = rtpHeaderLength + rtpExtensionLength
+	defaultRTPPadding    = 24
+	maxCodecWireBuffer   = 1536
+	maximumWirePacket    = 64 * 1024
 )
 
 type wireBuffer [maxCodecWireBuffer]byte
@@ -81,7 +82,7 @@ func newRTPCodec(key [wrapKeyLength]byte) (*rtpCodec, error) {
 		ssrc:        binary.BigEndian.Uint32(seed[0:4]),
 		initialSeq:  binary.BigEndian.Uint16(seed[4:6]),
 		initialTS:   binary.BigEndian.Uint32(seed[6:10]),
-		payloadType: 96 + byte(binary.BigEndian.Uint16(seed[4:6])%32), // Dynamic PT in range [96, 127]
+		payloadType: 96 + byte(binary.BigEndian.Uint16(seed[4:6])%32),
 		startedAt:   time.Now(),
 		prng:        randv2.NewChaCha8(prngSeed),
 	}
@@ -108,7 +109,7 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, *wireBuffer, error) {
 	if len(payload) == 0 {
 		return nil, nil, errors.New("RTP wrapper: empty payload")
 	}
-	if len(payload)+rtpHeaderLength+chacha20poly1305.Overhead+defaultRTPPadding+1 > maximumWirePacket {
+	if len(payload)+rtpTotalHeaderLength+chacha20poly1305.Overhead+defaultRTPPadding+1 > maximumWirePacket {
 		return nil, nil, errors.New("RTP wrapper: payload too large")
 	}
 
@@ -124,7 +125,7 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, *wireBuffer, error) {
 	paddingLength := int(byte(r))%defaultRTPPadding + 1
 	r >>= 8
 	rem := 7
-	totalLen := rtpHeaderLength + len(payload) + chacha20poly1305.Overhead + paddingLength
+	totalLen := rtpTotalHeaderLength + len(payload) + chacha20poly1305.Overhead + paddingLength
 
 	var out []byte
 	var rawBuf *wireBuffer
@@ -135,7 +136,7 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, *wireBuffer, error) {
 		out = make([]byte, totalLen)
 	}
 
-	paddingStart := rtpHeaderLength + len(payload) + chacha20poly1305.Overhead
+	paddingStart := rtpTotalHeaderLength + len(payload) + chacha20poly1305.Overhead
 	if paddingLength > 1 {
 		padBytes := out[paddingStart : totalLen-1]
 		for len(padBytes) > 0 {
@@ -157,12 +158,22 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, *wireBuffer, error) {
 	sequence := c.initialSeq + uint16(packetIndex)
 	nonce := buildRTPNonce(c.ssrc, sequence, timestamp)
 
-	out[0] = 0x80 | 0x20
+	out[0] = 0x80 | 0x20 | 0x10
 	out[1] = c.payloadType
 	binary.BigEndian.PutUint16(out[2:4], sequence)
 	binary.BigEndian.PutUint32(out[4:8], timestamp)
 	binary.BigEndian.PutUint32(out[8:12], c.ssrc)
-	c.aead.Seal(out[rtpHeaderLength:rtpHeaderLength], nonce[:], payload, out[:rtpHeaderLength])
+
+	out[12] = 0xBE
+	out[13] = 0xDE
+	out[14] = 0x00
+	out[15] = 0x01
+	out[16] = 0x10
+	out[17] = 0x00
+	out[18] = 0x00
+	out[19] = 0x00
+
+	c.aead.Seal(out[rtpTotalHeaderLength:rtpTotalHeaderLength], nonce[:], payload, out[:rtpTotalHeaderLength])
 	out[totalLen-1] = byte(paddingLength)
 	return out, rawBuf, nil
 }

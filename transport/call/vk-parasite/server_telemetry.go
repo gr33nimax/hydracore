@@ -11,7 +11,6 @@ import (
 	"github.com/sagernet/sing/common/logger"
 )
 
-// ai-generated: server telemetry collector for vk_parasite QUICRelay transport
 const serverTelemetryInterval = 2 * time.Second
 
 type serverTelemetry struct {

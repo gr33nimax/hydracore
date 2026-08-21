@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ai-generated: unit tests for server telemetry snapshots
 func TestServerTelemetryWritesUltimateCompatibleSnapshot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the native VPS sink relies on POSIX rename semantics")

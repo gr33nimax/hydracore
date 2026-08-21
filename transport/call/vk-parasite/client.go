@@ -22,7 +22,6 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-// ai-generated: client managing QUICRelay paths over TURN/DTLS
 type ClientOptions struct {
 	Server                M.Socksaddr
 	JoinLinks             []string

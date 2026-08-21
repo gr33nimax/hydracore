@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ai-generated: test datagram packetConn pair for DTLS/QUIC in-memory tests
 type testPacketConnPair struct {
 	client net.PacketConn
 	server net.PacketConn
@@ -37,7 +36,6 @@ func newTestPacketConnPair() (*testPacketConnPair, error) {
 	}, nil
 }
 
-// ai-generated: unit test for QUIC over DTLS over obfsPacketConn
 func TestQUICOverDTLSEcho(t *testing.T) {
 	var key [wrapKeyLength]byte
 	_, err := rand.Read(key[:])
@@ -77,12 +75,6 @@ func TestQUICOverDTLSEcho(t *testing.T) {
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 		FlightInterval:       100 * time.Millisecond,
 		MTU:                  dtlsMTU,
-	}
-
-	serverDTLSListener, err := dtls.Listen("udp", pair.server.LocalAddr().(*net.UDPAddr), serverDTLSConfig)
-	if err != nil {
-		// Fall back to connecting DTLS over custom packetConn
-		serverDTLSListener = nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

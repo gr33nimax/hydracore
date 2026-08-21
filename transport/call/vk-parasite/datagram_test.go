@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ai-generated: unit tests for UDP over QUIC datagrams
 func TestDatagramRoundtrip(t *testing.T) {
 	clientRelay, serverRelay, cleanup := setupTestRelayPair(t, 1)
 	defer cleanup()

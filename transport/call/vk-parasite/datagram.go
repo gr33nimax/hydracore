@@ -15,7 +15,6 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 )
 
-// ai-generated: UDP datagram routing over QUIC datagrams with association tracking
 type datagramRouter struct {
 	mu           sync.RWMutex
 	associations map[uint64]*datagramAssociation

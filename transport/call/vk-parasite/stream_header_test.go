@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ai-generated: unit test for QUIC stream header serialization and roundtrip
 func TestStreamHeaderRoundtrip(t *testing.T) {
 	testCases := []struct {
 		name string

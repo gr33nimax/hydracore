@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ai-generated: unit tests for QUICRelay path pool, dial and destination forwarding
 func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, serverRelay *QUICRelay, closer func()) {
 	var key [wrapKeyLength]byte
 	_, _ = rand.Read(key[:])

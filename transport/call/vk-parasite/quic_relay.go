@@ -40,7 +40,6 @@ type QUICRelay struct {
 	pathCount   int
 	nextPath    atomic.Uint64
 	onAccept    atomic.Pointer[func(net.Conn, string)]
-	onUDPAccept atomic.Pointer[func(net.Conn, string)]
 	pathsMu     sync.RWMutex
 	paths       []*quicPathConn
 	closed      atomic.Bool
@@ -137,6 +136,7 @@ func (r *QUICRelay) removePath(path *quicPathConn) {
 func (r *QUICRelay) watchPath(path *quicPathConn) {
 	<-path.conn.Context().Done()
 	r.removePath(path)
+	r.dgramRouter.closeConn(path.conn)
 	path.cancel()
 	if path.closer != nil {
 		_ = path.closer.Close()
@@ -266,8 +266,11 @@ func (r *QUICRelay) SetAcceptHandler(fn func(conn net.Conn, destination string))
 	r.onAccept.Store(&fn)
 }
 
+// SetUDPAcceptHandler включает приём UDP-ассоциаций, открытых удалённой
+// стороной. Обработчик держит датаграммный роутер: ассоциация создаётся по
+// первому же фрейму с неизвестным идентификатором.
 func (r *QUICRelay) SetUDPAcceptHandler(fn func(conn net.Conn, destination string)) {
-	r.onUDPAccept.Store(&fn)
+	r.dgramRouter.setAcceptHandler(fn)
 }
 
 func (r *QUICRelay) ListenPacket(ctx context.Context, destination string) (net.Conn, error) {

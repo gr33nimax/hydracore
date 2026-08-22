@@ -80,3 +80,20 @@ func TestWrappedQUICPacketFitsPathMTU(t *testing.T) {
 	require.Equal(t, overheadRTPAEAD, chacha20poly1305.Overhead,
 		"overheadRTPAEAD в mtu.go должен совпадать с тегом AEAD")
 }
+
+// TestDatagramFrameFitsQUICPacket закрепляет второй бюджет пути: payload
+// DATAGRAM-фрейма плюс заголовок фрейма и накладные внешнего QUIC-пакета
+// обязаны влезать в quicPacketSize.
+func TestDatagramFrameFitsQUICPacket(t *testing.T) {
+	t.Parallel()
+	require.LessOrEqual(t,
+		maxDatagramFramePayload+overheadDatagramFrame+overheadQUICHeader+overheadQUICAEAD,
+		quicPacketSize,
+		"DATAGRAM-фрейм обязан влезать во внешний QUIC-пакет")
+	// Порог quic-go выше физического, потому что его оценка не считает номер
+	// пакета и заголовок фрейма. Уйти выше него нельзя: SendDatagram отдаст
+	// DatagramTooLargeError.
+	require.LessOrEqual(t, maxDatagramFramePayload, quicSendDatagramLimit,
+		"payload обязан проходить порог SendDatagram в quic-go")
+	require.Positive(t, maxDatagramFramePayload)
+}

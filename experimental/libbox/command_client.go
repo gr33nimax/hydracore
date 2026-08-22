@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/daemon"
@@ -30,6 +31,7 @@ type CommandClient struct {
 	standalone          bool
 	runtimeEventHandler RuntimeEventHandler
 	urlTestEventHandler URLTestEventHandler
+	disconnectRequested atomic.Bool
 }
 
 type CommandClientOptions struct {
@@ -176,6 +178,16 @@ func (c *CommandClient) dialWithRetry(target string, contextDialer func(context.
 	var lastError error
 
 	for attempt := range commandClientDialAttempts {
+		// Disconnect может прийти, пока мы держим clientMutex в Connect:
+		// без этой проверки цикл добирает свои ~3.2 с ретраев и переживает
+		// бюджет teardown у платформы, из-за чего остановка сервиса
+		// отчитывается как незавершённая.
+		if c.disconnectRequested.Load() {
+			if connection != nil {
+				connection.Close()
+			}
+			return nil, nil, os.ErrClosed
+		}
 		if connection == nil {
 			options := []grpc.DialOption{
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -214,6 +226,7 @@ func (c *CommandClient) dialWithRetry(target string, contextDialer func(context.
 }
 
 func (c *CommandClient) Connect() error {
+	c.disconnectRequested.Store(false)
 	c.clientMutex.Lock()
 	common.Close(common.PtrOrNil(c.grpcConn))
 
@@ -233,6 +246,7 @@ func (c *CommandClient) Connect() error {
 }
 
 func (c *CommandClient) ConnectWithFD(fd int32) error {
+	c.disconnectRequested.Store(false)
 	c.clientMutex.Lock()
 	common.Close(common.PtrOrNil(c.grpcConn))
 
@@ -289,6 +303,9 @@ func (c *CommandClient) dispatchCommands() error {
 }
 
 func (c *CommandClient) Disconnect() error {
+	// Флаг ставится до захвата мьютекса: он и прерывает дозвон, который этот
+	// мьютекс сейчас держит.
+	c.disconnectRequested.Store(true)
 	c.clientMutex.Lock()
 	defer c.clientMutex.Unlock()
 	if c.cancel != nil {

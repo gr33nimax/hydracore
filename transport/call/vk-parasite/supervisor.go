@@ -95,51 +95,53 @@ func transportFailure(err error) *HC.TransportFailure {
 	return &HC.TransportFailure{Stage: "transport", Kind: "network", Code: "worker_failed"}
 }
 
-func (c *Client) publishHealth(state string, failure *HC.TransportFailure) {
-	activePaths := int32(0)
-	if c.relay != nil {
-		activePaths = int32(c.relay.ActivePaths())
-	}
-	health := HC.TransportHealthSnapshot{
-		State:       state,
-		ActiveLanes: activePaths,
-		TotalLanes:  int32(c.options.Workers),
-		ObservedAt:  time.Now().UnixMilli(),
-		Failure:     failure,
-	}
-	HC.PublishTransportHealth(health)
-}
-
 func (c *Client) healthLoop() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	c.publishObservedHealth(time.Now())
 	for {
 		select {
 		case now := <-ticker.C:
-			activePaths := int32(0)
-			if c.relay != nil {
-				activePaths = int32(c.relay.ActivePaths())
-			}
-			health := HC.TransportHealthSnapshot{
-				ActiveLanes: activePaths,
-				TotalLanes:  int32(c.options.Workers),
-				ObservedAt:  now.UnixMilli(),
-			}
-			challenge := HC.CurrentRuntimeChallenge()
-			switch {
-			case challenge != nil:
-				health.State = HC.TransportStateWaitingUser
-				health.Failure = &HC.TransportFailure{Stage: "vk_auth", Kind: "captcha", Code: "14", ChallengeID: challenge.ID}
-			case activePaths == int32(c.options.Workers):
-				health.State = HC.TransportStateHealthy
-			case activePaths > 0:
-				health.State = HC.TransportStateDegraded
-			default:
-				health.State = HC.TransportStateRecovering
-			}
-			HC.PublishTransportHealth(health)
+			c.publishObservedHealth(now)
 		case <-c.ctx.Done():
 			return
 		}
 	}
+}
+
+// publishObservedHealth снимает текущее состояние пула путей. Платформа держит
+// старт открытым, пока состояние не станет healthy или degraded, поэтому цикл
+// обязан публиковать снимок в течение всего времени жизни клиента.
+func (c *Client) publishObservedHealth(now time.Time) {
+	activePaths := int32(0)
+	if c.relay != nil {
+		activePaths = int32(c.relay.ActivePaths())
+	}
+	if activePaths > 0 {
+		c.sawPath.Store(true)
+	}
+	health := HC.TransportHealthSnapshot{
+		ActiveLanes: activePaths,
+		TotalLanes:  int32(c.options.Workers),
+		ObservedAt:  now.UnixMilli(),
+	}
+	challenge := HC.CurrentRuntimeChallenge()
+	switch {
+	case challenge != nil:
+		health.State = HC.TransportStateWaitingUser
+		health.Failure = &HC.TransportFailure{Stage: "vk_auth", Kind: "captcha", Code: "14", ChallengeID: challenge.ID}
+	case activePaths == int32(c.options.Workers):
+		health.State = HC.TransportStateHealthy
+	case activePaths > 0:
+		health.State = HC.TransportStateDegraded
+	case !c.sawPath.Load():
+		// Первичный дозвон линий: это ещё старт, а не потеря транспорта.
+		health.State = HC.TransportStateStarting
+	default:
+		health.State = HC.TransportStateRecovering
+	}
+	if health.Failure == nil && health.State != HC.TransportStateHealthy {
+		health.Failure = c.lastFailure.Load()
+	}
+	HC.PublishTransportHealth(health)
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/pion/dtls/v3"
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/sing-box/adapter"
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -52,6 +53,8 @@ type Client struct {
 	closeOnce    sync.Once
 	rebindMu     sync.Mutex
 	rebindCancel context.CancelFunc
+	sawPath      atomic.Bool
+	lastFailure  atomic.Pointer[HC.TransportFailure]
 }
 
 func ConnectClient(parent context.Context, options ClientOptions, log logger.ContextLogger) (*Client, error) {
@@ -99,11 +102,26 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	}
 	client.relay = NewQUICRelay(ctx, QUICRelayOptions{
 		PathCount: options.Workers,
-		DialPath:  client.DialPath,
+		DialPath:  client.dialTrackedPath,
 		Logger:    log,
 	})
 	client.relay.Start()
+	// Единственный публикатор транспортного состояния: платформа не завершает
+	// старт, пока снимок не станет healthy или degraded.
+	go client.healthLoop()
 	return client, nil
+}
+
+// dialTrackedPath запоминает причину последнего отказа линии, чтобы снимок
+// здоровья нёс диагностику, а не только счётчик активных линий.
+func (c *Client) dialTrackedPath(ctx context.Context, workerID uint16) (*quic.Conn, io.Closer, error) {
+	conn, closer, err := c.DialPath(ctx, workerID)
+	if err != nil {
+		c.lastFailure.Store(transportFailure(err))
+		return nil, nil, err
+	}
+	c.lastFailure.Store(nil)
+	return conn, closer, nil
 }
 
 func (c *Client) Relay() *QUICRelay {

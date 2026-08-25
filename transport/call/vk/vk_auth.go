@@ -37,6 +37,12 @@ func runVKLegacyAuth(dialer N.Dialer, joinLink, displayName string, logger logge
 	return runVKLegacyAuthContext(context.Background(), dialer, joinLink, displayName, logger)
 }
 
+var captchaFlowGate = make(chan struct{}, 1)
+
+func init() {
+	captchaFlowGate <- struct{}{}
+}
+
 func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
 	client := common.HttpClient(dialer)
 	client.Jar = vkSharedCookieJar
@@ -139,29 +145,9 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 				if captchaErr == nil {
 					return "", fmt.Errorf("captcha error missing fields: %v", errObj)
 				}
-				logger.Info("vk-auth: captcha challenge requires user interaction")
-				proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer)
-				if proxyPort == 0 {
-					return "", newControlPlaneError("vk_legacy", "captcha_proxy", "start_failed", ErrVKCaptchaRequired)
-				}
-				challengeID := uuid.NewString()
-				challengeURL := fmt.Sprintf("http://127.0.0.1:%d/", proxyPort)
-				challengeContext, cancelChallenge := context.WithCancel(ctx)
-				HC.PublishRuntimeChallenge(HC.RuntimeChallenge{
-					ID: challengeID, Kind: "vk_captcha", URL: challengeURL,
-					CreatedAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(120 * time.Second).UnixMilli(),
-				}, cancelChallenge)
-				HC.PublishTransportHealth(HC.TransportHealthSnapshot{
-					State: HC.TransportStateWaitingUser,
-					Failure: &HC.TransportFailure{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID},
-				})
-				logger.Notice(fmt.Sprintf("vk-auth: challenge ready: %s", challengeID))
-				successToken := GetCaptchaResultContext(challengeContext, 120*time.Second)
-				cancelChallenge()
-				HC.ClearRuntimeChallenge(challengeID)
-				StopCaptchaProxy()
-				if successToken == "" {
-					return "", &ControlPlaneError{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID, Cause: ErrVKCaptchaRequired}
+				successToken, solveErr := solveVKCaptcha(ctx, captchaErr, dialer, logger)
+				if solveErr != nil {
+					return "", solveErr
 				}
 				logger.Info("vk-auth: captcha solved, retrying")
 				captchaAttempt := captchaErr.captchaAttempt
@@ -242,6 +228,40 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 	return string(jsonBytes), nil
 }
 
+func solveVKCaptcha(ctx context.Context, captchaErr *vkCaptchaError, dialer N.Dialer, logger logger.ContextLogger) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-captchaFlowGate:
+	}
+	defer func() { captchaFlowGate <- struct{}{} }()
+
+	logger.Info("vk-auth: captcha challenge requires user interaction")
+	proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer)
+	if proxyPort == 0 {
+		return "", newControlPlaneError("vk_legacy", "captcha_proxy", "start_failed", ErrVKCaptchaRequired)
+	}
+	defer StopCaptchaProxy()
+
+	challengeID := uuid.NewString()
+	challengeContext, cancelChallenge := context.WithCancel(ctx)
+	defer cancelChallenge()
+	defer HC.ClearRuntimeChallenge(challengeID)
+	HC.PublishRuntimeChallenge(HC.RuntimeChallenge{
+		ID: challengeID, Kind: "vk_captcha", URL: fmt.Sprintf("http://127.0.0.1:%d/", proxyPort),
+		CreatedAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(120 * time.Second).UnixMilli(),
+	}, cancelChallenge)
+	HC.PublishTransportHealth(HC.TransportHealthSnapshot{
+		State:   HC.TransportStateWaitingUser,
+		Failure: &HC.TransportFailure{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID},
+	})
+	logger.Notice(fmt.Sprintf("vk-auth: challenge ready: %s", challengeID))
+	if successToken := GetCaptchaResultContext(challengeContext, 120*time.Second); successToken != "" {
+		return successToken, nil
+	}
+	return "", &ControlPlaneError{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID, Cause: ErrVKCaptchaRequired}
+}
+
 func parseVKCaptchaError(errObj map[string]interface{}) *vkCaptchaError {
 	redirectURI, _ := errObj["redirect_uri"].(string)
 	if redirectURI == "" {
@@ -253,13 +273,24 @@ func parseVKCaptchaError(errObj map[string]interface{}) *vkCaptchaError {
 	} else if sidNum, ok := errObj["captcha_sid"].(float64); ok {
 		captchaSid = fmt.Sprintf("%.0f", sidNum)
 	}
-	captchaTs, _ := errObj["captcha_ts"].(string)
-	captchaAttempt, _ := errObj["captcha_attempt"].(string)
+	captchaTs := captchaFieldString(errObj["captcha_ts"])
+	captchaAttempt := captchaFieldString(errObj["captcha_attempt"])
 	return &vkCaptchaError{
 		captchaSid:     captchaSid,
 		redirectURI:    redirectURI,
 		captchaTs:      captchaTs,
 		captchaAttempt: captchaAttempt,
+	}
+}
+
+func captchaFieldString(value interface{}) string {
+	switch value := value.(type) {
+	case string:
+		return value
+	case float64:
+		return fmt.Sprintf("%.0f", value)
+	default:
+		return ""
 	}
 }
 

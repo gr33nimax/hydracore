@@ -45,3 +45,18 @@ func TestVKCallsResponseErrorDetectsCaptcha(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestParseVKCaptchaErrorPreservesNumericRetryFields(t *testing.T) {
+	captcha := parseVKCaptchaError(map[string]interface{}{
+		"redirect_uri":    "https://id.vk.ru/captcha?session_token=test",
+		"captcha_sid":     float64(42),
+		"captcha_ts":      float64(7),
+		"captcha_attempt": float64(3),
+	})
+	if captcha == nil {
+		t.Fatal("captcha was not detected")
+	}
+	if captcha.captchaSid != "42" || captcha.captchaTs != "7" || captcha.captchaAttempt != "3" {
+		t.Fatalf("unexpected captcha fields: %#v", captcha)
+	}
+}

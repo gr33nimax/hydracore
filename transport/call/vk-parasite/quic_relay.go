@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultQUICPathCount = 16
+	defaultQUICPathCount = DefaultWorkerCount
 	pathDialTimeout      = 30 * time.Second
 )
 

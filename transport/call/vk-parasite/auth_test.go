@@ -10,14 +10,14 @@ import (
 func TestAuthRequestRoundTrip(t *testing.T) {
 	t.Parallel()
 	request := authRequest{
-		SessionID:   [16]byte{1, 2, 3, 4},
-		Conv:        0x10203040,
-		WorkerID:    2,
-		WorkerTotal: LaneCount,
-		WorkerEpoch: 9,
+		SessionID:      [16]byte{1, 2, 3, 4},
+		Conv:           0x10203040,
+		WorkerID:       2,
+		WorkerTotal:    16,
+		WorkerEpoch:    9,
 		LaneGeneration: 1,
-		User:        "alice",
-		Password:    "correct horse battery staple",
+		User:           "alice",
+		Password:       "correct horse battery staple",
 	}
 	frame, err := encodeAuthRequest(request)
 	require.NoError(t, err)
@@ -35,14 +35,14 @@ func TestAuthRequestRoundTrip(t *testing.T) {
 func TestAuthRequestRejectsPreviousWireVersion(t *testing.T) {
 	t.Parallel()
 	request := authRequest{
-		SessionID:   [16]byte{1, 2, 3, 4},
-		Conv:        0x10203040,
-		WorkerID:    1,
-		WorkerTotal: LaneCount,
-		WorkerEpoch: 7,
+		SessionID:      [16]byte{1, 2, 3, 4},
+		Conv:           0x10203040,
+		WorkerID:       1,
+		WorkerTotal:    16,
+		WorkerEpoch:    7,
 		LaneGeneration: 1,
-		User:        "alice",
-		Password:    "secret",
+		User:           "alice",
+		Password:       "secret",
 	}
 	frame, err := encodeAuthRequest(request)
 	require.NoError(t, err)
@@ -58,13 +58,13 @@ func TestAuthRequestRejectsPreviousWireVersion(t *testing.T) {
 
 func TestAuthRequestRejectsInvalidBounds(t *testing.T) {
 	t.Parallel()
-	_, err := encodeAuthRequest(authRequest{Conv: 1, WorkerTotal: LaneCount, User: "alice", Password: "secret"})
+	_, err := encodeAuthRequest(authRequest{Conv: 1, WorkerTotal: 16, User: "alice", Password: "secret"})
 	require.Error(t, err)
 	_, err = encodeAuthRequest(authRequest{
 		SessionID:   [16]byte{1},
 		Conv:        1,
-		WorkerID:    LaneCount,
-		WorkerTotal: LaneCount,
+		WorkerID:    16,
+		WorkerTotal: 16,
 		User:        "alice",
 		Password:    "secret",
 	})
@@ -72,11 +72,35 @@ func TestAuthRequestRejectsInvalidBounds(t *testing.T) {
 	_, err = encodeAuthRequest(authRequest{
 		SessionID:   [16]byte{1},
 		Conv:        1,
-		WorkerTotal: LaneCount,
+		WorkerTotal: 16,
 		User:        string(bytes.Repeat([]byte{'a'}, maximumUserLength+1)),
 		Password:    "secret",
 	})
 	require.Error(t, err)
+}
+
+func TestSupportedWorkerCount(t *testing.T) {
+	t.Parallel()
+	for _, workers := range []uint16{4, 8, 12, 16, 20} {
+		require.True(t, supportedWorkerCount(workers))
+	}
+	for _, workers := range []uint16{0, 1, 5, 18, 21} {
+		require.False(t, supportedWorkerCount(workers))
+	}
+}
+
+func TestWorkersAreEvenlyDistributedAcrossCalls(t *testing.T) {
+	t.Parallel()
+	links := []string{"one", "two", "three", "four"}
+	for _, workers := range []uint16{4, 8, 12, 16, 20} {
+		counts := make(map[string]int, CallCount)
+		for workerID := uint16(0); workerID < workers; workerID++ {
+			counts[joinLinkForWorker(links, workerID)]++
+		}
+		for _, link := range links {
+			require.Equal(t, int(workers)/CallCount, counts[link])
+		}
+	}
 }
 
 func TestRTPWrapperRoundTripAndWrongKey(t *testing.T) {

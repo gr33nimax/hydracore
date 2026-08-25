@@ -9,13 +9,13 @@ import (
 )
 
 const (
-	authProtocolVersion   = 9
-	maximumUserLength     = 64
-	maximumPasswordLen    = 256
-	maximumAuthFrameLen   = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
-	LegacyLaneCount       = 4
-	LaneCount             = 16
-	MaximumLaneCount      = 16
+	authProtocolVersion = 9
+	maximumUserLength   = 64
+	maximumPasswordLen  = 256
+	maximumAuthFrameLen = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
+	CallCount           = 4
+	DefaultWorkerCount  = 4
+	MaximumWorkerCount  = 20
 )
 
 var (
@@ -37,8 +37,7 @@ type authRequest struct {
 
 func validWorkerMetadata(request authRequest) bool {
 	return request.Conv != 0 &&
-		request.WorkerTotal > 0 &&
-		request.WorkerTotal <= MaximumLaneCount &&
+		supportedWorkerCount(request.WorkerTotal) &&
 		request.WorkerID < request.WorkerTotal
 }
 

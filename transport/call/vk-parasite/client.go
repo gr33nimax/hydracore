@@ -129,7 +129,7 @@ func (c *Client) Relay() *QUICRelay {
 }
 
 func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.Closer, error) {
-	joinLink := c.options.JoinLinks[int(workerID)%len(c.options.JoinLinks)]
+	joinLink := joinLinkForWorker(c.options.JoinLinks, workerID)
 	credentials, err := c.options.Credentials(ctx, joinLink)
 	if err != nil {
 		return nil, nil, fmt.Errorf("worker %d credentials: %w", workerID, err)
@@ -267,8 +267,8 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 	if !options.Server.IsValid() || options.Server.Port == 0 {
 		return options, errors.New("call vk_parasite: missing server or server_port")
 	}
-	if len(options.JoinLinks) < 1 || len(options.JoinLinks) > 4 {
-		return options, errors.New("call vk_parasite: join_links must contain between 1 and 4 links")
+	if len(options.JoinLinks) != CallCount {
+		return options, errors.New("call vk_parasite: join_links must contain exactly 4 links")
 	}
 	normalizedLinks := make([]string, 0, len(options.JoinLinks))
 	seenLinks := make(map[string]struct{}, len(options.JoinLinks))
@@ -291,10 +291,10 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 		return options, errors.New("call vk_parasite: invalid obfs_password length")
 	}
 	if options.Workers == 0 {
-		options.Workers = LaneCount
+		options.Workers = DefaultWorkerCount
 	}
-	if options.Workers != LaneCount {
-		return options, errors.New("call vk_parasite: exactly sixteen VK lanes are required")
+	if options.Workers < DefaultWorkerCount || options.Workers > MaximumWorkerCount || options.Workers%CallCount != 0 {
+		return options, errors.New("call vk_parasite: workers must be 4, 8, 12, 16, or 20")
 	}
 	if options.WorkerConnectTimeout == 0 {
 		options.WorkerConnectTimeout = 30 * time.Second
@@ -306,6 +306,10 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 		return options, errors.New("call vk_parasite: missing credentials provider")
 	}
 	return options, nil
+}
+
+func joinLinkForWorker(joinLinks []string, workerID uint16) string {
+	return joinLinks[int(workerID)%CallCount]
 }
 
 func (c *Client) recordInnerAuthFailure(metrics *telemetry.Accumulator, ctx context.Context, started time.Time, workerID uint16, reason string) {

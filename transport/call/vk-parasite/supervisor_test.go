@@ -13,7 +13,7 @@ import (
 func TestHealthSnapshotReportsCaptchaAsWaitingUser(t *testing.T) {
 	HC.ResetRuntimeTransportState()
 	defer HC.ResetRuntimeTransportState()
-	client := &Client{options: ClientOptions{Workers: LaneCount}, startedAt: time.Now()}
+	client := &Client{options: ClientOptions{Workers: DefaultWorkerCount}, startedAt: time.Now()}
 	HC.PublishRuntimeChallenge(HC.RuntimeChallenge{ID: "captcha-1", Kind: "vk_captcha"}, func() {})
 
 	health := client.healthSnapshot(time.Now())
@@ -25,7 +25,7 @@ func TestHealthSnapshotReportsCaptchaAsWaitingUser(t *testing.T) {
 func TestHealthSnapshotKeepsInitialControlPlaneFailureDistinct(t *testing.T) {
 	HC.ResetRuntimeTransportState()
 	defer HC.ResetRuntimeTransportState()
-	client := &Client{options: ClientOptions{Workers: LaneCount}, startedAt: time.Now()}
+	client := &Client{options: ClientOptions{Workers: DefaultWorkerCount}, startedAt: time.Now()}
 	client.recordPathFailure(&callvk.ControlPlaneError{
 		Stage: "vk_auth", Kind: "rate_limit", Code: "9", Cause: errors.New("flood control"),
 	})

@@ -9,32 +9,30 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/pion/dtls/v3"
+	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
+	"github.com/sagernet/sing-box/transport/call/telemetry"
+	"github.com/sagernet/sing/common/logger"
 	"net"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
-
-
-	"github.com/pion/dtls/v3"
-	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
-	"github.com/sagernet/sing-box/transport/call/telemetry"
-	"github.com/sagernet/sing/common/logger"
 )
 
 const (
-	HardMaxWorkers           = LaneCount
-	HardMaxSessions          = 4096
-	HardMaxUsers             = 4096
-	HardMaxPendingHandshakes = 4096
-	HardMaxIngressWorkers     = 32
-	HardMaxIngressQueuePackets = 65536
+	HardMaxWorkers              = MaximumWorkerCount
+	HardMaxSessions             = 4096
+	HardMaxUsers                = 4096
+	HardMaxPendingHandshakes    = 4096
+	HardMaxIngressWorkers       = 32
+	HardMaxIngressQueuePackets  = 65536
 	HardMaxPeerReadQueuePackets = 4096
 
-	defaultMaxWorkers           = LaneCount
-	defaultMaxPendingHandshakes = 256
-	defaultHandshakeTimeout     = 15 * time.Second
-	defaultSessionIdleTimeout   = 5 * time.Minute
+	defaultMaxWorkers            = DefaultWorkerCount
+	defaultMaxPendingHandshakes  = 256
+	defaultHandshakeTimeout      = 15 * time.Second
+	defaultSessionIdleTimeout    = 5 * time.Minute
 	defaultUDPReceiveBufferBytes = 4 * 1024 * 1024
 	defaultUDPSendBufferBytes    = 4 * 1024 * 1024
 	defaultIngressQueuePackets   = 4096
@@ -56,19 +54,19 @@ type SessionInfo struct {
 type SessionHandler func(info SessionInfo, relay *QUICRelay) error
 
 type ServerOptions struct {
-	ObfsPassword             string
-	Users                    []ServerUser
-	MaxSessions              int
-	MaxWorkersPerSession     int
-	MaxPendingHandshakes     int
-	HandshakeTimeout         time.Duration
-	SessionIdleTimeout       time.Duration
-	UDPReceiveBufferBytes    int
-	UDPSendBufferBytes       int
-	IngressWorkers           int
-	IngressQueuePackets      int
-	PeerReadQueuePackets     int
-	SessionHandler           SessionHandler
+	ObfsPassword            string
+	Users                   []ServerUser
+	MaxSessions             int
+	MaxWorkersPerSession    int
+	MaxPendingHandshakes    int
+	HandshakeTimeout        time.Duration
+	SessionIdleTimeout      time.Duration
+	UDPReceiveBufferBytes   int
+	UDPSendBufferBytes      int
+	IngressWorkers          int
+	IngressQueuePackets     int
+	PeerReadQueuePackets    int
+	SessionHandler          SessionHandler
 	TelemetryStateDirectory string
 	TelemetryOutputPath     string
 	TelemetryInterval       time.Duration
@@ -80,16 +78,16 @@ type serverUser struct {
 }
 
 type serverSession struct {
-	id              [16]byte
-	user            string
-	conv            uint32
-	expected        uint16
-	relay           *QUICRelay
-	ready           chan struct{}
-	setupErr        error
-	generation      uint64
-	createdAt       time.Time
-	pendingAttaches int
+	id               [16]byte
+	user             string
+	conv             uint32
+	expected         uint16
+	relay            *QUICRelay
+	ready            chan struct{}
+	setupErr         error
+	generation       uint64
+	createdAt        time.Time
+	pendingAttaches  int
 	telemetryMu      sync.Mutex
 	telemetryWindow  time.Time
 	telemetryRecords int
@@ -105,12 +103,12 @@ type Server struct {
 	key        [wrapKeyLength]byte
 	dtlsConfig *dtls.Config
 
-	packetConn net.PacketConn
-	peersMu    sync.Mutex
-	peers      map[string]*peerPacketConn
-	helloPeers map[[32]byte]*peerPacketConn
+	packetConn    net.PacketConn
+	peersMu       sync.Mutex
+	peers         map[string]*peerPacketConn
+	helloPeers    map[[32]byte]*peerPacketConn
 	ingressQueues []chan receivedPacket
-	ingressDepth atomic.Int64
+	ingressDepth  atomic.Int64
 
 	sessionsMu   sync.Mutex
 	sessions     map[[16]byte]*serverSession
@@ -163,8 +161,8 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 	return server, nil
 }
 
-func supportedSessionLaneCount(total uint16) bool {
-	return total == LegacyLaneCount || total == LaneCount
+func supportedWorkerCount(total uint16) bool {
+	return total >= DefaultWorkerCount && total <= MaximumWorkerCount && total%CallCount == 0
 }
 
 func validateServerOptions(options ServerOptions) (ServerOptions, map[string]serverUser, error) {
@@ -186,8 +184,8 @@ func validateServerOptions(options ServerOptions) (ServerOptions, map[string]ser
 	if options.MaxWorkersPerSession == 0 {
 		options.MaxWorkersPerSession = defaultMaxWorkers
 	}
-	if options.MaxWorkersPerSession != LegacyLaneCount && options.MaxWorkersPerSession != LaneCount {
-		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be 4 or 16")
+	if options.MaxWorkersPerSession < DefaultWorkerCount || options.MaxWorkersPerSession > MaximumWorkerCount || options.MaxWorkersPerSession%CallCount != 0 {
+		return options, nil, errors.New("call vk_parasite: max_workers_per_session must be 4, 8, 12, 16, or 20")
 	}
 	if options.MaxPendingHandshakes == 0 {
 		options.MaxPendingHandshakes = defaultMaxPendingHandshakes
@@ -557,7 +555,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		return
 	}
 	request, err := decodeAuthRequest(authBuffer[:n])
-	if err != nil || !supportedSessionLaneCount(request.WorkerTotal) || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
+	if err != nil || !supportedWorkerCount(request.WorkerTotal) || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
 		s.telemetry.metrics.Add(telemetry.AuthFailureTotal, 1)
 		s.telemetry.event("auth_failed", "inner_auth", "rejected", "", [16]byte{}, nil)
 		_, _ = conn.Write(encodeAuthAck(false, 0))

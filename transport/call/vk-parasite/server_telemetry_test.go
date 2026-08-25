@@ -39,7 +39,7 @@ func TestServerTelemetryWritesUltimateCompatibleSnapshot(t *testing.T) {
 
 	server.telemetry.emit()
 	request := authRequest{
-		SessionID: [16]byte{1}, Conv: 0x12345678, WorkerTotal: LaneCount, LaneGeneration: 1,
+		SessionID: [16]byte{1}, Conv: 0x12345678, WorkerTotal: 16, LaneGeneration: 1,
 		User: "alice", Password: "user-secret",
 	}
 	session, _, err := server.getOrCreateSession(request)

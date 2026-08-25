@@ -109,10 +109,14 @@ func (c *Client) healthLoop() {
 	}
 }
 
-// publishObservedHealth снимает текущее состояние пула путей. Платформа держит
+func (c *Client) recordPathFailure(err error) {
+	c.lastFailure.Store(transportFailure(err))
+}
+
+// healthSnapshot снимает текущее состояние пула путей. Платформа держит
 // старт открытым, пока состояние не станет healthy или degraded, поэтому цикл
 // обязан публиковать снимок в течение всего времени жизни клиента.
-func (c *Client) publishObservedHealth(now time.Time) {
+func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 	activePaths := int32(0)
 	if c.relay != nil {
 		activePaths = int32(c.relay.ActivePaths())
@@ -134,6 +138,8 @@ func (c *Client) publishObservedHealth(now time.Time) {
 		health.State = HC.TransportStateHealthy
 	case activePaths > 0:
 		health.State = HC.TransportStateDegraded
+	case c.lastFailure.Load() != nil:
+		health.State = HC.TransportStateFailed
 	case !c.sawPath.Load():
 		// Первичный дозвон линий: это ещё старт, а не потеря транспорта.
 		health.State = HC.TransportStateStarting
@@ -143,5 +149,9 @@ func (c *Client) publishObservedHealth(now time.Time) {
 	if health.Failure == nil && health.State != HC.TransportStateHealthy {
 		health.Failure = c.lastFailure.Load()
 	}
-	HC.PublishTransportHealth(health)
+	return health
+}
+
+func (c *Client) publishObservedHealth(now time.Time) {
+	HC.PublishTransportHealth(c.healthSnapshot(now))
 }

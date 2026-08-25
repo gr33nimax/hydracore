@@ -55,6 +55,7 @@ type Client struct {
 	rebindCancel context.CancelFunc
 	sawPath      atomic.Bool
 	lastFailure  atomic.Pointer[HC.TransportFailure]
+	startedAt    time.Time
 }
 
 func ConnectClient(parent context.Context, options ClientOptions, log logger.ContextLogger) (*Client, error) {
@@ -99,6 +100,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		sessionID: sessionID,
 		conv:      conv,
 		metrics:   metrics,
+		startedAt: time.Now(),
 	}
 	client.relay = NewQUICRelay(ctx, QUICRelayOptions{
 		PathCount: options.Workers,
@@ -117,7 +119,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 func (c *Client) dialTrackedPath(ctx context.Context, workerID uint16) (*quic.Conn, io.Closer, error) {
 	conn, closer, err := c.DialPath(ctx, workerID)
 	if err != nil {
-		c.lastFailure.Store(transportFailure(err))
+		c.recordPathFailure(err)
 		return nil, nil, err
 	}
 	c.lastFailure.Store(nil)

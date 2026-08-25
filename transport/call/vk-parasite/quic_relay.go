@@ -302,6 +302,17 @@ func (r *QUICRelay) Close() {
 	})
 }
 
+// RebindNetwork drops paths tied to the previous network. Their watchers
+// establish replacements using the relay's existing reconnect loop.
+func (r *QUICRelay) RebindNetwork() {
+	r.pathsMu.RLock()
+	paths := append([]*quicPathConn(nil), r.paths...)
+	r.pathsMu.RUnlock()
+	for _, path := range paths {
+		_ = path.conn.CloseWithError(0, "network changed")
+	}
+}
+
 // ActivePaths returns the current number of active QUIC paths in the pool.
 func (r *QUICRelay) ActivePaths() int {
 	r.pathsMu.RLock()

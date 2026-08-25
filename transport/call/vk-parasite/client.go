@@ -232,10 +232,8 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 }
 
 func (c *Client) RebindNetwork() {
-	c.rebindMu.Lock()
-	defer c.rebindMu.Unlock()
-	if c.rebindCancel != nil {
-		c.rebindCancel()
+	if c.relay != nil {
+		c.relay.RebindNetwork()
 	}
 }
 

@@ -200,3 +200,20 @@ func TestConcurrentDials(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestRebindNetworkReplacesPaths(t *testing.T) {
+	clientRelay, _, cleanup := setupTestRelayPair(t, 1)
+	defer cleanup()
+
+	require.Eventually(t, func() bool { return clientRelay.ActivePaths() == 1 }, 10*time.Second, 10*time.Millisecond)
+	clientRelay.pathsMu.RLock()
+	oldPath := clientRelay.paths[0]
+	clientRelay.pathsMu.RUnlock()
+
+	clientRelay.RebindNetwork()
+	require.Eventually(t, func() bool {
+		clientRelay.pathsMu.RLock()
+		defer clientRelay.pathsMu.RUnlock()
+		return len(clientRelay.paths) == 1 && clientRelay.paths[0] != oldPath
+	}, 10*time.Second, 10*time.Millisecond)
+}

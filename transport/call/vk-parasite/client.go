@@ -134,17 +134,23 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	joinLink := joinLinkForWorker(c.options.JoinLinks, workerID)
 	credentials, err := c.options.Credentials(ctx, joinLink)
 	if err != nil {
+		c.recordDialStage(workerID, "credentials", HC.ErrorCodeVKCredentialsRejected)
 		return nil, nil, fmt.Errorf("worker %d credentials: %w", workerID, err)
 	}
+	c.recordDialStage(workerID, "credentials", "ok")
 	releaseTURN, err := sharedTransportSupervisor.acquireTURN(ctx)
 	if err != nil {
+		c.recordDialStage(workerID, "turn_gate", HC.ErrorCodeTURNAllocateFailed)
 		return nil, nil, fmt.Errorf("worker %d TURN gate: %w", workerID, err)
 	}
+	c.recordDialStage(workerID, "turn_gate", "ok")
 	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), c.metrics, workerID)
 	releaseTURN()
 	if err != nil {
+		c.recordDialStage(workerID, "turn_allocate", HC.ErrorCodeTURNAllocateFailed)
 		return nil, nil, fmt.Errorf("worker %d TURN allocate: %w", workerID, err)
 	}
+	c.recordDialStage(workerID, "turn_allocate", "ok")
 	codec, err := newRTPCodec(c.key)
 	if err != nil {
 		_ = allocation.Close()
@@ -154,8 +160,10 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	releaseDTLS, err := sharedTransportSupervisor.acquireDTLS(ctx)
 	if err != nil {
 		_ = packetConn.Close()
+		c.recordDialStage(workerID, "dtls_gate", HC.ErrorCodeDTLSHandshakeFailed)
 		return nil, nil, fmt.Errorf("worker %d DTLS gate: %w", workerID, err)
 	}
+	c.recordDialStage(workerID, "dtls_gate", "ok")
 	dtlsConn, err := dtls.Client(packetConn, c.server, &dtls.Config{
 		InsecureSkipVerify:   true, // Authenticated by the outer key and the inner user attach.
 		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -167,6 +175,7 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 		releaseDTLS()
 		c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
 		_ = packetConn.Close()
+		c.recordDialStage(workerID, "dtls_handshake", HC.ErrorCodeDTLSHandshakeFailed)
 		return nil, nil, fmt.Errorf("worker %d DTLS initialize: %w", workerID, err)
 	}
 	handshakeStarted := time.Now()
@@ -175,11 +184,13 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 		c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 		c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
 		_ = dtlsConn.Close()
+		c.recordDialStage(workerID, "dtls_handshake", HC.ErrorCodeDTLSHandshakeFailed)
 		return nil, nil, fmt.Errorf("worker %d DTLS handshake: %w", workerID, err)
 	}
 	releaseDTLS()
 	c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
 	c.metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
+	c.recordDialStage(workerID, "dtls_handshake", "ok")
 
 	innerAuthStarted := time.Now()
 	request, err := encodeAuthRequest(authRequest{
@@ -194,22 +205,26 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	})
 	if err != nil {
 		_ = dtlsConn.Close()
+		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth encode: %w", workerID, err)
 	}
 	_ = dtlsConn.SetDeadline(time.Now().Add(c.options.WorkerConnectTimeout))
 	if _, err = dtlsConn.Write(request); err != nil {
 		_ = dtlsConn.Close()
+		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth write: %w", workerID, err)
 	}
 	ack := make([]byte, 14)
 	n, err := dtlsConn.Read(ack)
 	if err != nil {
 		_ = dtlsConn.Close()
+		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth read: %w", workerID, err)
 	}
 	generation, err := decodeAuthAck(ack[:n])
 	if err != nil {
 		_ = dtlsConn.Close()
+		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth rejected: %w", workerID, err)
 	}
 	expectedGeneration := c.generation.Load()
@@ -219,18 +234,26 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	}
 	if generation != expectedGeneration {
 		_ = dtlsConn.Close()
+		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, errors.New("call vk_parasite: server session state was reset")
 	}
 	_ = dtlsConn.SetDeadline(time.Time{})
 	c.metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
 	c.metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
+	c.recordDialStage(workerID, "inner_auth", "ok")
 
 	quicConn, err := dialQUIC(ctx, dtlsConn, dtlsConn)
 	if err != nil {
 		_ = dtlsConn.Close()
+		c.recordDialStage(workerID, "quic_dial", HC.ErrorCodeQUICDialFailed)
 		return nil, nil, fmt.Errorf("worker %d QUIC dial: %w", workerID, err)
 	}
+	c.recordDialStage(workerID, "quic_dial", "ok")
 	return quicConn, dtlsConn, nil
+}
+
+func (c *Client) recordDialStage(workerID uint16, stage, result string) {
+	c.metrics.RecordEvent(stage, stage, result, &workerID)
 }
 
 func (c *Client) RebindNetwork() {

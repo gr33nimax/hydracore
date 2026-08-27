@@ -19,7 +19,9 @@ type TransportFailure struct {
 	Kind         string `json:"kind,omitempty"`
 	Code         string `json:"code,omitempty"`
 	RetryAfterMS int64  `json:"retry_after_ms,omitempty"`
-	ChallengeID string `json:"challenge_id,omitempty"`
+	ChallengeID  string `json:"challenge_id,omitempty"`
+	Domain       string `json:"domain,omitempty"`
+	Terminal     bool   `json:"terminal"`
 }
 
 type TransportHealthSnapshot struct {
@@ -31,6 +33,9 @@ type TransportHealthSnapshot struct {
 	LastAggregateProgressAt int64             `json:"last_aggregate_progress_at"`
 	LastInboundAt           int64             `json:"last_inbound_at"`
 	ObservedAt              int64             `json:"observed_at"`
+	Applicable              bool              `json:"applicable"`
+	RuntimeGeneration       uint64            `json:"runtime_generation"`
+	NetworkGeneration       uint64            `json:"network_generation"`
 	Failure                 *TransportFailure `json:"failure,omitempty"`
 }
 
@@ -44,12 +49,26 @@ type RuntimeChallenge struct {
 
 var runtimeTransportState struct {
 	sync.RWMutex
+	generation      uint64
 	health          TransportHealthSnapshot
 	challenge       *RuntimeChallenge
 	cancelChallenge func()
 }
 
-func PublishTransportHealth(snapshot TransportHealthSnapshot) {
+func SetRuntimeGeneration(generation uint64) {
+	runtimeTransportState.Lock()
+	runtimeTransportState.generation = generation
+	runtimeTransportState.Unlock()
+}
+
+func CurrentRuntimeGeneration() uint64 {
+	runtimeTransportState.RLock()
+	generation := runtimeTransportState.generation
+	runtimeTransportState.RUnlock()
+	return generation
+}
+
+func PublishTransportHealth(generation uint64, snapshot TransportHealthSnapshot) {
 	if snapshot.State == "" {
 		snapshot.State = TransportStateStarting
 	}
@@ -57,6 +76,12 @@ func PublishTransportHealth(snapshot TransportHealthSnapshot) {
 		snapshot.ObservedAt = time.Now().UnixMilli()
 	}
 	runtimeTransportState.Lock()
+	if generation < runtimeTransportState.generation {
+		runtimeTransportState.Unlock()
+		return
+	}
+	runtimeTransportState.generation = generation
+	snapshot.RuntimeGeneration = generation
 	runtimeTransportState.health = cloneTransportHealth(snapshot)
 	runtimeTransportState.Unlock()
 }
@@ -64,10 +89,15 @@ func PublishTransportHealth(snapshot TransportHealthSnapshot) {
 func CurrentTransportHealth() TransportHealthSnapshot {
 	runtimeTransportState.RLock()
 	snapshot := cloneTransportHealth(runtimeTransportState.health)
+	generation := runtimeTransportState.generation
 	runtimeTransportState.RUnlock()
+	snapshot.RuntimeGeneration = generation
 	if snapshot.State == "" {
 		snapshot.State = TransportStateStarting
 		snapshot.ObservedAt = time.Now().UnixMilli()
+	}
+	if CurrentRuntimeChallenge() != nil {
+		snapshot.State = TransportStateWaitingUser
 	}
 	return snapshot
 }
@@ -117,7 +147,13 @@ func CancelRuntimeChallenge(id string) bool {
 
 func ResetRuntimeTransportState() {
 	CancelRuntimeChallenge("")
-	PublishTransportHealth(TransportHealthSnapshot{State: TransportStateStarting})
+	runtimeTransportState.Lock()
+	runtimeTransportState.generation = 0
+	runtimeTransportState.health = TransportHealthSnapshot{
+		State:      TransportStateStarting,
+		ObservedAt: time.Now().UnixMilli(),
+	}
+	runtimeTransportState.Unlock()
 }
 
 func cloneTransportHealth(snapshot TransportHealthSnapshot) TransportHealthSnapshot {

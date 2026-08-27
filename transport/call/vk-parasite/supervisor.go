@@ -90,9 +90,29 @@ func transportFailure(err error) *HC.TransportFailure {
 		return &HC.TransportFailure{
 			Stage: controlError.Stage, Kind: controlError.Kind, Code: controlError.Code,
 			RetryAfterMS: controlError.RetryAfter.Milliseconds(), ChallengeID: controlError.ChallengeID,
+			Domain: transportFailureDomain(controlError.Kind),
 		}
 	}
-	return &HC.TransportFailure{Stage: "transport", Kind: "network", Code: "worker_failed"}
+	return &HC.TransportFailure{Stage: "transport", Kind: "network", Code: "worker_failed", Domain: "NETWORK"}
+}
+
+func transportFailureDomain(kind string) string {
+	switch kind {
+	case "captcha":
+		return "AUTH"
+	case "credentials":
+		return "CREDENTIALS"
+	case "turn":
+		return "TURN"
+	case "dtls":
+		return "DTLS"
+	case "quic":
+		return "QUIC"
+	case "network":
+		return "NETWORK"
+	default:
+		return "INTERNAL"
+	}
 }
 
 func (c *Client) healthLoop() {
@@ -128,12 +148,13 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 		ActiveLanes: activePaths,
 		TotalLanes:  int32(c.options.Workers),
 		ObservedAt:  now.UnixMilli(),
+		Applicable:  true,
 	}
 	challenge := HC.CurrentRuntimeChallenge()
 	switch {
 	case challenge != nil:
 		health.State = HC.TransportStateWaitingUser
-		health.Failure = &HC.TransportFailure{Stage: "vk_auth", Kind: "captcha", Code: "14", ChallengeID: challenge.ID}
+		health.Failure = &HC.TransportFailure{Stage: "vk_auth", Kind: "captcha", Code: "14", ChallengeID: challenge.ID, Domain: "AUTH"}
 	case activePaths == int32(c.options.Workers):
 		health.State = HC.TransportStateHealthy
 	case activePaths > 0:
@@ -153,5 +174,5 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 }
 
 func (c *Client) publishObservedHealth(now time.Time) {
-	HC.PublishTransportHealth(c.healthSnapshot(now))
+	HC.PublishTransportHealth(HC.CurrentRuntimeGeneration(), c.healthSnapshot(now))
 }

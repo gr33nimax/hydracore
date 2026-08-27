@@ -251,10 +251,6 @@ func solveVKCaptcha(ctx context.Context, captchaErr *vkCaptchaError, dialer N.Di
 		ID: challengeID, Kind: "vk_captcha", URL: fmt.Sprintf("http://127.0.0.1:%d/", proxyPort),
 		CreatedAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(120 * time.Second).UnixMilli(),
 	}, cancelChallenge)
-	HC.PublishTransportHealth(HC.TransportHealthSnapshot{
-		State:   HC.TransportStateWaitingUser,
-		Failure: &HC.TransportFailure{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID},
-	})
 	logger.Notice(fmt.Sprintf("vk-auth: challenge ready: %s", challengeID))
 	if successToken := GetCaptchaResultContext(challengeContext, 120*time.Second); successToken != "" {
 		return successToken, nil

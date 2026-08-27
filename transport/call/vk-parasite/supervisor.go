@@ -151,8 +151,13 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 		Applicable:  true,
 	}
 	challenge := HC.CurrentRuntimeChallenge()
+	if challenge == nil && c.sawChallenge.Load() {
+		c.lastFailure.Store(nil)
+		c.sawChallenge.Store(false)
+	}
 	switch {
 	case challenge != nil:
+		c.sawChallenge.Store(true)
 		health.State = HC.TransportStateWaitingUser
 		health.Failure = &HC.TransportFailure{Stage: "vk_auth", Kind: "captcha", Code: "14", ChallengeID: challenge.ID, Domain: "AUTH"}
 	case activePaths == int32(c.options.Workers):
@@ -167,7 +172,7 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 	default:
 		health.State = HC.TransportStateRecovering
 	}
-	if health.Failure == nil && health.State != HC.TransportStateHealthy {
+	if health.Failure == nil && activePaths == 0 && health.State != HC.TransportStateHealthy {
 		health.Failure = c.lastFailure.Load()
 	}
 	return health

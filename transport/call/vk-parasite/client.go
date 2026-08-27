@@ -54,6 +54,7 @@ type Client struct {
 	rebindMu     sync.Mutex
 	rebindCancel context.CancelFunc
 	sawPath      atomic.Bool
+	sawChallenge atomic.Bool
 	lastFailure  atomic.Pointer[HC.TransportFailure]
 	startedAt    time.Time
 }

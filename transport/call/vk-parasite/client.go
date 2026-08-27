@@ -57,6 +57,19 @@ type Client struct {
 	startedAt    time.Time
 }
 
+type dialOutcome struct {
+	err     error
+	failure *HC.TransportFailure
+}
+
+func (o *dialOutcome) Error() string {
+	return o.err.Error()
+}
+
+func (o *dialOutcome) Unwrap() error {
+	return o.err
+}
+
 func ConnectClient(parent context.Context, options ClientOptions, log logger.ContextLogger) (*Client, error) {
 	if log == nil {
 		log = logger.NOP()
@@ -118,8 +131,7 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 func (c *Client) dialTrackedPath(ctx context.Context, workerID uint16) (*quic.Conn, io.Closer, error) {
 	conn, closer, err := c.DialPath(ctx, workerID)
 	if err != nil {
-		c.recordPathFailure(err)
-		return nil, nil, err
+		return nil, nil, &dialOutcome{err: err, failure: c.recordPathFailure(err)}
 	}
 	c.lastFailure.Store(nil)
 	return conn, closer, nil

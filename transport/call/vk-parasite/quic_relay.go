@@ -107,6 +107,10 @@ func (r *QUICRelay) initPath(workerID uint16) {
 		if r.logger != nil {
 			r.logger.Warn("call vk_parasite: path connect failed for worker ", workerID, ": ", err)
 		}
+		var outcome *dialOutcome
+		if errors.As(err, &outcome) && outcome.failure != nil && outcome.failure.Terminal {
+			return
+		}
 		go r.reconnectPath(workerID)
 		return
 	}
@@ -173,6 +177,10 @@ func (r *QUICRelay) reconnectPath(workerID uint16) {
 			return
 		}
 		pathCancel()
+		var outcome *dialOutcome
+		if errors.As(err, &outcome) && outcome.failure != nil && outcome.failure.Terminal {
+			return
+		}
 		select {
 		case <-time.After(backoff):
 		case <-generationCtx.Done():

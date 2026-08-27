@@ -129,8 +129,10 @@ func (c *Client) healthLoop() {
 	}
 }
 
-func (c *Client) recordPathFailure(err error) {
-	c.lastFailure.Store(transportFailure(err))
+func (c *Client) recordPathFailure(err error) *HC.TransportFailure {
+	failure := transportFailure(err)
+	c.lastFailure.Store(failure)
+	return failure
 }
 
 // healthSnapshot снимает текущее состояние пула путей. Платформа держит

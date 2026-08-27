@@ -33,20 +33,23 @@ type QUICRelayOptions struct {
 }
 
 type QUICRelay struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	logger      logger.ContextLogger
-	dialPath    func(ctx context.Context, workerID uint16) (*quic.Conn, io.Closer, error)
-	pathCount   int
-	nextPath    atomic.Uint64
-	onAccept    atomic.Pointer[func(net.Conn, string)]
-	pathsMu     sync.RWMutex
-	paths       []*quicPathConn
-	closed      atomic.Bool
-	ready       chan struct{}
-	readyOnce   sync.Once
-	closeOnce   sync.Once
-	dgramRouter *datagramRouter
+	ctx                      context.Context
+	cancel                   context.CancelFunc
+	logger                   logger.ContextLogger
+	dialPath                 func(ctx context.Context, workerID uint16) (*quic.Conn, io.Closer, error)
+	pathCount                int
+	nextPath                 atomic.Uint64
+	onAccept                 atomic.Pointer[func(net.Conn, string)]
+	pathsMu                  sync.RWMutex
+	paths                    []*quicPathConn
+	generationCtx            context.Context
+	generationCancel         context.CancelFunc
+	appliedNetworkGeneration atomic.Uint64
+	closed                   atomic.Bool
+	ready                    chan struct{}
+	readyOnce                sync.Once
+	closeOnce                sync.Once
+	dgramRouter              *datagramRouter
 }
 
 func NewQUICRelay(parent context.Context, options QUICRelayOptions) *QUICRelay {
@@ -55,15 +58,18 @@ func NewQUICRelay(parent context.Context, options QUICRelayOptions) *QUICRelay {
 		pathCount = defaultQUICPathCount
 	}
 	ctx, cancel := context.WithCancel(parent)
+	generationCtx, generationCancel := context.WithCancel(ctx)
 	relay := &QUICRelay{
-		ctx:         ctx,
-		cancel:      cancel,
-		logger:      options.Logger,
-		dialPath:    options.DialPath,
-		pathCount:   pathCount,
-		paths:       make([]*quicPathConn, 0, pathCount),
-		ready:       make(chan struct{}),
-		dgramRouter: newDatagramRouter(),
+		ctx:              ctx,
+		cancel:           cancel,
+		logger:           options.Logger,
+		dialPath:         options.DialPath,
+		pathCount:        pathCount,
+		paths:            make([]*quicPathConn, 0, pathCount),
+		generationCtx:    generationCtx,
+		generationCancel: generationCancel,
+		ready:            make(chan struct{}),
+		dgramRouter:      newDatagramRouter(),
 	}
 	return relay
 }
@@ -93,7 +99,8 @@ func (r *QUICRelay) initPath(workerID uint16) {
 	if r.closed.Load() {
 		return
 	}
-	pathCtx, pathCancel := context.WithCancel(r.ctx)
+	generationCtx := r.currentGenerationContext()
+	pathCtx, pathCancel := context.WithCancel(generationCtx)
 	conn, closer, err := r.dialPath(pathCtx, workerID)
 	if err != nil {
 		pathCancel()
@@ -152,7 +159,8 @@ func (r *QUICRelay) reconnectPath(workerID uint16) {
 		if r.closed.Load() || r.ctx.Err() != nil {
 			return
 		}
-		pathCtx, pathCancel := context.WithCancel(r.ctx)
+		generationCtx := r.currentGenerationContext()
+		pathCtx, pathCancel := context.WithCancel(generationCtx)
 		conn, closer, err := r.dialPath(pathCtx, workerID)
 		if err == nil {
 			path := &quicPathConn{
@@ -167,7 +175,7 @@ func (r *QUICRelay) reconnectPath(workerID uint16) {
 		pathCancel()
 		select {
 		case <-time.After(backoff):
-		case <-r.ctx.Done():
+		case <-generationCtx.Done():
 			return
 		}
 		if backoff < 5*time.Second {
@@ -287,6 +295,7 @@ func (r *QUICRelay) Close() {
 		r.closed.Store(true)
 		r.cancel()
 		r.pathsMu.Lock()
+		r.generationCancel()
 		for _, path := range r.paths {
 			path.cancel()
 			if path.conn != nil {
@@ -304,13 +313,41 @@ func (r *QUICRelay) Close() {
 
 // RebindNetwork drops paths tied to the previous network. Their watchers
 // establish replacements using the relay's existing reconnect loop.
-func (r *QUICRelay) RebindNetwork() {
+func (r *QUICRelay) RebindNetwork(generation ...uint64) {
+	gen := uint64(0)
+	if len(generation) > 0 {
+		gen = generation[0]
+	}
+	if gen != 0 {
+		for {
+			applied := r.appliedNetworkGeneration.Load()
+			if gen <= applied {
+				return
+			}
+			if r.appliedNetworkGeneration.CompareAndSwap(applied, gen) {
+				break
+			}
+		}
+	}
 	r.pathsMu.RLock()
 	paths := append([]*quicPathConn(nil), r.paths...)
 	r.pathsMu.RUnlock()
+	r.pathsMu.Lock()
+	r.generationCancel()
+	r.generationCtx, r.generationCancel = context.WithCancel(r.ctx)
+	r.pathsMu.Unlock()
 	for _, path := range paths {
-		_ = path.conn.CloseWithError(0, "network changed")
+		if path.conn != nil {
+			_ = path.conn.CloseWithError(0, "network changed")
+		}
 	}
+}
+
+func (r *QUICRelay) currentGenerationContext() context.Context {
+	r.pathsMu.RLock()
+	ctx := r.generationCtx
+	r.pathsMu.RUnlock()
+	return ctx
 }
 
 // ActivePaths returns the current number of active QUIC paths in the pool.

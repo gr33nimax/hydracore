@@ -180,7 +180,7 @@ type Bridge struct {
 }
 
 type networkRebinder interface {
-	RebindNetwork()
+	RebindNetwork(...uint64)
 }
 
 func NewBridge(relay RelayTransport) *Bridge {
@@ -196,9 +196,9 @@ func (b *Bridge) Close() error {
 	return closeErr
 }
 
-func (b *Bridge) RebindNetwork() {
+func (b *Bridge) RebindNetwork(generation ...uint64) {
 	if rebinder, loaded := b.closer.(networkRebinder); loaded {
-		rebinder.RebindNetwork()
+		rebinder.RebindNetwork(generation...)
 	}
 }
 

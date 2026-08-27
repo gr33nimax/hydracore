@@ -129,7 +129,7 @@ func (o *Outbound) InterfaceUpdated() {
 	select {
 	case <-o.await:
 		if o.bridge != nil {
-			o.bridge.RebindNetwork()
+			o.bridge.RebindNetwork(H.CurrentNetworkGeneration())
 		}
 	default:
 		// A reset received before the initial bridge is ready is already

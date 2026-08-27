@@ -255,7 +255,10 @@ func solveVKCaptcha(ctx context.Context, captchaErr *vkCaptchaError, dialer N.Di
 	if successToken := GetCaptchaResultContext(challengeContext, 120*time.Second); successToken != "" {
 		return successToken, nil
 	}
-	return "", &ControlPlaneError{Stage: "vk_legacy", Kind: "captcha", Code: "14", ChallengeID: challengeID, Cause: ErrVKCaptchaRequired}
+	return "", &ControlPlaneError{
+		Stage: "vk_legacy", Kind: "captcha", Code: "vk.captcha.cancelled", ChallengeID: challengeID,
+		Terminal: ctx.Err() == nil, Cause: ErrVKCaptchaRequired,
+	}
 }
 
 func parseVKCaptchaError(errObj map[string]interface{}) *vkCaptchaError {

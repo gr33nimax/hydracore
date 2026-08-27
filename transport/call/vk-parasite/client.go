@@ -51,8 +51,6 @@ type Client struct {
 	metrics      *telemetry.Accumulator
 	generation   atomic.Uint64
 	closeOnce    sync.Once
-	rebindMu     sync.Mutex
-	rebindCancel context.CancelFunc
 	sawPath      atomic.Bool
 	sawChallenge atomic.Bool
 	lastFailure  atomic.Pointer[HC.TransportFailure]
@@ -257,9 +255,9 @@ func (c *Client) recordDialStage(workerID uint16, stage, result string) {
 	c.metrics.RecordEvent(stage, stage, result, &workerID)
 }
 
-func (c *Client) RebindNetwork() {
+func (c *Client) RebindNetwork(generation ...uint64) {
 	if c.relay != nil {
-		c.relay.RebindNetwork()
+		c.relay.RebindNetwork(generation...)
 	}
 }
 

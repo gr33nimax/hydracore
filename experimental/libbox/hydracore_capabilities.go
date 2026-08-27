@@ -39,3 +39,9 @@ func HydraCoreTransportState() string {
 func HydraCoreCancelRuntimeChallenge(id string) bool {
 	return H.CancelRuntimeChallenge(id)
 }
+
+func HydraCoreSetNetworkGeneration(generation int64) {
+	if generation >= 0 {
+		H.SetNetworkGeneration(uint64(generation))
+	}
+}

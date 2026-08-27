@@ -217,3 +217,43 @@ func TestRebindNetworkReplacesPaths(t *testing.T) {
 		return len(clientRelay.paths) == 1 && clientRelay.paths[0] != oldPath
 	}, 10*time.Second, 10*time.Millisecond)
 }
+
+func TestRebindNetworkGeneration(t *testing.T) {
+	started := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	relay := NewQUICRelay(t.Context(), QUICRelayOptions{
+		PathCount: 1,
+		DialPath: func(ctx context.Context, _ uint16) (*quic.Conn, io.Closer, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			cancelled <- struct{}{}
+			return nil, nil, ctx.Err()
+		},
+	})
+	defer relay.Close()
+	relay.Start()
+	<-started
+
+	relay.RebindNetwork(1)
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("generation rebind did not cancel an in-flight path")
+	}
+
+	relay.pathsMu.RLock()
+	generationCtx := relay.generationCtx
+	relay.pathsMu.RUnlock()
+	relay.RebindNetwork(1)
+	relay.pathsMu.RLock()
+	require.Same(t, generationCtx, relay.generationCtx)
+	relay.pathsMu.RUnlock()
+
+	relay.RebindNetwork(0)
+	relay.pathsMu.RLock()
+	require.NotSame(t, generationCtx, relay.generationCtx)
+	relay.pathsMu.RUnlock()
+}

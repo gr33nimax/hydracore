@@ -14,6 +14,7 @@ type ControlPlaneError struct {
 	Code         string
 	RetryAfter   time.Duration
 	ChallengeID string
+	Terminal     bool
 	Cause        error
 }
 

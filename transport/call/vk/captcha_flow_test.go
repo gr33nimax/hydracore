@@ -1,6 +1,7 @@
 package vk
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -96,4 +97,37 @@ func TestSolveVKCaptchaSerializesInteractiveChallenges(t *testing.T) {
 	secondOutcome := <-results
 	require.NoError(t, secondOutcome.err)
 	require.Equal(t, "second", secondOutcome.token)
+}
+
+func TestSolveVKCaptchaCancellationIsTerminalOnlyForUserCancellation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer upstream.Close()
+
+	for _, test := range []struct {
+		name     string
+		cancel   func(context.CancelFunc)
+		terminal bool
+	}{
+		{"user", func(_ context.CancelFunc) { HC.CancelRuntimeChallenge("") }, true},
+		{"generation", func(cancel context.CancelFunc) { cancel() }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			HC.ResetRuntimeTransportState()
+			defer HC.ResetRuntimeTransportState()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				_, err := solveVKCaptcha(ctx, &vkCaptchaError{redirectURI: upstream.URL}, nil, logger.NOP())
+				result <- err
+			}()
+			require.Eventually(t, func() bool { return HC.CurrentRuntimeChallenge() != nil }, time.Second, 10*time.Millisecond)
+			test.cancel(cancel)
+			err := <-result
+			control, ok := AsControlPlaneError(err)
+			require.True(t, ok)
+			require.Equal(t, "vk.captcha.cancelled", control.Code)
+			require.Equal(t, test.terminal, control.Terminal)
+		})
+	}
 }

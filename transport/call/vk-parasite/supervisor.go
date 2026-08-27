@@ -90,7 +90,7 @@ func transportFailure(err error) *HC.TransportFailure {
 		return &HC.TransportFailure{
 			Stage: controlError.Stage, Kind: controlError.Kind, Code: controlError.Code,
 			RetryAfterMS: controlError.RetryAfter.Milliseconds(), ChallengeID: controlError.ChallengeID,
-			Domain: transportFailureDomain(controlError.Kind),
+			Domain: transportFailureDomain(controlError.Kind), Terminal: controlError.Terminal,
 		}
 	}
 	return &HC.TransportFailure{Stage: "transport", Kind: "network", Code: "worker_failed", Domain: "NETWORK"}

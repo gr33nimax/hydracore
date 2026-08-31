@@ -19,6 +19,8 @@ const (
 	pathDialTimeout      = 30 * time.Second
 )
 
+var ErrNoActiveQUICPaths = errors.New("call vk_parasite: no active QUIC paths")
+
 type quicPathConn struct {
 	id     uint16
 	conn   *quic.Conn
@@ -46,8 +48,6 @@ type QUICRelay struct {
 	generationCancel         context.CancelFunc
 	appliedNetworkGeneration atomic.Uint64
 	closed                   atomic.Bool
-	ready                    chan struct{}
-	readyOnce                sync.Once
 	closeOnce                sync.Once
 	dgramRouter              *datagramRouter
 }
@@ -68,7 +68,6 @@ func NewQUICRelay(parent context.Context, options QUICRelayOptions) *QUICRelay {
 		paths:            make([]*quicPathConn, 0, pathCount),
 		generationCtx:    generationCtx,
 		generationCancel: generationCancel,
-		ready:            make(chan struct{}),
 		dgramRouter:      newDatagramRouter(),
 	}
 	return relay
@@ -77,22 +76,14 @@ func NewQUICRelay(parent context.Context, options QUICRelayOptions) *QUICRelay {
 // Start launches parallel path establishment.
 func (r *QUICRelay) Start() {
 	if r.dialPath == nil {
-		r.readyOnce.Do(func() { close(r.ready) })
 		return
 	}
-	var startupGroup sync.WaitGroup
 	for index := 0; index < r.pathCount; index++ {
 		workerID := uint16(index)
-		startupGroup.Add(1)
 		go func(id uint16) {
-			defer startupGroup.Done()
 			r.initPath(id)
 		}(workerID)
 	}
-	go func() {
-		startupGroup.Wait()
-		r.readyOnce.Do(func() { close(r.ready) })
-	}()
 }
 
 func (r *QUICRelay) initPath(workerID uint16) {
@@ -192,7 +183,7 @@ func (r *QUICRelay) reconnectPath(workerID uint16) {
 	}
 }
 
-func (r *QUICRelay) pickPath(ctx context.Context) (*quicPathConn, error) {
+func (r *QUICRelay) pickPath(_ context.Context) (*quicPathConn, error) {
 	r.pathsMu.RLock()
 	activeCount := len(r.paths)
 	if activeCount > 0 {
@@ -202,21 +193,7 @@ func (r *QUICRelay) pickPath(ctx context.Context) (*quicPathConn, error) {
 		return path, nil
 	}
 	r.pathsMu.RUnlock()
-
-	select {
-	case <-r.ready:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
-	r.pathsMu.RLock()
-	defer r.pathsMu.RUnlock()
-	activeCount = len(r.paths)
-	if activeCount == 0 {
-		return nil, errors.New("call vk_parasite: no active QUIC paths")
-	}
-	index := int(r.nextPath.Add(1)-1) % activeCount
-	return r.paths[index], nil
+	return nil, ErrNoActiveQUICPaths
 }
 
 func (r *QUICRelay) DialContext(ctx context.Context, destination string) (net.Conn, error) {

@@ -110,6 +110,7 @@ func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, se
 		DialPath:  dialPath,
 	})
 	clientRelay.Start()
+	require.Eventually(t, func() bool { return clientRelay.ActivePaths() > 0 }, 10*time.Second, 10*time.Millisecond)
 
 	closer = func() {
 		clientRelay.Close()
@@ -153,6 +154,29 @@ func TestDialContextCarriesDestination(t *testing.T) {
 	_, err = io.ReadFull(conn, buf)
 	require.NoError(t, err)
 	require.Equal(t, "pong", string(buf))
+}
+
+func TestDialContextWithoutActivePathsFailsImmediately(t *testing.T) {
+	pathStarted := make(chan struct{})
+	relay := NewQUICRelay(t.Context(), QUICRelayOptions{
+		PathCount: 1,
+		DialPath: func(ctx context.Context, _ uint16) (*quic.Conn, io.Closer, error) {
+			close(pathStarted)
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		},
+	})
+	defer relay.Close()
+	relay.Start()
+	<-pathStarted
+
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := relay.DialContext(ctx, "example.com:53")
+
+	require.ErrorIs(t, err, ErrNoActiveQUICPaths)
+	require.Less(t, time.Since(started), 100*time.Millisecond)
 }
 
 func TestConcurrentDials(t *testing.T) {

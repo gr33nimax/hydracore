@@ -251,7 +251,8 @@ func (w *WaitReadCloser) Read(b []byte) (int, error) {
 	if closed || rc == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return rc.Read(b)
+	read, err := rc.Read(b)
+	return read, wrapH2Error(err)
 }
 
 func (w *WaitReadCloser) Close() error {

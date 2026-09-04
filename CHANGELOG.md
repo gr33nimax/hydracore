@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.13.16-extended-hydracore.11-debug.52
+
+- Fail fast when a `vk_parasite` relay has no active QUIC path.
+
+## v1.13.16-extended-hydracore.11-debug.51
+
+- Keep transport health snapshots consistent and apply network rebinds only to
+  a newer network generation.
+- Stop reconnecting paths after a terminal authentication failure.
+
+## v1.13.16-extended-hydracore.11-debug.50
+
+- Allow worker counts of 4, 8, 12, 16, or 20 across four required VK links.
+- Preserve terminal transport failures and report safe dial-error events.
+
+## v1.13.16-extended-hydracore.11-debug.49
+
+- Publish `vk_parasite` transport health and support fragmented UDP datagrams.
+
+## v1.13.16-extended-hydracore.11-debug.48
+
+- Replace the KCP relay with the protocol-v9 QUIC relay over VK/TURN/DTLS paths.
+
 ## v1.13.16-extended-hydracore.11-debug.44
 
 - Cleaned up internal comments and finalized verified DoT RFC 7858 bootstrap transport.

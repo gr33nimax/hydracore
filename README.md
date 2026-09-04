@@ -1,76 +1,48 @@
 # HydraCore
 
-[![HydraCore checks](https://github.com/gr33nimax/hydracore/actions/workflows/hydracore.yml/badge.svg?branch=main)](https://github.com/gr33nimax/hydracore/actions/workflows/hydracore.yml)
-[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+HydraCore is the Android and Linux runtime for the Hydra self-hosted VPN stack.
+It is a GPL-3.0-or-later derivative of sing-box-extended and ships a verified
+Android `libbox.aar` plus Linux `sing-box` archives. It is not a VPN service or
+control plane.
 
-**Maintained Android and Linux networking runtime for the Hydra self-hosted VPN stack.**
+## Release artifacts
 
-HydraCore validates and executes native networking configurations accepted by
-[HydraBox](https://github.com/gr33nimax/hydrabox) and the native Calls endpoint
-managed by HYDRA Ultimate. Supported releases contain a provenance-bound
-Android `libbox.aar` and Linux `sing-box` runtimes; HydraCore is not a VPN
-service, subscription server, or control panel.
+Releases contain the Android AAR and sources, three Android shared libraries,
+two Linux archives (`amd64`, `arm64`), and a signed bundle manifest. Install
+only assets from [GitHub Releases](https://github.com/gr33nimax/hydracore/releases).
 
-```text
-HYDRA Ultimate  ->  encrypted subscription  ->  HydraBox  ->  HydraCore AAR
-       |                                                client runtime
-       +---------------- native Calls ----------------> HydraCore Linux
+The `debug` branch publishes prereleases; `main` publishes stable candidates.
+Client and VPS artifacts must come from the same release and source commit.
+
+```bash
+sing-box hydra capabilities --json
 ```
 
-## What HydraCore ships
-
-- Android `libbox.aar` and generated Java bindings.
-- Reproducible Linux `amd64` and `arm64` archives whose root executable is
-  named `sing-box`.
-- SHA-256 checksums, generated sources, attributed source archive, and
-  machine-readable build provenance for every release.
-- HydraCore API v2: capability/build manifests, strict local and remote
-  validation, runtime snapshots/events, and managed URLTest sessions.
-- Hydra Subscription v2 plaintext and flattened JWE schemas, validation,
-  redacted inspection, authenticated opening, and checksummed contract files.
-- WireGuard/AmneziaWG, VLESS, VMess, Trojan, Hysteria 2, TUIC, AnyTLS,
-  ShadowTLS, XHTTP, OpenVPN, TrustTunnel, MASQUE, MTProxy, Snell, Naive, Call
-  inbound/outbound (`dion`, `telemost`, `vk`, `wbstream`), and
-  the inherited routing/DNS runtime enabled by the published build tags.
-- Native VK Calls `vk_parasite`: O(1) user authentication, exactly four
-  independent KCP lanes over VK/TURN/DTLS, and ordered relay-frame bonding
-  across all four calls, queue-headroom admission without a fixed-rate pacer,
-  and bounded relay flow credit.
-
-Other build targets present in the source tree are not HydraCore release
-targets unless a HydraCore release explicitly includes them.
-
-## Releases
-
-Install only artifacts from [HydraCore Releases](https://github.com/gr33nimax/hydracore/releases).
-HydraBox and HYDRA Ultimate pin the release/source identity and verify artifact
-digests before build or activation. The Linux capability probe is
-`sing-box hydra capabilities --json`.
-
 The public distribution identity is `io.hydrabox.hydracore`. Compatibility
-identifiers required by existing native bindings remain stable; they are not
-public product names. The runtime and subscription contracts are documented in
-[HYDRACORE.md](HYDRACORE.md) and
-[contract/subscription/HYDRA_SUBSCRIPTION_V2.md](contract/subscription/HYDRA_SUBSCRIPTION_V2.md).
+module and binary names retained from upstream are not product branding.
+
+## Main components
+
+- `vk_parasite` Call transport over VK/TURN/DTLS with an inner QUIC relay;
+- HydraCore API v2 capabilities, validation, runtime state, and URL-test APIs;
+- Hydra Subscription v2 schemas and validation;
+- the upstream networking runtime enabled by the release build tags.
+
+`vk_parasite` is documented in [HYDRACORE.md](HYDRACORE.md). The Subscription
+contract is in [contract/subscription/HYDRA_SUBSCRIPTION_V2.md](contract/subscription/HYDRA_SUBSCRIPTION_V2.md).
 
 ## Development
 
-The authoritative checks run in GitHub Actions: the complete Go suite,
-race/resource gates, WireGuard configuration checks, pinned Android AAR and
-Linux builds, and checksum/provenance validation.
+CI in [`.github/workflows/hydracore.yml`](.github/workflows/hydracore.yml) is
+the release authority. It runs the Go, role, race, baseline, Android, Linux,
+checksum, and provenance checks. Do not build release artifacts locally.
 
-Contributions target `main`. Read [CONTRIBUTING.md](CONTRIBUTING.md) and report
-security issues according to [SECURITY.md](SECURITY.md).
+Contributions target `main`; see [CONTRIBUTING.md](CONTRIBUTING.md). Security
+reports follow [SECURITY.md](SECURITY.md).
 
-## Credits and license
+## License and notices
 
-HydraCore evolved from
-[`yamixdev/etonify-core`](https://github.com/yamixdev/etonify-core), the mobile
-runtime integration associated with
-[Etonify](https://github.com/yamixdev/Etonify) by MeowTeam. We are grateful to
-the team and all upstream contributors whose work provided this foundation.
-HydraCore preserves the complete source history, copyright notices, and
-corresponding source required by its GPL-3.0-or-later lineage. Project lineage,
-pinned baselines, retained compatibility identifiers, and non-affiliation
-notices are recorded in [CREDITS.md](CREDITS.md),
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and [LICENSE](LICENSE).
+HydraCore is GPL-3.0-or-later. Source lineage, copyright notices, and the
+MIT-licensed wrapper files are recorded in [CREDITS.md](CREDITS.md) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). See [LICENSE](LICENSE) and
+[LICENSES/MIT.txt](LICENSES/MIT.txt).

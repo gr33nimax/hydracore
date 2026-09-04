@@ -1,37 +1,39 @@
 # HydraCore distribution contract
 
-HydraCore publishes separate client and VPS artifacts. A VK parasite deployment
-must use artifacts from the same release manifest and commit; mixed wire
-versions are rejected during worker authentication.
+HydraCore releases separate Android client and Linux VPS runtimes. Deployments
+must use artifacts from one release manifest and source commit. The client role
+exposes the Call outbound; the VPS role exposes the Call inbound.
 
-## VK parasite transport
+## `vk_parasite`
 
-The native mode is `vk_parasite` using a 4x4 topology: 16 independent KCP lanes
-distributed evenly across up to 4 distinct VK calls (4 workers per call). Each
-worker maintains its own conversation, RTT/RTO, windows, queues, retransmission
-state, and TURN/DTLS lifecycle. Wire v9 pins each ordered TCP flow to one reliable
-lane, stripes unordered UDP/QUIC datagrams across active lanes, fragments TCP data
-before KCP, and admits user data through an ACK-clocked pacer per lane.
+`vk_parasite` carries authenticated QUIC streams and datagrams through VK Call
+paths. Each path uses VK signalling, TURN, DTLS, an RTP-shaped encrypted wrapper,
+and QUIC. The protocol version is 9; mixed protocol versions are rejected during
+worker authentication.
 
-Each lane reset advances a generation carried by worker auth and lane frames.
-The VPS suggests recovery to the client-side coordinator; the two endpoints
-exchange `RESET_PREPARE`, `RESET_ACK` and `RESET_COMMIT`, discard old KCP state,
-and activate the new lane upon bidirectional probe completion. A lane that does
-not return aborts only its pinned flows; remaining lanes and the logical tunnel
-remain operational. Quorum-based session replacement triggers when 75% of lanes
-are quarantined.
+The client requires exactly four distinct `join_links`. It starts four paths by
+default. `workers` and `max_workers_per_session` accept only `4`, `8`, `12`,
+`16`, or `20`; workers are distributed round-robin across the four links. A
+failed non-terminal path reconnects independently. A network change replaces
+the current path generation.
 
-The complete implementation is in `transport/call/vk-parasite`. Files outside
-that directory only register the sing-box inbound/outbound and map configuration
-into the package.
+Required capability fields are:
 
-The role contract is:
+```json
+{
+  "features": {
+    "call_vk_parasite": true,
+    "call_vk_parasite_quic": true,
+    "call_vk_telemetry": true
+  },
+  "protocols": {"call_modes": ["vk_parasite"]}
+}
+```
 
-- client: `identity.role="client"`, `call_vk_parasite=true`, `call_vk_parasite_client=true`;
-- VPS: `identity.role="vps"`, `call_vk_parasite=true`, `call_vk_parasite_server=true`;
-- both: `call_vk_telemetry=true`, `protocols.call_modes=["vk_parasite"]`.
+The client build also has `call_vk_parasite_client`; the VPS build has
+`call_vk_parasite_server`.
 
-Example VPS inbound:
+### VPS inbound
 
 ```json
 {
@@ -42,14 +44,12 @@ Example VPS inbound:
   "listen": "0.0.0.0",
   "listen_port": 8443,
   "obfs_password": "outer-secret",
-  "max_workers_per_session": 16,
-  "users": [
-    {"name": "tester-1", "password": "per-user-secret"}
-  ]
+  "max_workers_per_session": 4,
+  "users": [{"name": "tester-1", "password": "per-user-secret"}]
 }
 ```
 
-Example client outbound:
+### Client outbound
 
 ```json
 {
@@ -68,40 +68,21 @@ Example client outbound:
   "user": "tester-1",
   "password": "per-user-secret",
   "obfs_password": "outer-secret",
-  "workers": 16
+  "workers": 4
 }
 ```
 
-`workers` defaults to 16 on the client. `max_workers_per_session` on the VPS supports
-both legacy 4-lane and modern 16-lane clients. Between 1 and 4 join links are accepted;
-links are rotated round-robin across the 16 workers.
+Credentials and join links are secrets. Do not commit real values.
 
-## Host OS tuning and client socket allocation
+## Build and verification
 
-High-throughput multi-lane operation requires adequate OS network buffer limits
-and ephemeral port space to avoid client-side socket starvation (`no_ports`) and
-UDP packet loss (`RcvbufErrors`):
+The release baseline, Go version, Android API, NDK, JDK, gomobile version, and
+build tags are pinned in [release/UPSTREAM_BASELINE](release/UPSTREAM_BASELINE).
+CI builds all distributable artifacts. Local checks may use `go test`, `go vet`,
+`go build`, and the baseline verifier, but must not produce release artifacts.
 
-- **Linux Sysctl Guidelines**:
-  ```sysctl
-  net.ipv4.ip_local_port_range = 10240 65535
-  net.core.rmem_max = 16777216
-  net.core.wmem_max = 16777216
-  net.core.rmem_default = 2097152
-  net.core.wmem_default = 2097152
-  ```
-- **Android VPN Protection**: Under Android VPN mode, client UDP socket allocations
-  must be protected from looping back into the VPN interface, and socket buffers
-  are explicitly sized during TURN endpoint allocation.
+## Related contracts
 
-## TURN worker distribution and relay endpoint allocation
-
-To prevent physical workers from converging on the same TURN relay IP behind DNS round-robin, endpoint resolution deterministically sorts all resolved IPv4 addresses (`netip.Addr.Compare`) and rotates candidates by `workerID % len(addrs)`. Each candidate is attempted with full dial, STUN/TURN allocation and fallback on failure before escalating.
-
-## Verification and publication
-
-GitHub Actions runs Go tests, role/capability checks, Android AAR verification,
-Linux runtime integration and reproducible packaging. Publication is an explicit
-manual action and creates an immutable release containing exactly the signed bundle
-manifest, its signature, three Android shared libraries, the client AAR and sources,
-and two VPS archives.
+- [Hydra Subscription v2](contract/subscription/HYDRA_SUBSCRIPTION_V2.md)
+- [VK telemetry](docs/CALL_VK_TELEMETRY.md)
+- [Release notes](release/HYDRACORE_RELEASE_NOTES.md)

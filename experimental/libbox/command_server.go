@@ -197,6 +197,28 @@ func (s *CommandServer) NeedWIFIState() bool {
 	return instance.Box().Network().NeedWIFIState()
 }
 
+// SetLogLevel changes how much the core says, on a core that is already running.
+//
+// The level decides two things now: what the core formats and writes, and whether the platform
+// keeps its log stream subscribed at all. Both used to need a restart of the tunnel to change,
+// which is the wrong price for turning the detail up on a fault that is happening right now.
+func (s *CommandServer) SetLogLevel(level string) error {
+	instance := s.StartedService.Instance()
+	if instance == nil || instance.Box() == nil {
+		return E.New("service is not running")
+	}
+	parsed, err := log.ParseLevel(level)
+	if err != nil {
+		return err
+	}
+	factory := instance.Box().LogFactory()
+	if factory == nil {
+		return E.New("no log factory")
+	}
+	factory.SetLevel(parsed)
+	return nil
+}
+
 func (s *CommandServer) NeedFindProcess() bool {
 	instance := s.StartedService.Instance()
 	if instance == nil || instance.Box() == nil {

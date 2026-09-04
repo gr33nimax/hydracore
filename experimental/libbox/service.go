@@ -186,7 +186,9 @@ func (w *platformInterfaceWrapper) SystemCertificates() []string {
 }
 
 func (w *platformInterfaceWrapper) UsePlatformConnectionOwnerFinder() bool {
-	return true
+	// procfs is ours to read without asking anyone; otherwise the platform decides, and a
+	// platform that cannot answer is never asked again.
+	return w.useProcFS || w.iif.UsePlatformConnectionOwnerFinder()
 }
 
 func (w *platformInterfaceWrapper) FindConnectionOwner(request *adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error) {

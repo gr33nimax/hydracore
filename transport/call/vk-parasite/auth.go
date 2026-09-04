@@ -130,14 +130,53 @@ func validateAuthStrings(user, password string) error {
 	return nil
 }
 
-func encodeAuthAck(accepted bool, generation uint64) []byte {
+// Why the server refused a worker.
+//
+// The acknowledgement frame carries one accept bit, and the server used to collapse every
+// refusal into it: a wrong password, a worker count the server will not host and a frame it
+// could not parse all reached the client as "authentication rejected". They call for completely
+// different actions, and telling them apart meant reading the server's own log — which on a real
+// incident cost an afternoon.
+//
+// The reason travels in the byte that holds the top of the session generation, which is zero on
+// every refusal, so the frame stays fourteen bytes at protocol version 9. An older client reads
+// the accept bit and ignores this; an older server leaves it zero, which is Unspecified. Neither
+// side needs to know about the other.
+const (
+	AuthRejectUnspecified byte = iota
+	AuthRejectCredentials
+	AuthRejectWorkerCount
+	AuthRejectMalformed
+	AuthRejectSession
+)
+
+func authRejectReasonName(reason byte) string {
+	switch reason {
+	case AuthRejectCredentials:
+		return "user or password rejected"
+	case AuthRejectWorkerCount:
+		return "worker count refused by the server"
+	case AuthRejectMalformed:
+		return "malformed authentication request"
+	case AuthRejectSession:
+		return "session identity mismatch"
+	default:
+		return "reason not given"
+	}
+}
+
+func encodeAuthAck(accepted bool, generation uint64, reason byte) []byte {
 	frame := make([]byte, 14)
 	copy(frame[0:4], ackMagic[:])
 	frame[4] = authProtocolVersion
 	if accepted {
 		frame[5] = 1
+		binary.BigEndian.PutUint64(frame[6:14], generation)
+
+		return frame
 	}
-	binary.BigEndian.PutUint64(frame[6:14], generation)
+	frame[6] = reason
+
 	return frame
 }
 
@@ -146,7 +185,7 @@ func decodeAuthAck(frame []byte) (uint64, error) {
 		return 0, errors.New("call vk_parasite: invalid server auth response")
 	}
 	if frame[5] != 1 {
-		return 0, errors.New("call vk_parasite: authentication rejected")
+		return 0, fmt.Errorf("call vk_parasite: authentication rejected: %s", authRejectReasonName(frame[6]))
 	}
 	generation := binary.BigEndian.Uint64(frame[6:14])
 	if generation == 0 {

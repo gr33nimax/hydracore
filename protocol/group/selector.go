@@ -152,7 +152,7 @@ func (s *Selector) SelectOutbound(tag string) bool {
 	}
 	if s.Tag() != "" {
 		cacheFile := service.FromContext[adapter.CacheFile](s.ctx)
-		if cacheFile != nil {
+		if cacheFile != nil && cacheFile.StoreSelectedEnabled() {
 			err := cacheFile.StoreSelected(s.Tag(), tag)
 			if err != nil {
 				s.logger.Error("store selected: ", err)
@@ -266,9 +266,12 @@ func (s *Selector) onProviderUpdated(tag string) error {
 }
 
 func (s *Selector) outboundSelect() (adapter.Outbound, error) {
+	// The remembered choice is consulted only when the cache file was asked to keep it. It used
+	// to be consulted always, ahead of `default`, so a selection made once outlived every later
+	// change to the configuration — a client showing one server while routing through another.
 	if s.Tag() != "" {
 		cacheFile := service.FromContext[adapter.CacheFile](s.ctx)
-		if cacheFile != nil {
+		if cacheFile != nil && cacheFile.StoreSelectedEnabled() {
 			selected := cacheFile.LoadSelected(s.Tag())
 			if selected != "" {
 				detour, loaded := s.outbounds[selected]

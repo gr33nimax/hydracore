@@ -74,6 +74,7 @@ type CacheFile interface {
 
 	LoadMode() string
 	StoreMode(mode string) error
+	StoreSelectedEnabled() bool
 	LoadSelected(group string) string
 	StoreSelected(group string, selected string) error
 	LoadGroupExpand(group string) (isExpand bool, loaded bool)

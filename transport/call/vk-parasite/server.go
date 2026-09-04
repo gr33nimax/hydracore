@@ -555,10 +555,10 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		return
 	}
 	request, err := decodeAuthRequest(authBuffer[:n])
-	if err != nil || !supportedWorkerCount(request.WorkerTotal) || int(request.WorkerTotal) > s.options.MaxWorkersPerSession || !s.authorize(request.User, request.Password) {
+	if reason, refused := s.refuseAuth(request, err); refused {
 		s.telemetry.metrics.Add(telemetry.AuthFailureTotal, 1)
 		s.telemetry.event("auth_failed", "inner_auth", "rejected", "", [16]byte{}, nil)
-		_, _ = conn.Write(encodeAuthAck(false, 0))
+		_, _ = conn.Write(encodeAuthAck(false, 0, reason))
 		return
 	}
 	s.telemetry.metrics.Add(telemetry.AuthSuccessTotal, 1)
@@ -567,10 +567,10 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
 		s.telemetry.metrics.Add(telemetry.WorkerAttachFailureTotal, 1)
 		s.telemetry.event("worker_attach_failed", "worker", "session_rejected", request.User, request.SessionID, &request.WorkerID)
-		_, _ = conn.Write(encodeAuthAck(false, 0))
+		_, _ = conn.Write(encodeAuthAck(false, 0, AuthRejectSession))
 		return
 	}
-	_, writeErr := conn.Write(encodeAuthAck(true, session.generation))
+	_, writeErr := conn.Write(encodeAuthAck(true, session.generation, AuthRejectUnspecified))
 	if writeErr != nil {
 		s.releaseSessionAttach(session)
 		if created {
@@ -606,6 +606,26 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 	select {
 	case <-quicConn.Context().Done():
 	case <-s.ctx.Done():
+	}
+}
+
+// refuseAuth decides whether a worker is turned away, and says which of the reasons it was.
+//
+// The three used to be one condition and one accept bit on the wire, so a wrong password and a
+// worker count this server will not host were indistinguishable to the client — and to whoever
+// was reading its log.
+func (s *Server) refuseAuth(request authRequest, decodeErr error) (byte, bool) {
+	switch {
+	case decodeErr != nil:
+		return AuthRejectMalformed, true
+	case !supportedWorkerCount(request.WorkerTotal):
+		return AuthRejectWorkerCount, true
+	case int(request.WorkerTotal) > s.options.MaxWorkersPerSession:
+		return AuthRejectWorkerCount, true
+	case !s.authorize(request.User, request.Password):
+		return AuthRejectCredentials, true
+	default:
+		return AuthRejectUnspecified, false
 	}
 }
 

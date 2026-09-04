@@ -11,10 +11,13 @@ type ExperimentalOptions struct {
 }
 
 type CacheFileOptions struct {
-	Enabled           bool               `json:"enabled,omitempty"`
-	Path              string             `json:"path,omitempty"`
-	CacheID           string             `json:"cache_id,omitempty"`
-	StoreFakeIP       bool               `json:"store_fakeip,omitempty"`
+	Enabled     bool   `json:"enabled,omitempty"`
+	Path        string `json:"path,omitempty"`
+	CacheID     string `json:"cache_id,omitempty"`
+	StoreFakeIP bool   `json:"store_fakeip,omitempty"`
+	// StoreSelected keeps a group's chosen outbound across restarts. Off by default, because
+	// on it the remembered choice wins over the `default` in the configuration.
+	StoreSelected     bool               `json:"store_selected,omitempty"`
 	StoreRDRC         bool               `json:"store_rdrc,omitempty"`
 	StoreWARPConfig   bool               `json:"store_warp_config,omitempty"`
 	StoreMASQUEConfig bool               `json:"store_masque_config,omitempty"`

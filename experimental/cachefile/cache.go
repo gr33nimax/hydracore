@@ -41,6 +41,7 @@ type CacheFile struct {
 	ctx               context.Context
 	path              string
 	cacheID           []byte
+	storeSelected     bool
 	storeFakeIP       bool
 	storeRDRC         bool
 	storeWARPConfig   bool
@@ -86,6 +87,7 @@ func New(ctx context.Context, options option.CacheFileOptions) *CacheFile {
 		ctx:               ctx,
 		path:              filemanager.BasePath(ctx, path),
 		cacheID:           cacheIDBytes,
+		storeSelected:     options.StoreSelected,
 		storeFakeIP:       options.StoreFakeIP,
 		storeRDRC:         options.StoreRDRC,
 		storeWARPConfig:   options.StoreWARPConfig,
@@ -214,6 +216,16 @@ func (c *CacheFile) resetDB() {
 		_ = filemanager.Chown(c.ctx, c.path)
 		c.DB = db
 	}
+}
+
+// StoreSelectedEnabled reports whether the selection table is in use.
+//
+// The option existed and nothing read it: LoadSelected and StoreSelected always used the file, so
+// a group's remembered choice overrode the `default` in the configuration on every start. That is
+// a client showing one server and routing through another, with nothing in either place admitting
+// it.
+func (c *CacheFile) StoreSelectedEnabled() bool {
+	return c.storeSelected
 }
 
 func (c *CacheFile) StoreFakeIP() bool {

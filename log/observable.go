@@ -111,13 +111,10 @@ type observableLogger struct {
 
 func (l *observableLogger) Log(ctx context.Context, level Level, args []any) {
 	level = OverrideLevelFromContext(level, ctx)
-	// A line below the configured level costs nothing: it is not formatted, not written and
-	// not published. The observable subscriber used to be exempt — `needObservable` cancelled
-	// this early return and `Emit` ran whatever the level was, so at warning level the core
-	// still formatted every debug line and handed it to the platform, which dropped it again.
-	// Profiled on Android that was around four percent of one core, and nine at debug level,
-	// spent crossing the language boundary with lines nobody would keep.
-	if level > l.level && l.platformWriter == nil {
+	// A line below the configured level costs nothing: it is not formatted, not written, not
+	// published and not handed to the platform. Both the observable subscriber and the platform
+	// writer used to be exempt from this — the level gated the file writer alone.
+	if level > l.level {
 		return
 	}
 	nowTime := time.Now()
@@ -141,7 +138,13 @@ func (l *observableLogger) Log(ctx context.Context, level Level, args []any) {
 			os.Exit(1)
 		}
 	}
-	if l.platformWriter != nil {
+	// The platform writer is the path that matters on Android, and it was the one still
+	// unguarded. `Observable` is only true when the Clash API is on (box.go:167), so on a phone
+	// the subscriber above is never even built; every core line reached the app through here
+	// instead — WriteMessage into the command server, out over its log stream and across the
+	// language boundary — at any level, for the platform to drop again by its own threshold.
+	// Profiled at seven percent of one core with five lines a second actually being kept.
+	if l.platformWriter != nil && level <= l.level {
 		l.platformWriter.WriteMessage(level, l.platformFormatter.Format(ctx, level, l.tag, F.ToString(args...), nowTime))
 	}
 }

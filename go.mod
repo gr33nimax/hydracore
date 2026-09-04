@@ -263,3 +263,7 @@ replace github.com/shtorm-7/go-cache/v2 => github.com/shtorm-7/go-cache/v2 v2.1.
 replace github.com/sagernet/sing => github.com/shtorm-7/sing v0.8.10-extended-1.2.0
 
 replace github.com/sagernet/sing-mux => github.com/shtorm-7/sing-mux v0.3.4-extended-1.1.0
+
+replace github.com/pion/turn/v4 => ./forks/pion-turn
+
+replace github.com/pion/dtls/v3 => ./forks/pion-dtls

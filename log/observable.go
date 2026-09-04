@@ -111,20 +111,24 @@ type observableLogger struct {
 
 func (l *observableLogger) Log(ctx context.Context, level Level, args []any) {
 	level = OverrideLevelFromContext(level, ctx)
-	if level > l.level && l.platformWriter == nil && !l.needObservable {
+	// A line below the configured level costs nothing: it is not formatted, not written and
+	// not published. The observable subscriber used to be exempt — `needObservable` cancelled
+	// this early return and `Emit` ran whatever the level was, so at warning level the core
+	// still formatted every debug line and handed it to the platform, which dropped it again.
+	// Profiled on Android that was around four percent of one core, and nine at debug level,
+	// spent crossing the language boundary with lines nobody would keep.
+	if level > l.level && l.platformWriter == nil {
 		return
 	}
 	nowTime := time.Now()
-	if l.needObservable {
+	if l.needObservable && level <= l.level {
 		message, messageSimple := l.formatter.FormatWithSimple(ctx, level, l.tag, F.ToString(args...), nowTime)
-		if level <= l.level {
-			if level == LevelPanic {
-				panic(message)
-			}
-			l.writer.Write([]byte(message))
-			if level == LevelFatal {
-				os.Exit(1)
-			}
+		if level == LevelPanic {
+			panic(message)
+		}
+		l.writer.Write([]byte(message))
+		if level == LevelFatal {
+			os.Exit(1)
 		}
 		l.subscriber.Emit(Entry{level, messageSimple})
 	} else if level <= l.level {

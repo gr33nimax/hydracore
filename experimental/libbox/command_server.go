@@ -164,16 +164,18 @@ func (s *CommandServer) Close() {
 }
 
 type OverrideOptions struct {
-	AutoRedirect   bool
-	IncludePackage StringIterator
-	ExcludePackage StringIterator
+	AutoRedirect      bool
+	IncludePackage    StringIterator
+	ExcludePackage    StringIterator
+	RuntimeGeneration int64
 }
 
 func (s *CommandServer) StartOrReloadService(configContent string, options *OverrideOptions) error {
 	return s.StartedService.StartOrReloadService(configContent, &daemon.OverrideOptions{
-		AutoRedirect:   options.AutoRedirect,
-		IncludePackage: iteratorToArray(options.IncludePackage),
-		ExcludePackage: iteratorToArray(options.ExcludePackage),
+		AutoRedirect:      options.AutoRedirect,
+		IncludePackage:    iteratorToArray(options.IncludePackage),
+		ExcludePackage:    iteratorToArray(options.ExcludePackage),
+		RuntimeGeneration: options.RuntimeGeneration,
 	})
 }
 

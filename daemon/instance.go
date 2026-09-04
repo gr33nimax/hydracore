@@ -63,9 +63,10 @@ func (s *StartedService) FormatConfig(configContent string) (string, error) {
 }
 
 type OverrideOptions struct {
-	AutoRedirect   bool
-	IncludePackage []string
-	ExcludePackage []string
+	AutoRedirect      bool
+	IncludePackage    []string
+	ExcludePackage    []string
+	RuntimeGeneration int64
 }
 
 func (s *StartedService) newInstance(profileContent string, overrideOptions *OverrideOptions) (*Instance, error) {

@@ -5,13 +5,14 @@ import (
 	"os"
 	"time"
 
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 const (
-	runtimeSnapshotSchemaVersion = 1
+	runtimeSnapshotSchemaVersion = 2
 	defaultRuntimeEventInterval  = time.Second
 	minimumRuntimeEventInterval  = 250 * time.Millisecond
 	maximumRuntimeEventInterval  = 30 * time.Second
@@ -54,6 +55,7 @@ func (s *StartedService) readRuntimeSnapshot() *RuntimeSnapshot {
 		Groups:          &Groups{},
 		ClashMode:       &ClashModeStatus{},
 		UrlTestSessions: s.readURLTestSessions(),
+		TransportHealth: runtimeTransportHealth(HC.CurrentTransportHealth()),
 	}
 	if !startedAt.IsZero() {
 		snapshot.StartedAt = startedAt.UnixMilli()
@@ -93,6 +95,7 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 
 	ticker := time.NewTicker(normalizeRuntimeEventInterval(request.IntervalMillis))
 	defer ticker.Stop()
+	healthChanged := HC.TransportHealthChanged()
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -100,8 +103,10 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 		case <-server.Context().Done():
 			return server.Context().Err()
 		case <-ticker.C:
+		case <-healthChanged:
 		}
 
+		healthChanged = HC.TransportHealthChanged()
 		current := s.readRuntimeSnapshot()
 		populateRuntimeTrafficRates(previous, current)
 		var events []*RuntimeEvent
@@ -127,6 +132,12 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 				UrlTestSessions: current.UrlTestSessions,
 			})
 		}
+		if !proto.Equal(previous.TransportHealth, current.TransportHealth) {
+			events = append(events, &RuntimeEvent{
+				Type:            RuntimeEventType_RUNTIME_EVENT_TRANSPORT_HEALTH,
+				TransportHealth: current.TransportHealth,
+			})
+		}
 		previous = current
 		if len(events) == 0 {
 			continue
@@ -136,6 +147,35 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 			return err
 		}
 	}
+}
+
+func runtimeTransportHealth(health HC.TransportHealthSnapshot) *TransportHealth {
+	result := &TransportHealth{
+		TransportTag:            health.TransportTag,
+		State:                   health.State,
+		ActiveLanes:             health.ActiveLanes,
+		TotalLanes:              health.TotalLanes,
+		Demand:                  health.Demand,
+		LastProgressAt:          health.LastProgressAt,
+		LastAggregateProgressAt: health.LastAggregateProgressAt,
+		LastInboundAt:           health.LastInboundAt,
+		ObservedAt:              health.ObservedAt,
+		Applicable:              health.Applicable,
+		RuntimeGeneration:       health.RuntimeGeneration,
+		NetworkGeneration:       health.NetworkGeneration,
+	}
+	if health.Failure != nil {
+		result.Failure = &TransportFailure{
+			Stage:            health.Failure.Stage,
+			Kind:             health.Failure.Kind,
+			Code:             health.Failure.Code,
+			RetryAfterMillis: health.Failure.RetryAfterMS,
+			ChallengeId:      health.Failure.ChallengeID,
+			Domain:           health.Failure.Domain,
+			Terminal:         health.Failure.Terminal,
+		}
+	}
+	return result
 }
 
 func populateRuntimeTrafficRates(previous *RuntimeSnapshot, current *RuntimeSnapshot) {

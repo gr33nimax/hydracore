@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -23,16 +24,22 @@ func TestNormalizeRuntimeEventInterval(t *testing.T) {
 }
 
 func TestRuntimeSnapshotIsCompleteWhileIdleAndRedactsFatalError(t *testing.T) {
-	t.Parallel()
+	HC.ResetRuntimeTransportState()
+	t.Cleanup(HC.ResetRuntimeTransportState)
 	service := NewStartedService(ServiceOptions{Context: context.Background()})
 	defer service.Close()
 
 	snapshot := service.readRuntimeSnapshot()
-	if snapshot.SchemaVersion != runtimeSnapshotSchemaVersion || snapshot.Service == nil || snapshot.Status == nil || snapshot.Groups == nil || snapshot.ClashMode == nil {
+	if snapshot.SchemaVersion != runtimeSnapshotSchemaVersion || snapshot.Service == nil || snapshot.Status == nil || snapshot.Groups == nil || snapshot.ClashMode == nil || snapshot.TransportHealth == nil {
 		t.Fatalf("idle runtime snapshot is incomplete: %+v", snapshot)
 	}
 	if snapshot.Service.Status != ServiceStatus_IDLE || snapshot.StartedAt != 0 {
 		t.Fatalf("unexpected idle state: %+v", snapshot)
+	}
+	HC.PublishTransportHealth(7, HC.TransportHealthSnapshot{TransportTag: "call-vk", State: HC.TransportStateHealthy, ActiveLanes: 3})
+	snapshot = service.readRuntimeSnapshot()
+	if snapshot.TransportHealth.TransportTag != "call-vk" || snapshot.TransportHealth.RuntimeGeneration != 7 || snapshot.TransportHealth.ActiveLanes != 3 {
+		t.Fatalf("transport health was not included: %+v", snapshot.TransportHealth)
 	}
 
 	service.serviceAccess.Lock()

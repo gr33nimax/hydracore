@@ -92,8 +92,7 @@ func PublishTransportHealth(generation uint64, snapshot TransportHealthSnapshot)
 	changed := !equalMaterialTransportHealth(runtimeTransportState.health, snapshot)
 	runtimeTransportState.health = cloneTransportHealth(snapshot)
 	if changed {
-		close(runtimeTransportState.healthChanged)
-		runtimeTransportState.healthChanged = make(chan struct{})
+		notifyTransportHealthChangedLocked()
 	}
 	runtimeTransportState.Unlock()
 }
@@ -126,8 +125,12 @@ func CurrentTransportHealth() TransportHealthSnapshot {
 func PublishRuntimeChallenge(challenge RuntimeChallenge, cancel func()) {
 	copy := challenge
 	runtimeTransportState.Lock()
+	changed := runtimeTransportState.challenge == nil || *runtimeTransportState.challenge != challenge
 	runtimeTransportState.challenge = &copy
 	runtimeTransportState.cancelChallenge = cancel
+	if changed {
+		notifyTransportHealthChangedLocked()
+	}
 	runtimeTransportState.Unlock()
 }
 
@@ -136,6 +139,7 @@ func ClearRuntimeChallenge(id string) {
 	if runtimeTransportState.challenge != nil && (id == "" || runtimeTransportState.challenge.ID == id) {
 		runtimeTransportState.challenge = nil
 		runtimeTransportState.cancelChallenge = nil
+		notifyTransportHealthChangedLocked()
 	}
 	runtimeTransportState.Unlock()
 }
@@ -159,6 +163,7 @@ func CancelRuntimeChallenge(id string) bool {
 	cancel := runtimeTransportState.cancelChallenge
 	runtimeTransportState.challenge = nil
 	runtimeTransportState.cancelChallenge = nil
+	notifyTransportHealthChangedLocked()
 	runtimeTransportState.Unlock()
 	if cancel != nil {
 		cancel()
@@ -174,8 +179,7 @@ func ResetRuntimeTransportState() {
 		State:      TransportStateStarting,
 		ObservedAt: time.Now().UnixMilli(),
 	}
-	close(runtimeTransportState.healthChanged)
-	runtimeTransportState.healthChanged = make(chan struct{})
+	notifyTransportHealthChangedLocked()
 	runtimeTransportState.Unlock()
 }
 
@@ -193,4 +197,9 @@ func equalMaterialTransportHealth(left, right TransportHealthSnapshot) bool {
 	left.LastAggregateProgressAt, right.LastAggregateProgressAt = 0, 0
 	left.LastInboundAt, right.LastInboundAt = 0, 0
 	return reflect.DeepEqual(left, right)
+}
+
+func notifyTransportHealthChangedLocked() {
+	close(runtimeTransportState.healthChanged)
+	runtimeTransportState.healthChanged = make(chan struct{})
 }

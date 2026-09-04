@@ -36,6 +36,27 @@ func TestTransportHealthNotifiesOnlyMaterialChanges(t *testing.T) {
 	}
 }
 
+func TestRuntimeChallengeNotifiesTransportHealthSubscribers(t *testing.T) {
+	ResetRuntimeTransportState()
+	t.Cleanup(ResetRuntimeTransportState)
+
+	changed := TransportHealthChanged()
+	PublishRuntimeChallenge(RuntimeChallenge{ID: "captcha-1"}, nil)
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("challenge did not publish waiting-user health")
+	}
+
+	changed = TransportHealthChanged()
+	ClearRuntimeChallenge("captcha-1")
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("cleared challenge did not publish health")
+	}
+}
+
 func TestTransportHealthRejectsStaleGeneration(t *testing.T) {
 	ResetRuntimeTransportState()
 	t.Cleanup(ResetRuntimeTransportState)

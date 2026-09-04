@@ -35,7 +35,34 @@ const (
 	RuntimeEventGroups
 	RuntimeEventClashMode
 	RuntimeEventURLTestSessions
+	RuntimeEventTransportHealth
 )
+
+type TransportFailure struct {
+	Stage            string
+	Kind             string
+	Code             string
+	RetryAfterMillis int64
+	ChallengeID      string
+	Domain           string
+	Terminal         bool
+}
+
+type TransportHealth struct {
+	TransportTag            string
+	State                   string
+	ActiveLanes             int32
+	TotalLanes              int32
+	Demand                  bool
+	LastProgressAt          int64
+	LastAggregateProgressAt int64
+	LastInboundAt           int64
+	ObservedAt              int64
+	Applicable              bool
+	RuntimeGeneration       int64
+	NetworkGeneration       int64
+	Failure                 *TransportFailure
+}
 
 type URLTestResult struct {
 	OutboundTag  string
@@ -90,15 +117,16 @@ func (m *RuntimeClashMode) ModeList() StringIterator {
 }
 
 type RuntimeSnapshot struct {
-	SchemaVersion int32
-	Sequence      int64
-	ObservedAt    int64
-	Service       *RuntimeServiceStatus
-	StartedAt     int64
-	Status        *StatusMessage
-	ClashMode     *RuntimeClashMode
-	groups        []*OutboundGroup
-	urlTests      []*URLTestSession
+	SchemaVersion   int32
+	Sequence        int64
+	ObservedAt      int64
+	Service         *RuntimeServiceStatus
+	StartedAt       int64
+	Status          *StatusMessage
+	ClashMode       *RuntimeClashMode
+	TransportHealth *TransportHealth
+	groups          []*OutboundGroup
+	urlTests        []*URLTestSession
 }
 
 func (s *RuntimeSnapshot) Groups() OutboundGroupIterator {
@@ -110,13 +138,14 @@ func (s *RuntimeSnapshot) URLTestSessions() URLTestSessionIterator {
 }
 
 type RuntimeEvent struct {
-	Type      int32
-	Service   *RuntimeServiceStatus
-	Status    *StatusMessage
-	ClashMode *RuntimeClashMode
-	StartedAt int64
-	groups    []*OutboundGroup
-	urlTests  []*URLTestSession
+	Type            int32
+	Service         *RuntimeServiceStatus
+	Status          *StatusMessage
+	ClashMode       *RuntimeClashMode
+	TransportHealth *TransportHealth
+	StartedAt       int64
+	groups          []*OutboundGroup
+	urlTests        []*URLTestSession
 }
 
 func (e *RuntimeEvent) Groups() OutboundGroupIterator {
@@ -632,20 +661,53 @@ func runtimeClashModeFromGRPC(mode *daemon.ClashModeStatus) *RuntimeClashMode {
 	}
 }
 
+func transportHealthFromGRPC(health *daemon.TransportHealth) *TransportHealth {
+	if health == nil {
+		return nil
+	}
+	result := &TransportHealth{
+		TransportTag:            health.TransportTag,
+		State:                   health.State,
+		ActiveLanes:             health.ActiveLanes,
+		TotalLanes:              health.TotalLanes,
+		Demand:                  health.Demand,
+		LastProgressAt:          health.LastProgressAt,
+		LastAggregateProgressAt: health.LastAggregateProgressAt,
+		LastInboundAt:           health.LastInboundAt,
+		ObservedAt:              health.ObservedAt,
+		Applicable:              health.Applicable,
+		RuntimeGeneration:       int64(health.RuntimeGeneration),
+		NetworkGeneration:       int64(health.NetworkGeneration),
+	}
+	if health.Failure != nil {
+		result.Failure = &TransportFailure{
+			Stage:            health.Failure.Stage,
+			Kind:             health.Failure.Kind,
+			Code:             health.Failure.Code,
+			RetryAfterMillis: health.Failure.RetryAfterMillis,
+			ChallengeID:      health.Failure.ChallengeId,
+			Domain:           health.Failure.Domain,
+			Terminal:         health.Failure.Terminal,
+		}
+	}
+	return result
+}
+
 func runtimeSnapshotFromGRPC(snapshot *daemon.RuntimeSnapshot) *RuntimeSnapshot {
 	if snapshot == nil {
 		return nil
 	}
 	return &RuntimeSnapshot{
-		SchemaVersion: snapshot.SchemaVersion,
-		Sequence:      int64(snapshot.Sequence),
-		ObservedAt:    snapshot.ObservedAt,
-		Service:       runtimeServiceStatusFromGRPC(snapshot.Service),
-		StartedAt:     snapshot.StartedAt,
-		Status:        statusMessageFromGRPC(snapshot.Status),
-		ClashMode:     runtimeClashModeFromGRPC(snapshot.ClashMode),
-		groups:        outboundGroupListFromGRPC(snapshot.Groups),
-		urlTests:      urlTestSessionListFromGRPC(snapshot.UrlTestSessions),
+		SchemaVersion:   snapshot.SchemaVersion,
+		Sequence:        int64(snapshot.Sequence),
+		ObservedAt:      snapshot.ObservedAt,
+		Service:         runtimeServiceStatusFromGRPC(snapshot.Service),
+		StartedAt:       snapshot.StartedAt,
+		Status:          statusMessageFromGRPC(snapshot.Status),
+		ClashMode:       runtimeClashModeFromGRPC(snapshot.ClashMode),
+		TransportHealth: transportHealthFromGRPC(snapshot.TransportHealth),
+		groups:          outboundGroupListFromGRPC(snapshot.Groups),
+		urlTests:        urlTestSessionListFromGRPC(snapshot.UrlTestSessions),
 	}
 }
 
@@ -654,13 +716,14 @@ func runtimeEventFromGRPC(event *daemon.RuntimeEvent) *RuntimeEvent {
 		return nil
 	}
 	return &RuntimeEvent{
-		Type:      int32(event.Type),
-		Service:   runtimeServiceStatusFromGRPC(event.Service),
-		Status:    statusMessageFromGRPC(event.Status),
-		ClashMode: runtimeClashModeFromGRPC(event.ClashMode),
-		StartedAt: event.StartedAt,
-		groups:    outboundGroupListFromGRPC(event.Groups),
-		urlTests:  urlTestSessionListFromGRPC(event.UrlTestSessions),
+		Type:            int32(event.Type),
+		Service:         runtimeServiceStatusFromGRPC(event.Service),
+		Status:          statusMessageFromGRPC(event.Status),
+		ClashMode:       runtimeClashModeFromGRPC(event.ClashMode),
+		TransportHealth: transportHealthFromGRPC(event.TransportHealth),
+		StartedAt:       event.StartedAt,
+		groups:          outboundGroupListFromGRPC(event.Groups),
+		urlTests:        urlTestSessionListFromGRPC(event.UrlTestSessions),
 	}
 }
 

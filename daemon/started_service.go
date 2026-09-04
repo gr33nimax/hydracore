@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/urltest"
 	HC "github.com/sagernet/sing-box/common/hydracore"
+	"github.com/sagernet/sing-box/common/urltest"
 	"github.com/sagernet/sing-box/experimental/clashapi"
 	"github.com/sagernet/sing-box/experimental/clashapi/trafficontrol"
 	"github.com/sagernet/sing-box/experimental/deprecated"
@@ -182,6 +182,9 @@ func (s *StartedService) waitForStarted(ctx context.Context) error {
 
 func (s *StartedService) StartOrReloadService(profileContent string, options *OverrideOptions) error {
 	HC.ResetRuntimeTransportState()
+	if options != nil && options.RuntimeGeneration > 0 {
+		HC.SetRuntimeGeneration(uint64(options.RuntimeGeneration))
+	}
 	s.serviceAccess.Lock()
 	switch s.serviceStatus.Status {
 	case ServiceStatus_IDLE, ServiceStatus_STARTED, ServiceStatus_STARTING, ServiceStatus_FATAL:

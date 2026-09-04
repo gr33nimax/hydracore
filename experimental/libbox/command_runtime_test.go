@@ -34,6 +34,13 @@ func TestRuntimeSnapshotFromGRPC(t *testing.T) {
 				Status:      "available",
 			}},
 		}},
+		TransportHealth: &daemon.TransportHealth{
+			TransportTag:      "call-vk",
+			State:             "healthy",
+			ActiveLanes:       3,
+			RuntimeGeneration: 7,
+			Failure:           &daemon.TransportFailure{Code: "turn.allocate_failed"},
+		},
 	})
 	if snapshot == nil || snapshot.SchemaVersion != 1 || snapshot.Sequence != 7 || snapshot.Service.Status != int32(daemon.ServiceStatus_STARTED) {
 		t.Fatalf("unexpected snapshot conversion: %+v", snapshot)
@@ -53,6 +60,9 @@ func TestRuntimeSnapshotFromGRPC(t *testing.T) {
 	if snapshot.ClashMode.ModeList().Next() != "rule" {
 		t.Fatal("clash mode list was not converted")
 	}
+	if snapshot.TransportHealth.TransportTag != "call-vk" || snapshot.TransportHealth.ActiveLanes != 3 || snapshot.TransportHealth.Failure.Code != "turn.allocate_failed" {
+		t.Fatalf("transport health was not converted: %+v", snapshot.TransportHealth)
+	}
 }
 
 func TestRuntimeEventsFromGRPCPreservesResetAndTypedDelta(t *testing.T) {
@@ -64,6 +74,9 @@ func TestRuntimeEventsFromGRPCPreservesResetAndTypedDelta(t *testing.T) {
 		Events: []*daemon.RuntimeEvent{{
 			Type:   daemon.RuntimeEventType_RUNTIME_EVENT_STATUS,
 			Status: &daemon.Status{Goroutines: 3},
+		}, {
+			Type:            daemon.RuntimeEventType_RUNTIME_EVENT_TRANSPORT_HEALTH,
+			TransportHealth: &daemon.TransportHealth{State: "degraded", ActiveLanes: 1},
 		}},
 	})
 	if events == nil || !events.Reset || events.Sequence != 9 || events.Snapshot == nil {
@@ -76,5 +89,9 @@ func TestRuntimeEventsFromGRPCPreservesResetAndTypedDelta(t *testing.T) {
 	event := iterator.Next()
 	if event.Type != RuntimeEventStatus || event.Status.Goroutines != 3 {
 		t.Fatalf("unexpected typed runtime delta: %+v", event)
+	}
+	event = iterator.Next()
+	if event.Type != RuntimeEventTransportHealth || event.TransportHealth.State != "degraded" {
+		t.Fatalf("unexpected transport health delta: %+v", event)
 	}
 }

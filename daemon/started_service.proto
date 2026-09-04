@@ -188,6 +188,33 @@ message RuntimeSnapshot {
   Groups groups = 7;
   ClashModeStatus clashMode = 8;
   repeated URLTestSession urlTestSessions = 9;
+  TransportHealth transportHealth = 10;
+}
+
+message TransportFailure {
+  string stage = 1;
+  string kind = 2;
+  string code = 3;
+  int64 retryAfterMillis = 4;
+  string challengeId = 5;
+  string domain = 6;
+  bool terminal = 7;
+}
+
+message TransportHealth {
+  string transportTag = 1;
+  string state = 2;
+  int32 activeLanes = 3;
+  int32 totalLanes = 4;
+  bool demand = 5;
+  int64 lastProgressAt = 6;
+  int64 lastAggregateProgressAt = 7;
+  int64 lastInboundAt = 8;
+  int64 observedAt = 9;
+  bool applicable = 10;
+  uint64 runtimeGeneration = 11;
+  uint64 networkGeneration = 12;
+  TransportFailure failure = 13;
 }
 
 message RuntimeEventRequest {
@@ -200,6 +227,7 @@ enum RuntimeEventType {
   RUNTIME_EVENT_GROUPS = 2;
   RUNTIME_EVENT_CLASH_MODE = 3;
   RUNTIME_EVENT_URL_TEST_SESSIONS = 4;
+  RUNTIME_EVENT_TRANSPORT_HEALTH = 5;
 }
 
 message RuntimeEvent {
@@ -210,6 +238,7 @@ message RuntimeEvent {
   ClashModeStatus clashMode = 5;
   repeated URLTestSession urlTestSessions = 6;
   int64 startedAt = 7;
+  TransportHealth transportHealth = 8;
 }
 
 message RuntimeEvents {

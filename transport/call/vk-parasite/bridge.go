@@ -14,6 +14,7 @@ import (
 )
 
 type BridgeOptions struct {
+	TransportTag         string
 	Server               M.Socksaddr
 	JoinLinks            []string
 	User                 string
@@ -31,6 +32,7 @@ func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLog
 	provider := vk.NewTURNCredentialProvider(cfg.Dialer, log)
 	provider.SetTelemetry(metrics)
 	options := ClientOptions{
+		TransportTag:         cfg.TransportTag,
 		Server:               cfg.Server,
 		JoinLinks:            append([]string(nil), cfg.JoinLinks...),
 		User:                 cfg.User,

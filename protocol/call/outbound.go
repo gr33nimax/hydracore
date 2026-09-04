@@ -32,17 +32,17 @@ func RegisterOutbound(registry *outbound.Registry) {
 
 type Outbound struct {
 	outbound.Adapter
-	ctx           context.Context
-	logger        logger.ContextLogger
-	options       option.CallOutboundOptions
-	dialer        N.Dialer
-	bridge        *call.Bridge
-	startHandler  func()
-	await         chan struct{}
-	awaitOnce     sync.Once
-	started       atomic.Bool
-	closed        atomic.Bool
-	cancel        context.CancelFunc
+	ctx          context.Context
+	logger       logger.ContextLogger
+	options      option.CallOutboundOptions
+	dialer       N.Dialer
+	bridge       *call.Bridge
+	startHandler func()
+	await        chan struct{}
+	awaitOnce    sync.Once
+	started      atomic.Bool
+	closed       atomic.Bool
+	cancel       context.CancelFunc
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallOutboundOptions) (adapter.Outbound, error) {
@@ -87,6 +87,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	ob.startHandler = func() {
 		defer ob.finishStart()
 		bridge, err := call.Connect(runCtx, call.Config{
+			TransportTag:         tag,
 			Platform:             options.Platform,
 			Mode:                 options.Mode,
 			JoinLink:             options.JoinLink,

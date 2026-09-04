@@ -3,9 +3,38 @@ package hydracore
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestTransportHealthNotifiesOnlyMaterialChanges(t *testing.T) {
+	ResetRuntimeTransportState()
+	t.Cleanup(ResetRuntimeTransportState)
+
+	changed := TransportHealthChanged()
+	PublishTransportHealth(1, TransportHealthSnapshot{TransportTag: "call-vk", State: TransportStateHealthy, ActiveLanes: 8})
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("material health change was not published")
+	}
+
+	unchanged := TransportHealthChanged()
+	PublishTransportHealth(1, TransportHealthSnapshot{TransportTag: "call-vk", State: TransportStateHealthy, ActiveLanes: 8, ObservedAt: 123})
+	select {
+	case <-unchanged:
+		t.Fatal("timestamp-only update was published")
+	default:
+	}
+
+	PublishTransportHealth(1, TransportHealthSnapshot{TransportTag: "call-vk", State: TransportStateDegraded, ActiveLanes: 7})
+	select {
+	case <-unchanged:
+	case <-time.After(time.Second):
+		t.Fatal("state change was not published")
+	}
+}
 
 func TestTransportHealthRejectsStaleGeneration(t *testing.T) {
 	ResetRuntimeTransportState()

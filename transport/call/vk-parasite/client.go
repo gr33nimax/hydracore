@@ -24,6 +24,7 @@ import (
 )
 
 type ClientOptions struct {
+	TransportTag          string
 	Server                M.Socksaddr
 	JoinLinks             []string
 	User                  string

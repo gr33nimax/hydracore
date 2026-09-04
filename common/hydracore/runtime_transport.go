@@ -1,6 +1,7 @@
 package hydracore
 
 import (
+	"reflect"
 	"sync"
 	"time"
 )
@@ -25,6 +26,7 @@ type TransportFailure struct {
 }
 
 type TransportHealthSnapshot struct {
+	TransportTag            string            `json:"transport_tag,omitempty"`
 	State                   string            `json:"state"`
 	ActiveLanes             int32             `json:"active_lanes"`
 	TotalLanes              int32             `json:"total_lanes"`
@@ -53,6 +55,11 @@ var runtimeTransportState struct {
 	health          TransportHealthSnapshot
 	challenge       *RuntimeChallenge
 	cancelChallenge func()
+	healthChanged   chan struct{}
+}
+
+func init() {
+	runtimeTransportState.healthChanged = make(chan struct{})
 }
 
 func SetRuntimeGeneration(generation uint64) {
@@ -82,8 +89,22 @@ func PublishTransportHealth(generation uint64, snapshot TransportHealthSnapshot)
 	}
 	runtimeTransportState.generation = generation
 	snapshot.RuntimeGeneration = generation
+	changed := !equalMaterialTransportHealth(runtimeTransportState.health, snapshot)
 	runtimeTransportState.health = cloneTransportHealth(snapshot)
+	if changed {
+		close(runtimeTransportState.healthChanged)
+		runtimeTransportState.healthChanged = make(chan struct{})
+	}
 	runtimeTransportState.Unlock()
+}
+
+// TransportHealthChanged closes when a materially different transport snapshot is published.
+// Callers fetch a new channel after every wake-up.
+func TransportHealthChanged() <-chan struct{} {
+	runtimeTransportState.RLock()
+	changed := runtimeTransportState.healthChanged
+	runtimeTransportState.RUnlock()
+	return changed
 }
 
 func CurrentTransportHealth() TransportHealthSnapshot {
@@ -153,6 +174,8 @@ func ResetRuntimeTransportState() {
 		State:      TransportStateStarting,
 		ObservedAt: time.Now().UnixMilli(),
 	}
+	close(runtimeTransportState.healthChanged)
+	runtimeTransportState.healthChanged = make(chan struct{})
 	runtimeTransportState.Unlock()
 }
 
@@ -162,4 +185,12 @@ func cloneTransportHealth(snapshot TransportHealthSnapshot) TransportHealthSnaps
 		snapshot.Failure = &failure
 	}
 	return snapshot
+}
+
+func equalMaterialTransportHealth(left, right TransportHealthSnapshot) bool {
+	left.ObservedAt, right.ObservedAt = 0, 0
+	left.LastProgressAt, right.LastProgressAt = 0, 0
+	left.LastAggregateProgressAt, right.LastAggregateProgressAt = 0, 0
+	left.LastInboundAt, right.LastInboundAt = 0, 0
+	return reflect.DeepEqual(left, right)
 }

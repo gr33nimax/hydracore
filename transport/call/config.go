@@ -27,6 +27,7 @@ const (
 )
 
 type Config struct {
+	TransportTag         string
 	Platform             string
 	Mode                 string
 	JoinLink             string
@@ -69,6 +70,7 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 			return nil, E.New("call: vk_parasite creator role is hosted by the native inbound")
 		}
 		relay, closer, err := vkparasite.ConnectBridge(ctx, vkparasite.BridgeOptions{
+			TransportTag:         cfg.TransportTag,
 			Server:               cfg.Server,
 			JoinLinks:            cfg.JoinLinks,
 			User:                 cfg.User,

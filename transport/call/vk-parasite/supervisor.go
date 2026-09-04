@@ -147,10 +147,11 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 		c.sawPath.Store(true)
 	}
 	health := HC.TransportHealthSnapshot{
-		ActiveLanes: activePaths,
-		TotalLanes:  int32(c.options.Workers),
-		ObservedAt:  now.UnixMilli(),
-		Applicable:  true,
+		TransportTag: c.options.TransportTag,
+		ActiveLanes:  activePaths,
+		TotalLanes:   int32(c.options.Workers),
+		ObservedAt:   now.UnixMilli(),
+		Applicable:   true,
 	}
 	challenge := HC.CurrentRuntimeChallenge()
 	if challenge == nil && c.sawChallenge.Load() {

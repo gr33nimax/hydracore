@@ -119,7 +119,7 @@ func TestRTPWrapperRoundTripAndWrongKey(t *testing.T) {
 	pt := wire[1] & 0x7f
 	require.GreaterOrEqual(t, pt, byte(96))
 	require.LessOrEqual(t, pt, byte(127))
-	plain, err := receiver.unwrap(wire)
+	plain, err := receiver.unwrap(nil, wire)
 	require.NoError(t, err)
 	require.Equal(t, payload, plain)
 
@@ -127,7 +127,7 @@ func TestRTPWrapperRoundTripAndWrongKey(t *testing.T) {
 	require.NoError(t, err)
 	wrongReceiver, err := newRTPCodec(wrongKey)
 	require.NoError(t, err)
-	_, err = wrongReceiver.unwrap(wire)
+	_, err = wrongReceiver.unwrap(nil, wire)
 	require.Error(t, err)
 }
 

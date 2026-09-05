@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
-	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 	"net"
 	"runtime"
@@ -54,22 +53,19 @@ type SessionInfo struct {
 type SessionHandler func(info SessionInfo, relay *QUICRelay) error
 
 type ServerOptions struct {
-	ObfsPassword            string
-	Users                   []ServerUser
-	MaxSessions             int
-	MaxWorkersPerSession    int
-	MaxPendingHandshakes    int
-	HandshakeTimeout        time.Duration
-	SessionIdleTimeout      time.Duration
-	UDPReceiveBufferBytes   int
-	UDPSendBufferBytes      int
-	IngressWorkers          int
-	IngressQueuePackets     int
-	PeerReadQueuePackets    int
-	SessionHandler          SessionHandler
-	TelemetryStateDirectory string
-	TelemetryOutputPath     string
-	TelemetryInterval       time.Duration
+	ObfsPassword          string
+	Users                 []ServerUser
+	MaxSessions           int
+	MaxWorkersPerSession  int
+	MaxPendingHandshakes  int
+	HandshakeTimeout      time.Duration
+	SessionIdleTimeout    time.Duration
+	UDPReceiveBufferBytes int
+	UDPSendBufferBytes    int
+	IngressWorkers        int
+	IngressQueuePackets   int
+	PeerReadQueuePackets  int
+	SessionHandler        SessionHandler
 }
 
 type serverUser struct {
@@ -78,20 +74,16 @@ type serverUser struct {
 }
 
 type serverSession struct {
-	id               [16]byte
-	user             string
-	conv             uint32
-	expected         uint16
-	relay            *QUICRelay
-	ready            chan struct{}
-	setupErr         error
-	generation       uint64
-	createdAt        time.Time
-	pendingAttaches  int
-	telemetryMu      sync.Mutex
-	telemetryWindow  time.Time
-	telemetryRecords int
-	telemetryBytes   int
+	id              [16]byte
+	user            string
+	conv            uint32
+	expected        uint16
+	relay           *QUICRelay
+	ready           chan struct{}
+	setupErr        error
+	generation      uint64
+	createdAt       time.Time
+	pendingAttaches int
 }
 
 type Server struct {
@@ -116,7 +108,6 @@ type Server struct {
 	pending      chan struct{}
 	closeOnce    sync.Once
 	done         chan struct{}
-	telemetry    *serverTelemetry
 }
 
 func NewServer(parent context.Context, options ServerOptions, log logger.ContextLogger) (*Server, error) {
@@ -157,7 +148,6 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 		pending:      make(chan struct{}, normalized.MaxPendingHandshakes),
 		done:         make(chan struct{}),
 	}
-	server.telemetry = newServerTelemetry(server, normalized, log)
 	return server, nil
 }
 
@@ -284,7 +274,6 @@ func (s *Server) Start(packetConn net.PacketConn) error {
 	s.configurePacketSocket(packetConn)
 	go s.readLoop(packetConn, decoders)
 	go s.reapLoop()
-	s.telemetry.start()
 	return nil
 }
 
@@ -324,12 +313,12 @@ func (s *Server) readLoop(packetConn net.PacketConn, decoders []*rtpCodec) {
 		case queue <- packet:
 		default:
 			s.ingressDepth.Add(-1)
-			s.telemetry.metrics.AddHot(telemetry.UDPIngressQueueDropsTotal, 1)
 		}
 	}
 }
 
 func (s *Server) processIngress(packets <-chan receivedPacket, decoder *rtpCodec) {
+	plainBuffer := make([]byte, 0, maximumWirePacket)
 	for {
 		select {
 		case packet, open := <-packets:
@@ -337,33 +326,21 @@ func (s *Server) processIngress(packets <-chan receivedPacket, decoder *rtpCodec
 				return
 			}
 			s.ingressDepth.Add(-1)
-			s.processWirePacket(packet.payload, packet.addr, decoder)
+			s.processWirePacket(packet.payload, packet.addr, decoder, plainBuffer)
 		case <-s.ctx.Done():
 			return
 		}
 	}
 }
 
-func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCodec) {
+func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCodec, plainBuffer []byte) {
 	key := remote.Network() + "|" + remote.String()
 	s.peersMu.Lock()
 	peer := s.peers[key]
 	s.peersMu.Unlock()
-	metrics := s.telemetry.metrics
-	if peer != nil {
-		metrics = peer.telemetryMetrics()
-	}
-	plain, err := decoder.unwrap(wire)
+	plain, err := decoder.unwrap(plainBuffer, wire)
 	if err != nil {
-		metrics.AddHot(telemetry.OuterAuthFailuresTotal, 1)
 		return
-	}
-	metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
-	metrics.AddHot(telemetry.OuterBytesInTotal, uint64(len(wire)))
-	metrics.AddHot(telemetry.OuterPayloadBytesInTotal, uint64(len(plain)))
-	metrics.AddHot(telemetry.OuterOverheadBytesInTotal, uint64(len(wire)-len(plain)))
-	if metrics.CollectionActive() {
-		metrics.ObserveOuterPacket(wire, time.Now())
 	}
 	var replacedPeer *peerPacketConn
 	var duplicateHelloPeer *peerPacketConn
@@ -377,18 +354,15 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 			codec, codecErr := newRTPCodec(s.key)
 			if codecErr == nil {
 				replacedPeer = peer
-				peer = newPeerPacketConn(s.packetConn, remote, codec, s.telemetry.metrics, s.options.PeerReadQueuePackets)
+				peer = newPeerPacketConn(s.packetConn, remote, codec, s.options.PeerReadQueuePackets)
 				peer.rememberClientHello(clientHello)
 				s.peers[key] = peer
 				duplicateHelloPeer = s.registerClientHelloLocked(key, clientHello, peer)
 				go s.handlePeer(key, peer)
-				s.telemetry.event("dtls_peer_replaced", "dtls", "client_hello", "", [16]byte{}, nil)
 			} else {
 				<-s.pending
 			}
 		default:
-			s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
-			s.telemetry.event("handshake_rejected", "handshake", "pending_limit", "", [16]byte{}, nil)
 			peer = nil
 			rejectNewPeer = true
 		}
@@ -398,7 +372,7 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 		case s.pending <- struct{}{}:
 			codec, codecErr := newRTPCodec(s.key)
 			if codecErr == nil {
-				peer = newPeerPacketConn(s.packetConn, remote, codec, s.telemetry.metrics, s.options.PeerReadQueuePackets)
+				peer = newPeerPacketConn(s.packetConn, remote, codec, s.options.PeerReadQueuePackets)
 				if isClientHello {
 					peer.rememberClientHello(clientHello)
 					duplicateHelloPeer = s.registerClientHelloLocked(key, clientHello, peer)
@@ -409,8 +383,6 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 				<-s.pending
 			}
 		default:
-			s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
-			s.telemetry.event("handshake_rejected", "handshake", "pending_limit", "", [16]byte{}, nil)
 		}
 	}
 	s.peersMu.Unlock()
@@ -512,61 +484,33 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		_ = peer.Close()
 	}()
 
-	handshakeStarted := time.Now()
-	handshakeMeasured := false
-	defer func() {
-		if !handshakeMeasured {
-			s.telemetry.metrics.Set(telemetry.HandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
-		}
-	}()
 	conn, err := dtls.Server(peer, peer.remote, s.dtlsConfig)
 	if err != nil {
-		s.telemetry.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
-		s.telemetry.event("dtls_handshake_failed", "dtls", "initialize", "", [16]byte{}, nil)
 		return
 	}
 	defer conn.Close()
-	dtlsStarted := time.Now()
 	handshakeCtx, cancel := context.WithTimeout(s.ctx, s.options.HandshakeTimeout)
 	err = conn.HandshakeContext(handshakeCtx)
 	cancel()
-	s.telemetry.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(dtlsStarted))
 	if err != nil {
 		if s.ctx.Err() != nil {
 			return
 		}
-		s.telemetry.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
-		reason := telemetryFailureReason(err)
-		if reason == "timeout" {
-			s.telemetry.metrics.Add(telemetry.HandshakeTimeoutTotal, 1)
-		}
-		s.telemetry.event("dtls_handshake_failed", "dtls", reason, "", [16]byte{}, nil)
 		return
 	}
-	s.telemetry.metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
 	_ = conn.SetReadDeadline(time.Now().Add(s.options.HandshakeTimeout))
 	authBuffer := make([]byte, maximumAuthFrameLen)
 	n, err := conn.Read(authBuffer)
 	if err != nil {
-		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
-			s.telemetry.metrics.Add(telemetry.HandshakeTimeoutTotal, 1)
-			s.telemetry.event("handshake_timeout", "inner_auth", "timeout", "", [16]byte{}, nil)
-		}
 		return
 	}
 	request, err := decodeAuthRequest(authBuffer[:n])
 	if reason, refused := s.refuseAuth(request, err); refused {
-		s.telemetry.metrics.Add(telemetry.AuthFailureTotal, 1)
-		s.telemetry.event("auth_failed", "inner_auth", "rejected", "", [16]byte{}, nil)
 		_, _ = conn.Write(encodeAuthAck(false, 0, reason))
 		return
 	}
-	s.telemetry.metrics.Add(telemetry.AuthSuccessTotal, 1)
 	session, created, err := s.getOrCreateSession(request)
 	if err != nil {
-		s.telemetry.metrics.Add(telemetry.HandshakeRejectedTotal, 1)
-		s.telemetry.metrics.Add(telemetry.WorkerAttachFailureTotal, 1)
-		s.telemetry.event("worker_attach_failed", "worker", "session_rejected", request.User, request.SessionID, &request.WorkerID)
 		_, _ = conn.Write(encodeAuthAck(false, 0, AuthRejectSession))
 		return
 	}
@@ -598,10 +542,6 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 	}
 	session.relay.AttachServerConn(quicConn, conn)
 	peer.markEstablished()
-	s.telemetry.metrics.Add(telemetry.WorkerAttachSuccessTotal, 1)
-	s.telemetry.event("worker_attached", "worker", "success", request.User, request.SessionID, &request.WorkerID)
-	s.telemetry.metrics.Set(telemetry.HandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
-	handshakeMeasured = true
 	releasePending()
 	select {
 	case <-quicConn.Context().Done():
@@ -703,7 +643,6 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	}
 	s.sessions[request.SessionID] = session
 	s.userSessions[request.User]++
-	s.telemetry.metrics.Add(telemetry.SessionCreatedTotal, 1)
 	s.sessionsMu.Unlock()
 	closeServerSessions(evicted)
 
@@ -713,7 +652,6 @@ func (s *Server) getOrCreateSession(request authRequest) (*serverSession, bool, 
 	close(session.ready)
 	if err != nil && s.sessions[request.SessionID] == session {
 		delete(s.sessions, request.SessionID)
-		s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 		if s.userSessions[request.User] <= 1 {
 			delete(s.userSessions, request.User)
 		} else {
@@ -746,7 +684,6 @@ func (s *Server) evictSupersededUserSessionsLocked(user string, maxSessions int)
 			continue
 		}
 		delete(s.sessions, id)
-		s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 		evicted = append(evicted, session)
 	}
 	if len(evicted) > 0 {
@@ -802,7 +739,6 @@ func (s *Server) deleteIdleSession(id [16]byte, expected *serverSession, idleCut
 		return
 	}
 	delete(s.sessions, id)
-	s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 	if s.userSessions[session.user] <= 1 {
 		delete(s.userSessions, session.user)
 	} else {
@@ -822,7 +758,6 @@ func (s *Server) deleteSessionIfUnattached(id [16]byte, expected *serverSession)
 		return
 	}
 	delete(s.sessions, id)
-	s.telemetry.metrics.Add(telemetry.SessionClosedTotal, 1)
 	if s.userSessions[session.user] <= 1 {
 		delete(s.userSessions, session.user)
 	} else {
@@ -889,48 +824,11 @@ func (s *Server) Close() error {
 		s.sessions = make(map[[16]byte]*serverSession)
 		s.userSessions = make(map[string]int)
 		s.sessionsMu.Unlock()
-		s.telemetry.metrics.Add(telemetry.SessionClosedTotal, uint64(len(sessions)))
 		for _, session := range sessions {
 			if session.relay != nil {
 				session.relay.Close()
 			}
 		}
-		_ = s.telemetry.close()
 	})
 	return nil
-}
-
-func (s *Server) telemetrySessions() []*serverSession {
-	s.sessionsMu.Lock()
-	defer s.sessionsMu.Unlock()
-	sessions := make([]*serverSession, 0, len(s.sessions))
-	for _, session := range s.sessions {
-		sessions = append(sessions, session)
-	}
-	return sessions
-}
-
-func (s *Server) peerQueueStats() (int, int) {
-	s.peersMu.Lock()
-	defer s.peersMu.Unlock()
-	totalDepth := 0
-	totalCapacity := 0
-	for _, peer := range s.peers {
-		totalDepth += len(peer.readQueue)
-		totalCapacity += cap(peer.readQueue)
-	}
-	return totalDepth, totalCapacity
-}
-
-func telemetryFailureReason(err error) string {
-	if err == nil {
-		return ""
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return "timeout"
-	}
-	return "handshake_error"
 }

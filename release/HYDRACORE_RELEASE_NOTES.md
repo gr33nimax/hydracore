@@ -11,7 +11,7 @@ wake the existing stream without JSON polling across JNI.
 The release contains separate Android client and Linux VPS runtimes. They must
 come from the same release manifest and source commit. The VPS advertises
 `call_vk_parasite_server`; the client advertises `call_vk_parasite_client`; both
-advertise `call_vk_parasite_quic` and `call_vk_telemetry`.
+advertise `call_vk_parasite_quic`.
 
 CI verifies every release before publication. Assets are the Android AAR and
 sources, three Android shared libraries, two Linux archives, and a signed bundle

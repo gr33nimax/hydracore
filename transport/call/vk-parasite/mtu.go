@@ -20,12 +20,12 @@ package vkparasite
 const (
 	conservativePathMTU = 1400
 
-	overheadIPUDP        = 28
-	overheadTURNChannel  = 4
-	overheadRTPHeader    = rtpTotalHeaderLength
-	overheadRTPAEAD      = 16
-	overheadRTPPadding   = defaultRTPPadding
-	overheadDTLSRecord   = 29
+	overheadIPUDP       = 28
+	overheadTURNChannel = 4
+	overheadRTPHeader   = rtpTotalHeaderLength
+	overheadRTPAEAD     = 16
+	overheadRTPPadding  = defaultRTPPadding
+	overheadDTLSRecord  = 29
 
 	pathOverheadTotal = overheadIPUDP + overheadTURNChannel +
 		overheadRTPHeader + overheadRTPAEAD + overheadRTPPadding +

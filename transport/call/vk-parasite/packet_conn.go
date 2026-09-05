@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/sagernet/sing-box/transport/call/telemetry"
 )
 
 var errPacketConnClosed = errors.New("call vk_parasite: packet connection closed")
@@ -24,7 +22,6 @@ type peerPacketConn struct {
 	base            net.PacketConn
 	remote          net.Addr
 	codec           *rtpCodec
-	metrics         atomic.Pointer[telemetry.Accumulator]
 	readQueue       chan receivedPacket
 	deadlineChanged chan struct{}
 	closed          chan struct{}
@@ -35,7 +32,7 @@ type peerPacketConn struct {
 	writeDeadline   atomic.Int64
 }
 
-func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, metrics *telemetry.Accumulator, queueCapacity int) *peerPacketConn {
+func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, queueCapacity int) *peerPacketConn {
 	if queueCapacity < 1 {
 		queueCapacity = defaultPeerReadQueuePackets
 	}
@@ -47,8 +44,6 @@ func newPeerPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, me
 		deadlineChanged: make(chan struct{}, 1),
 		closed:          make(chan struct{}),
 	}
-	connection.metrics.Store(metrics)
-	metrics.Set(telemetry.PeerReadQueueCapacity, float64(queueCapacity))
 	return connection
 }
 
@@ -68,27 +63,14 @@ func (c *peerPacketConn) rememberClientHello(identity [32]byte) bool {
 	return stored != nil && *stored != identity
 }
 
-func (c *peerPacketConn) telemetryMetrics() *telemetry.Accumulator {
-	return c.metrics.Load()
-}
-
-func (c *peerPacketConn) setTelemetryMetrics(metrics *telemetry.Accumulator) {
-	if metrics != nil {
-		c.metrics.Store(metrics)
-		metrics.Set(telemetry.PeerReadQueueCapacity, float64(cap(c.readQueue)))
-	}
-}
-
 func (c *peerPacketConn) enqueue(payload []byte, addr net.Addr) bool {
 	copyPayload := append([]byte(nil), payload...)
 	select {
 	case c.readQueue <- receivedPacket{payload: copyPayload, addr: addr}:
-		c.telemetryMetrics().AddHotGauge(telemetry.PeerReadQueueDepth, 1)
 		return true
 	case <-c.closed:
 		return false
 	default:
-		c.telemetryMetrics().AddHot(telemetry.PeerReadQueueDropsTotal, 1)
 		return false
 	}
 }
@@ -99,7 +81,6 @@ func (c *peerPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		select {
 		case packet := <-c.readQueue:
 			stopPacketTimer(timer)
-			c.telemetryMetrics().AddHotGauge(telemetry.PeerReadQueueDepth, -1)
 			return copy(buffer, packet.payload), packet.addr, nil
 		case <-c.closed:
 			stopPacketTimer(timer)
@@ -130,7 +111,6 @@ func (c *peerPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
 	}
 	wire, rawBuf, err := c.codec.wrap(payload)
 	if err != nil {
-		c.telemetryMetrics().AddHot(telemetry.OuterWrapFailuresTotal, 1)
 		return 0, err
 	}
 	_, err = c.base.WriteTo(wire, c.remote)
@@ -138,10 +118,6 @@ func (c *peerPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	c.telemetryMetrics().AddHot(telemetry.OuterPacketsOutTotal, 1)
-	c.telemetryMetrics().AddHot(telemetry.OuterBytesOutTotal, uint64(len(wire)))
-	c.telemetryMetrics().AddHot(telemetry.OuterPayloadBytesOutTotal, uint64(len(payload)))
-	c.telemetryMetrics().AddHot(telemetry.OuterOverheadBytesOutTotal, uint64(len(wire)-len(payload)))
 	return len(payload), nil
 }
 
@@ -182,13 +158,12 @@ type obfsPacketConn struct {
 	base     net.PacketConn
 	remote   net.Addr
 	codec    *rtpCodec
-	metrics  *telemetry.Accumulator
 	readLock sync.Mutex
 	readBuf  []byte
 }
 
-func newObfsPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec, metrics *telemetry.Accumulator) *obfsPacketConn {
-	return &obfsPacketConn{base: base, remote: remote, codec: codec, metrics: metrics, readBuf: make([]byte, maximumWirePacket)}
+func newObfsPacketConn(base net.PacketConn, remote net.Addr, codec *rtpCodec) *obfsPacketConn {
+	return &obfsPacketConn{base: base, remote: remote, codec: codec, readBuf: make([]byte, maximumWirePacket)}
 }
 
 func (c *obfsPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
@@ -202,17 +177,9 @@ func (c *obfsPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		if !samePacketAddress(addr, c.remote) {
 			continue
 		}
-		plain, err := c.codec.unwrap(c.readBuf[:n])
+		plain, err := c.codec.unwrap(buffer[:0], c.readBuf[:n])
 		if err != nil {
-			c.metrics.AddHot(telemetry.OuterAuthFailuresTotal, 1)
 			continue
-		}
-		c.metrics.AddHot(telemetry.OuterPacketsInTotal, 1)
-		c.metrics.AddHot(telemetry.OuterBytesInTotal, uint64(n))
-		c.metrics.AddHot(telemetry.OuterPayloadBytesInTotal, uint64(len(plain)))
-		c.metrics.AddHot(telemetry.OuterOverheadBytesInTotal, uint64(n-len(plain)))
-		if c.metrics.CollectionActive() {
-			c.metrics.ObserveOuterPacket(c.readBuf[:n], time.Now())
 		}
 		if len(plain) > len(buffer) {
 			copy(buffer, plain)
@@ -228,7 +195,6 @@ func (c *obfsPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	}
 	wire, rawBuf, err := c.codec.wrap(payload)
 	if err != nil {
-		c.metrics.AddHot(telemetry.OuterWrapFailuresTotal, 1)
 		return 0, err
 	}
 	_, err = c.base.WriteTo(wire, c.remote)
@@ -236,10 +202,6 @@ func (c *obfsPacketConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	c.metrics.AddHot(telemetry.OuterPacketsOutTotal, 1)
-	c.metrics.AddHot(telemetry.OuterBytesOutTotal, uint64(len(wire)))
-	c.metrics.AddHot(telemetry.OuterPayloadBytesOutTotal, uint64(len(payload)))
-	c.metrics.AddHot(telemetry.OuterOverheadBytesOutTotal, uint64(len(wire)-len(payload)))
 	return len(payload), nil
 }
 

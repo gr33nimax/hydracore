@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,11 +60,11 @@ func (inertPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
 	return len(payload), nil
 }
 
-func (inertPacketConn) Close() error                       { return nil }
-func (inertPacketConn) LocalAddr() net.Addr                { return testAddr("local") }
-func (inertPacketConn) SetDeadline(time.Time) error        { return nil }
-func (inertPacketConn) SetReadDeadline(time.Time) error    { return nil }
-func (inertPacketConn) SetWriteDeadline(time.Time) error   { return nil }
+func (inertPacketConn) Close() error                     { return nil }
+func (inertPacketConn) LocalAddr() net.Addr              { return testAddr("local") }
+func (inertPacketConn) SetDeadline(time.Time) error      { return nil }
+func (inertPacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (inertPacketConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestPeerPacketConnAppliesDeadlineChangedAfterReadStarted(t *testing.T) {
 	t.Parallel()
@@ -73,7 +72,7 @@ func TestPeerPacketConnAppliesDeadlineChangedAfterReadStarted(t *testing.T) {
 	require.NoError(t, err)
 	codec, err := newRTPCodec(key)
 	require.NoError(t, err)
-	peer := newPeerPacketConn(inertPacketConn{}, testAddr("remote"), codec, telemetry.NewAccumulator(), 16)
+	peer := newPeerPacketConn(inertPacketConn{}, testAddr("remote"), codec, 16)
 	t.Cleanup(func() { _ = peer.Close() })
 	require.False(t, peer.isEstablished())
 	peer.markEstablished()
@@ -103,7 +102,7 @@ func TestPeerPacketConnIgnoresSupersededDeadlineTimer(t *testing.T) {
 	require.NoError(t, err)
 	codec, err := newRTPCodec(key)
 	require.NoError(t, err)
-	peer := newPeerPacketConn(inertPacketConn{}, testAddr("remote"), codec, telemetry.NewAccumulator(), 16)
+	peer := newPeerPacketConn(inertPacketConn{}, testAddr("remote"), codec, 16)
 	t.Cleanup(func() { _ = peer.Close() })
 
 	type readResult struct {
@@ -129,5 +128,3 @@ func TestPeerPacketConnIgnoresSupersededDeadlineTimer(t *testing.T) {
 		t.Fatal("read did not survive a superseded deadline")
 	}
 }
-
-

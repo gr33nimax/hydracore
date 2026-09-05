@@ -72,7 +72,7 @@ func TestRTPWireFormatStructure(t *testing.T) {
 	receiver, err := newRTPCodec(key)
 	require.NoError(t, err)
 
-	plain, err := receiver.unwrap(wire)
+	plain, err := receiver.unwrap(nil, wire)
 	require.NoError(t, err)
 	require.True(t, bytes.Equal(plain, payload), "Plaintext must match original payload")
 }
@@ -134,7 +134,7 @@ func TestRTPWireFormatGoldenFixture(t *testing.T) {
 
 	receiver, err := newRTPCodec(key)
 	require.NoError(t, err)
-	recovered, err := receiver.unwrap(wire)
+	recovered, err := receiver.unwrap(nil, wire)
 	require.NoError(t, err)
 	require.Equal(t, payload, recovered)
 }
@@ -165,7 +165,7 @@ func TestRTPWireFormatSequenceMonotonicity(t *testing.T) {
 		}
 		lastSeq = seq
 
-		plain, err := receiver.unwrap(wire)
+		plain, err := receiver.unwrap(nil, wire)
 		require.NoError(t, err)
 		require.Equal(t, payload, plain)
 

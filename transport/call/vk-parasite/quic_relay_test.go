@@ -38,8 +38,8 @@ func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, se
 		cCodec, _ := newRTPCodec(key)
 		sCodec, _ := newRTPCodec(key)
 
-		cObfs := newObfsPacketConn(pair.client, pair.server.LocalAddr(), cCodec, nil)
-		sObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), sCodec, nil)
+		cObfs := newObfsPacketConn(pair.client, pair.server.LocalAddr(), cCodec)
+		sObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), sCodec)
 
 		sDTLSConfig := &dtls.Config{
 			Certificates:         []tls.Certificate{cert},

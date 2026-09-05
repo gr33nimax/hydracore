@@ -24,7 +24,6 @@ Required capability fields are:
   "features": {
     "call_vk_parasite": true,
     "call_vk_parasite_quic": true,
-    "call_vk_telemetry": true
   },
   "protocols": {"call_modes": ["vk_parasite"]}
 }
@@ -84,5 +83,4 @@ CI builds all distributable artifacts. Local checks may use `go test`, `go vet`,
 ## Related contracts
 
 - [Hydra Subscription v2](contract/subscription/HYDRA_SUBSCRIPTION_V2.md)
-- [VK telemetry](docs/CALL_VK_TELEMETRY.md)
 - [Release notes](release/HYDRACORE_RELEASE_NOTES.md)

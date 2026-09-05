@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing-box/transport/call/vk"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -28,9 +27,7 @@ type BridgeOptions struct {
 }
 
 func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLogger) (*QUICRelay, io.Closer, error) {
-	metrics := telemetry.NewAccumulator()
 	provider := vk.NewTURNCredentialProvider(cfg.Dialer, log)
-	provider.SetTelemetry(metrics)
 	options := ClientOptions{
 		TransportTag:         cfg.TransportTag,
 		Server:               cfg.Server,
@@ -51,7 +48,6 @@ func ConnectBridge(ctx context.Context, cfg BridgeOptions, log logger.ContextLog
 			}, fetchErr
 		},
 		InvalidateCredentials: provider.Invalidate,
-		Telemetry:             metrics,
 	}
 	validatedOptions, err := validateClientOptions(options)
 	if err != nil {

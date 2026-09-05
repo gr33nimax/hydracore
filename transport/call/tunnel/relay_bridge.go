@@ -39,7 +39,6 @@ func (c *udpClient) deliver(payload []byte) bool {
 	select {
 	case c.pending <- payload:
 		if c.rb != nil {
-			c.rb.relayQueueDelta(len(payload))
 		}
 		return true
 	default:
@@ -60,28 +59,27 @@ func (c *udpClient) closePending() (bool, int) {
 		discarded += len(payload)
 	}
 	if c.rb != nil {
-		c.rb.relayQueueDelta(-discarded)
 	}
 	return true, discarded
 }
 
 type RelayBridge struct {
-	tunnelMu         sync.RWMutex
-	tunnel           DataTunnel
-	tunnelGeneration uint64
-	nextGeneration   atomic.Uint64
+	tunnelMu           sync.RWMutex
+	tunnel             DataTunnel
+	tunnelGeneration   uint64
+	nextGeneration     atomic.Uint64
 	callbackDispatchMu sync.Mutex
-	conns      sync.Map
-	udpClients sync.Map
-	nextID     atomic.Uint32
-	logger     logger.ContextLogger
-	mode       string
-	readBuf    int
-	ready      chan struct{}
-	once       sync.Once
-	closed     atomic.Bool
-	dialer     N.Dialer
-	flowControl atomic.Bool
+	conns              sync.Map
+	udpClients         sync.Map
+	nextID             atomic.Uint32
+	logger             logger.ContextLogger
+	mode               string
+	readBuf            int
+	ready              chan struct{}
+	once               sync.Once
+	closed             atomic.Bool
+	dialer             N.Dialer
+	flowControl        atomic.Bool
 
 	acceptHandlerMu sync.Mutex
 	acceptHandler   func(conn net.Conn, destination string)
@@ -96,12 +94,12 @@ type RelayBridge struct {
 func NewRelayBridge(tunnel DataTunnel, mode string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) *RelayBridge {
 	flowController, _ := tunnel.(FlowControlledDataTunnel)
 	rb := &RelayBridge{
-		tunnel:     tunnel,
-		logger:     logger,
-		mode:       mode,
-		readBuf:    readBuf,
-		dialer:     dialer,
-		ready:      make(chan struct{}),
+		tunnel:  tunnel,
+		logger:  logger,
+		mode:    mode,
+		readBuf: readBuf,
+		dialer:  dialer,
+		ready:   make(chan struct{}),
 	}
 	rb.flowControl.Store(flowController != nil && flowController.FlowControlEnabled())
 	generation := rb.nextGeneration.Add(1)
@@ -167,25 +165,21 @@ func (rb *RelayBridge) DialContext(ctx context.Context, destination string) (net
 	id := rb.nextID.Add(1)
 	tc := newTunnelConn(id, rb)
 	rb.conns.Store(id, tc)
-	rb.updateRelayActive()
 	rb.logger.Debug(fmt.Sprintf("relay: DIAL %d -> %s", id, common.MaskAddr(destination)))
 	rb.send(id, MsgConnect, []byte(destination))
 	select {
 	case err := <-tc.rdy:
 		if err != nil {
 			rb.conns.Delete(id)
-			rb.updateRelayActive()
 			return nil, err
 		}
 		if tc.closed.Load() {
 			rb.conns.Delete(id)
-			rb.updateRelayActive()
 			return nil, io.ErrClosedPipe
 		}
 		return tc, nil
 	case <-ctx.Done():
 		rb.conns.Delete(id)
-		rb.updateRelayActive()
 		rb.send(id, MsgClose, nil)
 		return nil, ctx.Err()
 	}
@@ -206,7 +200,6 @@ func (rb *RelayBridge) ListenPacket(ctx context.Context, destination string) (ne
 	id := rb.nextID.Add(1)
 	uc := &udpClient{pending: make(chan []byte, 64), addr: destination, rb: rb}
 	rb.udpClients.Store(id, uc)
-	rb.updateRelayActive()
 	return &tunnelPacketConn{id: id, rb: rb, uc: uc, destStr: destination}, nil
 }
 
@@ -229,81 +222,6 @@ func (rb *RelayBridge) currentTunnel() DataTunnel {
 	rb.tunnelMu.RLock()
 	defer rb.tunnelMu.RUnlock()
 	return rb.tunnel
-}
-
-func (rb *RelayBridge) relayTelemetry() RelayTelemetry {
-	telemetry, _ := rb.currentTunnel().(RelayTelemetry)
-	return telemetry
-}
-
-func (rb *RelayBridge) addRelayBytes(size int) {
-	if size <= 0 {
-		return
-	}
-	if telemetry := rb.relayTelemetry(); telemetry != nil {
-		telemetry.RelayAddBytes(uint64(size))
-	}
-}
-
-func (rb *RelayBridge) relayQueueDelta(size int) {
-	if size == 0 {
-		return
-	}
-	if telemetry := rb.relayTelemetry(); telemetry != nil {
-		telemetry.RelayQueueDelta(size)
-	}
-}
-
-func (rb *RelayBridge) relayQueueDrop() {
-	if telemetry := rb.relayTelemetry(); telemetry != nil {
-		telemetry.RelayQueueDrop()
-	}
-}
-
-func (rb *RelayBridge) resetRelayQueue() {
-	if telemetry := rb.relayTelemetry(); telemetry != nil {
-		telemetry.RelayResetQueue()
-	}
-}
-
-func (rb *RelayBridge) relayConnectFailure() {
-	if telemetry := rb.relayTelemetry(); telemetry != nil {
-		telemetry.RelayConnectFailure()
-	}
-}
-
-func (rb *RelayBridge) updateRelayActive() {
-	tcp := 0
-	udp := 0
-	rb.conns.Range(func(_, _ any) bool {
-		tcp++
-		return true
-	})
-	rb.udpClients.Range(func(_, _ any) bool {
-		udp++
-		return true
-	})
-	if telemetry := rb.relayTelemetry(); telemetry != nil {
-		telemetry.RelaySetActive(tcp, udp)
-	}
-}
-
-func relayPayloadBytes(messageType byte, payload []byte) int {
-	switch messageType {
-	case MsgData, MsgUDPReply:
-		return len(payload)
-	case MsgUDP:
-		if len(payload) == 0 {
-			return 0
-		}
-		addressLength := int(payload[0])
-		if addressLength == 0 || 1+addressLength > len(payload) {
-			return 0
-		}
-		return len(payload) - 1 - addressLength
-	default:
-		return 0
-	}
 }
 
 func (rb *RelayBridge) SwapTunnel(newTunnel DataTunnel) {
@@ -372,20 +290,16 @@ func (rb *RelayBridge) closeAll(notifyPeer bool) {
 		rb.udpClients.Delete(key)
 		return true
 	})
-	rb.updateRelayActive()
-	rb.resetRelayQueue()
 	rb.logger.Debug(fmt.Sprintf("relay: closeAll mode=%s tcp=%d udp=%d ids=%v nextID=%d", rb.mode, len(ids), udpCount, ids, rb.nextID.Load()))
 }
 
 func (rb *RelayBridge) send(connID uint32, msgType byte, payload []byte) {
-	rb.addRelayBytes(relayPayloadBytes(msgType, payload))
 	frame := EncodeFrame(connID, msgType, payload)
 	rb.currentTunnel().SendData(frame)
 }
 
 func (rb *RelayBridge) handleTunnelData(data []byte) {
 	DecodeFrames(data, func(connID uint32, msgType byte, payload []byte) {
-		rb.addRelayBytes(relayPayloadBytes(msgType, payload))
 		if msgType == MsgFlowCredit {
 			rb.handleFlowCredit(connID, payload)
 			return
@@ -446,7 +360,6 @@ func (rb *RelayBridge) handleJoinerMessage(connID uint32, msgType byte, payload 
 		copy(cp, payload)
 		if uc.deliver(cp) {
 		} else {
-			rb.relayQueueDrop()
 		}
 		return
 	}
@@ -474,7 +387,6 @@ func (rb *RelayBridge) handleJoinerMessage(connID uint32, msgType byte, payload 
 	case MsgClose:
 		tc.remoteClosed()
 		rb.conns.Delete(connID)
-		rb.updateRelayActive()
 	}
 }
 
@@ -488,7 +400,6 @@ func (rb *RelayBridge) handleCreatorMessage(connID uint32, msgType byte, payload
 			destination := string(payload)
 			tc := newTunnelConn(connID, rb)
 			rb.conns.Store(connID, tc)
-			rb.updateRelayActive()
 			rb.send(connID, MsgConnectOK, nil)
 			go handler(tc, destination)
 			return
@@ -536,7 +447,6 @@ func (rb *RelayBridge) handleCreatorMessage(connID uint32, msgType byte, payload
 		if !found {
 			rb.logger.Debug(fmt.Sprintf("relay[creator]: drop MsgClose for unknown conn %d", connID))
 		}
-		rb.updateRelayActive()
 	}
 }
 
@@ -574,7 +484,6 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 				cuc = existing
 			} else {
 				cuc = created
-				rb.updateRelayActive()
 				go handler(cuc, addr)
 			}
 		}
@@ -594,7 +503,6 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 		cancel()
 		if err != nil {
 			rb.logger.Warn(fmt.Sprintf("relay[creator]: UDP %d open %s failed: %v", connID, common.MaskAddr(addr), err))
-			rb.relayConnectFailure()
 			return
 		}
 		if actual, loaded := rb.udpClients.LoadOrStore(connID, created); loaded {
@@ -606,12 +514,10 @@ func (rb *RelayBridge) handleUDP(connID uint32, payload []byte) {
 			egress = existing
 		} else {
 			egress = created
-			rb.updateRelayActive()
 			go func(conn net.Conn, id uint32, target string) {
 				defer conn.Close()
 				defer func() {
 					rb.udpClients.Delete(id)
-					rb.updateRelayActive()
 				}()
 				defer rb.send(id, MsgClose, nil)
 				buf := make([]byte, common.UDPBufSize)
@@ -640,11 +546,9 @@ func (rb *RelayBridge) connectTCP(connID uint32, addr string) {
 	if err != nil {
 		rb.logger.Warn(fmt.Sprintf("relay: CONNECT %d failed: %s", connID, common.MaskError(err)))
 		rb.send(connID, MsgConnectErr, []byte(common.MaskError(err)))
-		rb.relayConnectFailure()
 		return
 	}
 	rb.conns.Store(connID, conn)
-	rb.updateRelayActive()
 	rb.send(connID, MsgConnectOK, nil)
 	rb.logger.Debug(fmt.Sprintf("relay: CONNECTED %d -> %s", connID, common.MaskAddr(addr)))
 	buf := make([]byte, rb.readBuf)
@@ -666,7 +570,6 @@ func (rb *RelayBridge) connectTCP(connID uint32, addr string) {
 	}
 	rb.send(connID, MsgClose, nil)
 	rb.conns.Delete(connID)
-	rb.updateRelayActive()
 }
 
 type tunnelAddr struct{}
@@ -713,7 +616,6 @@ func (tc *tunnelConn) Read(b []byte) (int, error) {
 		tc.readMu.Lock()
 		if tc.readBuf.Len() > 0 {
 			n, _ := tc.readBuf.Read(b)
-			tc.rb.relayQueueDelta(-n)
 			tc.readMu.Unlock()
 			tc.returnReadCredit(n)
 			return n, nil
@@ -724,7 +626,6 @@ func (tc *tunnelConn) Read(b []byte) (int, error) {
 			tc.readMu.Lock()
 			if tc.readBuf.Len() > 0 {
 				n, _ := tc.readBuf.Read(b)
-				tc.rb.relayQueueDelta(-n)
 				tc.readMu.Unlock()
 				tc.returnReadCredit(n)
 				return n, nil
@@ -815,7 +716,6 @@ func (tc *tunnelConn) close(notifyPeer bool) error {
 		if tc.rb != nil && notifyPeer {
 			tc.rb.send(tc.id, MsgClose, nil)
 			tc.rb.conns.Delete(tc.id)
-			tc.rb.updateRelayActive()
 		}
 	}
 	tc.discardBuffered()
@@ -836,12 +736,10 @@ func (tc *tunnelConn) deliver(payload []byte) {
 	}
 	if tc.flowControl && tc.readBuf.Len()+len(payload) > relayFlowWindowBytes {
 		tc.readMu.Unlock()
-		tc.rb.relayQueueDrop()
 		_ = tc.Close()
 		return
 	}
 	tc.readBuf.Write(payload)
-	tc.rb.relayQueueDelta(len(payload))
 	tc.readMu.Unlock()
 	select {
 	case tc.readCond <- struct{}{}:
@@ -851,9 +749,7 @@ func (tc *tunnelConn) deliver(payload []byte) {
 
 func (tc *tunnelConn) discardBuffered() {
 	tc.readMu.Lock()
-	discarded := tc.readBuf.Len()
 	tc.readBuf.Reset()
-	tc.rb.relayQueueDelta(-discarded)
 	tc.readMu.Unlock()
 }
 
@@ -880,7 +776,6 @@ func (pc *tunnelPacketConn) Read(b []byte) (int, error) {
 		return 0, io.EOF
 	}
 	n := copy(b, data)
-	pc.rb.relayQueueDelta(-len(data))
 	return n, nil
 }
 
@@ -899,7 +794,6 @@ func (pc *tunnelPacketConn) Write(b []byte) (int, error) {
 func (pc *tunnelPacketConn) Close() error {
 	if closed, _ := pc.uc.closePending(); closed {
 		pc.rb.udpClients.Delete(pc.id)
-		pc.rb.updateRelayActive()
 		pc.rb.send(pc.id, MsgClose, nil)
 	}
 	return nil
@@ -937,7 +831,6 @@ func (uc *creatorUDPConn) Read(b []byte) (int, error) {
 		uc.readMu.Lock()
 		if uc.readBuf.Len() > 0 {
 			n, _ := uc.readBuf.Read(b)
-			uc.rb.relayQueueDelta(-n)
 			uc.readMu.Unlock()
 			return n, nil
 		}
@@ -947,7 +840,6 @@ func (uc *creatorUDPConn) Read(b []byte) (int, error) {
 			uc.readMu.Lock()
 			if uc.readBuf.Len() > 0 {
 				n, _ := uc.readBuf.Read(b)
-				uc.rb.relayQueueDelta(-n)
 				uc.readMu.Unlock()
 				return n, nil
 			}
@@ -980,7 +872,6 @@ func (uc *creatorUDPConn) close(notifyPeer bool) error {
 		if uc.rb != nil && notifyPeer {
 			uc.rb.send(uc.id, MsgClose, nil)
 			uc.rb.udpClients.Delete(uc.id)
-			uc.rb.updateRelayActive()
 		}
 	}
 	uc.discardBuffered()
@@ -1000,7 +891,6 @@ func (uc *creatorUDPConn) deliver(payload []byte) {
 		return
 	}
 	uc.readBuf.Write(payload)
-	uc.rb.relayQueueDelta(len(payload))
 	uc.readMu.Unlock()
 	select {
 	case uc.readCond <- struct{}{}:
@@ -1010,9 +900,7 @@ func (uc *creatorUDPConn) deliver(payload []byte) {
 
 func (uc *creatorUDPConn) discardBuffered() {
 	uc.readMu.Lock()
-	discarded := uc.readBuf.Len()
 	uc.readBuf.Reset()
-	uc.rb.relayQueueDelta(-discarded)
 	uc.readMu.Unlock()
 }
 

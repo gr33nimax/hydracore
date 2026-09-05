@@ -1,5 +1,7 @@
 # Changelog
 
+- Removed the retired VK parasite telemetry collectors, reports, wire hooks, and capability flag.
+
 ## v1.13.16-extended-hydracore.11-debug.52
 
 - Fail fast when a `vk_parasite` relay has no active QUIC path.

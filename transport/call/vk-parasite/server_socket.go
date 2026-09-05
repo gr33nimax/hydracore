@@ -2,8 +2,6 @@ package vkparasite
 
 import (
 	"net"
-
-	"github.com/sagernet/sing-box/transport/call/telemetry"
 )
 
 type packetSocketBufferSetter interface {
@@ -23,11 +21,4 @@ func (s *Server) configurePacketSocket(packetConn net.PacketConn) {
 	if err := setter.SetWriteBuffer(s.options.UDPSendBufferBytes); err != nil {
 		s.logger.Warn("call vk_parasite: set UDP send buffer: ", err)
 	}
-	receiveBytes, sendBytes, err := packetSocketBufferSizes(packetConn)
-	if err != nil {
-		s.logger.Warn("call vk_parasite: inspect effective UDP socket buffers: ", err)
-		return
-	}
-	s.telemetry.metrics.Set(telemetry.UDPSocketReceiveBufferBytes, float64(receiveBytes))
-	s.telemetry.metrics.Set(telemetry.UDPSocketSendBufferBytes, float64(sendBytes))
 }

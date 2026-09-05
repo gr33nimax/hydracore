@@ -12,10 +12,7 @@ const (
 	MsgUDPReply   byte = 0x07
 	MsgConfig     byte = 0x08
 	MsgConfigAck  byte = 0x09
-	// MsgTelemetryControl and MsgTelemetryRecord are reserved vk_parasite
-	// control frames.
-	MsgTelemetryControl byte = 0x0a
-	MsgTelemetryRecord  byte = 0x0b
+	// 0x0a and 0x0b remain reserved for retired telemetry frames.
 	// MsgFlowCredit returns bytes consumed by the relay reader to the sender.
 	MsgFlowCredit byte = 0x0c
 	// Wire-v9 ordered-flow migration controls are consumed by vk_parasite and
@@ -39,15 +36,6 @@ type DataTunnel interface {
 
 type FlowControlledDataTunnel interface {
 	FlowControlEnabled() bool
-}
-
-type RelayTelemetry interface {
-	RelaySetActive(tcp, udp int)
-	RelayAddBytes(bytes uint64)
-	RelayQueueDelta(bytes int)
-	RelayResetQueue()
-	RelayQueueDrop()
-	RelayConnectFailure()
 }
 
 func EncodeVP8Config(fps, batch, trackCount int) []byte {

@@ -21,7 +21,6 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	D "github.com/sagernet/sing-box/common/dialer"
 	callcommon "github.com/sagernet/sing-box/transport/call/common"
-	"github.com/sagernet/sing-box/transport/call/telemetry"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -111,12 +110,8 @@ func allocateTURN(
 	dnsRouter adapter.DNSRouter,
 	credentials TURNCredentials,
 	preferred int,
-	metrics *telemetry.Accumulator,
-	workerID uint16,
 ) (net.PacketConn, error) {
-	started := time.Now()
 	if credentials.Username == "" || credentials.Credential == "" {
-		recordTURNFailure(ctx, metrics, started, workerID, "credentials")
 		return nil, errors.New("call vk_parasite: VK returned incomplete TURN credentials")
 	}
 	udpEndpoints := make([]turnEndpoint, 0, len(credentials.URLs))
@@ -141,29 +136,19 @@ func allocateTURN(
 		destinations = append(rotateTURNEndpoints(udpEndpoints, preferred), rotateTURNEndpoints(tcpEndpoints, preferred)...)
 	}
 	if len(destinations) == 0 {
-		metrics.Set(telemetry.TURNEndpointCount, 0)
-		metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
-		recordTURNFailure(ctx, metrics, started, workerID, "no_endpoint")
 		return nil, errors.New("call vk_parasite: no usable TURN URL")
 	}
 	var lastErr error
-	metrics.Set(telemetry.TURNEndpointCount, float64(len(destinations)))
-	metrics.Set(telemetry.TURNSelectedEndpointOrdinal, 0)
 	for offset := 0; offset < len(destinations); offset++ {
-		metrics.Add(telemetry.TURNEndpointsTriedTotal, 1)
 		endpoint := destinations[offset]
 		connection, err := allocateTURNEndpoint(ctx, dialer, dnsRouter, credentials, endpoint, preferred)
 		if err == nil {
 			recordTURNEndpointSuccess(endpoint)
-			metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
-			metrics.Set(telemetry.TURNSelectedEndpointOrdinal, float64(offset+1))
-			metrics.Add(telemetry.TURNAllocateSuccessTotal, 1)
 			return connection, nil
 		}
 		recordTURNEndpointFailure(endpoint)
 		lastErr = err
 	}
-	recordTURNFailure(ctx, metrics, started, workerID, "all_endpoints")
 	return nil, fmt.Errorf("call vk_parasite: all VK TURN endpoints failed: %w", lastErr)
 }
 
@@ -179,19 +164,6 @@ func rotateTURNEndpoints(endpoints []turnEndpoint, preferred int) []turnEndpoint
 		return getTURNEndpointPenalty(rotated[i]) < getTURNEndpointPenalty(rotated[j])
 	})
 	return rotated
-}
-
-func recordTURNFailure(ctx context.Context, metrics *telemetry.Accumulator, started time.Time, workerID uint16, reason string) {
-	metrics.Set(telemetry.TURNAllocateLatencyMS, telemetry.LatencyMS(started))
-	if errors.Is(ctx.Err(), context.Canceled) {
-		metrics.RecordEvent("turn_allocate_interrupted", "turn", "rebind", &workerID)
-		return
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		reason = "timeout"
-	}
-	metrics.Add(telemetry.TURNAllocateFailureTotal, 1)
-	metrics.RecordEvent("turn_allocate_failed", "turn", reason, &workerID)
 }
 
 func allocateTURNEndpoint(

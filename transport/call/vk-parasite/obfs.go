@@ -178,7 +178,14 @@ func (c *rtpCodec) wrap(payload []byte) ([]byte, *wireBuffer, error) {
 	return out, rawBuf, nil
 }
 
-func (c *rtpCodec) unwrap(wire []byte) ([]byte, error) {
+// unwrap разбирает внешний пакет, складывая plaintext в dst.
+//
+// Раньше открытие AEAD шло в nil, то есть каждый принятый пакет стоил
+// аллокации размером с пакет — на приёме это была самая крупная статья мусора
+// во всём внешнем стеке. Теперь буфер даёт вызывающий: если его ёмкости
+// хватает, приём не аллоцирует ничего. Недостаточная ёмкость остаётся
+// корректной — Open аллоцирует сам, — но это защита, а не рабочий путь.
+func (c *rtpCodec) unwrap(dst, wire []byte) ([]byte, error) {
 	if len(wire) < rtpHeaderLength+chacha20poly1305.Overhead+1 || len(wire) > maximumWirePacket {
 		return nil, errors.New("RTP wrapper: invalid packet length")
 	}
@@ -212,7 +219,7 @@ func (c *rtpCodec) unwrap(wire []byte) ([]byte, error) {
 	timestamp := binary.BigEndian.Uint32(wire[4:8])
 	ssrc := binary.BigEndian.Uint32(wire[8:12])
 	nonce := buildRTPNonce(ssrc, sequence, timestamp)
-	plain, err := c.aead.Open(nil, nonce[:], wire[headerLength:payloadEnd], wire[:headerLength])
+	plain, err := c.aead.Open(dst[:0], nonce[:], wire[headerLength:payloadEnd], wire[:headerLength])
 	if err != nil {
 		return nil, errors.New("RTP wrapper: authentication failed")
 	}

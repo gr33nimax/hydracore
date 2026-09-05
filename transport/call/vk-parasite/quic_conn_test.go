@@ -53,8 +53,8 @@ func TestQUICOverDTLSEcho(t *testing.T) {
 	serverCodec, err := newRTPCodec(key)
 	require.NoError(t, err)
 
-	clientObfs := newObfsPacketConn(pair.client, pair.server.LocalAddr(), clientCodec, nil)
-	serverObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), serverCodec, nil)
+	clientObfs := newObfsPacketConn(pair.client, pair.server.LocalAddr(), clientCodec)
+	serverObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), serverCodec)
 	defer func() {
 		_ = clientObfs.Close()
 		_ = serverObfs.Close()

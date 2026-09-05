@@ -17,7 +17,6 @@ import (
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/sing-box/adapter"
 	HC "github.com/sagernet/sing-box/common/hydracore"
-	"github.com/sagernet/sing-box/transport/call/telemetry"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -36,7 +35,6 @@ type ClientOptions struct {
 	DNSRouter             adapter.DNSRouter
 	Credentials           CredentialProvider
 	InvalidateCredentials func(string)
-	Telemetry             *telemetry.Accumulator
 }
 
 type Client struct {
@@ -49,7 +47,6 @@ type Client struct {
 	sessionID    [16]byte
 	conv         uint32
 	relay        *QUICRelay
-	metrics      *telemetry.Accumulator
 	generation   atomic.Uint64
 	closeOnce    sync.Once
 	sawPath      atomic.Bool
@@ -98,10 +95,6 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	if err != nil {
 		return nil, err
 	}
-	metrics := options.Telemetry
-	if metrics == nil {
-		metrics = telemetry.NewAccumulator()
-	}
 	ctx, cancel := context.WithCancel(parent)
 	client := &Client{
 		ctx:       ctx,
@@ -112,7 +105,6 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		key:       key,
 		sessionID: sessionID,
 		conv:      conv,
-		metrics:   metrics,
 		startedAt: time.Now(),
 	}
 	client.relay = NewQUICRelay(ctx, QUICRelayOptions{
@@ -146,36 +138,28 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	joinLink := joinLinkForWorker(c.options.JoinLinks, workerID)
 	credentials, err := c.options.Credentials(ctx, joinLink)
 	if err != nil {
-		c.recordDialStage(workerID, "credentials", HC.ErrorCodeVKCredentialsRejected)
 		return nil, nil, fmt.Errorf("worker %d credentials: %w", workerID, err)
 	}
-	c.recordDialStage(workerID, "credentials", "ok")
 	releaseTURN, err := sharedTransportSupervisor.acquireTURN(ctx)
 	if err != nil {
-		c.recordDialStage(workerID, "turn_gate", HC.ErrorCodeTURNAllocateFailed)
 		return nil, nil, fmt.Errorf("worker %d TURN gate: %w", workerID, err)
 	}
-	c.recordDialStage(workerID, "turn_gate", "ok")
-	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID), c.metrics, workerID)
+	allocation, err := allocateTURN(ctx, c.options.Dialer, c.options.DNSRouter, credentials, int(workerID))
 	releaseTURN()
 	if err != nil {
-		c.recordDialStage(workerID, "turn_allocate", HC.ErrorCodeTURNAllocateFailed)
 		return nil, nil, fmt.Errorf("worker %d TURN allocate: %w", workerID, err)
 	}
-	c.recordDialStage(workerID, "turn_allocate", "ok")
 	codec, err := newRTPCodec(c.key)
 	if err != nil {
 		_ = allocation.Close()
 		return nil, nil, fmt.Errorf("worker %d RTP codec: %w", workerID, err)
 	}
-	packetConn := newObfsPacketConn(allocation, c.server, codec, c.metrics)
+	packetConn := newObfsPacketConn(allocation, c.server, codec)
 	releaseDTLS, err := sharedTransportSupervisor.acquireDTLS(ctx)
 	if err != nil {
 		_ = packetConn.Close()
-		c.recordDialStage(workerID, "dtls_gate", HC.ErrorCodeDTLSHandshakeFailed)
 		return nil, nil, fmt.Errorf("worker %d DTLS gate: %w", workerID, err)
 	}
-	c.recordDialStage(workerID, "dtls_gate", "ok")
 	dtlsConn, err := dtls.Client(packetConn, c.server, &dtls.Config{
 		InsecureSkipVerify:   true, // Authenticated by the outer key and the inner user attach.
 		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -185,26 +169,16 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	})
 	if err != nil {
 		releaseDTLS()
-		c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
 		_ = packetConn.Close()
-		c.recordDialStage(workerID, "dtls_handshake", HC.ErrorCodeDTLSHandshakeFailed)
 		return nil, nil, fmt.Errorf("worker %d DTLS initialize: %w", workerID, err)
 	}
-	handshakeStarted := time.Now()
 	if err = dtlsConn.HandshakeContext(ctx); err != nil {
 		releaseDTLS()
-		c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
-		c.metrics.Add(telemetry.DTLSHandshakeFailureTotal, 1)
 		_ = dtlsConn.Close()
-		c.recordDialStage(workerID, "dtls_handshake", HC.ErrorCodeDTLSHandshakeFailed)
 		return nil, nil, fmt.Errorf("worker %d DTLS handshake: %w", workerID, err)
 	}
 	releaseDTLS()
-	c.metrics.Set(telemetry.DTLSHandshakeLatencyMS, telemetry.LatencyMS(handshakeStarted))
-	c.metrics.Add(telemetry.DTLSHandshakeSuccessTotal, 1)
-	c.recordDialStage(workerID, "dtls_handshake", "ok")
 
-	innerAuthStarted := time.Now()
 	request, err := encodeAuthRequest(authRequest{
 		SessionID:      c.sessionID,
 		Conv:           c.conv,
@@ -217,26 +191,22 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	})
 	if err != nil {
 		_ = dtlsConn.Close()
-		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth encode: %w", workerID, err)
 	}
 	_ = dtlsConn.SetDeadline(time.Now().Add(c.options.WorkerConnectTimeout))
 	if _, err = dtlsConn.Write(request); err != nil {
 		_ = dtlsConn.Close()
-		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth write: %w", workerID, err)
 	}
 	ack := make([]byte, 14)
 	n, err := dtlsConn.Read(ack)
 	if err != nil {
 		_ = dtlsConn.Close()
-		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth read: %w", workerID, err)
 	}
 	generation, err := decodeAuthAck(ack[:n])
 	if err != nil {
 		_ = dtlsConn.Close()
-		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, fmt.Errorf("worker %d inner auth rejected: %w", workerID, err)
 	}
 	expectedGeneration := c.generation.Load()
@@ -246,26 +216,16 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	}
 	if generation != expectedGeneration {
 		_ = dtlsConn.Close()
-		c.recordDialStage(workerID, "inner_auth", HC.ErrorCodeVKAuthTerminal)
 		return nil, nil, errors.New("call vk_parasite: server session state was reset")
 	}
 	_ = dtlsConn.SetDeadline(time.Time{})
-	c.metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(innerAuthStarted))
-	c.metrics.Add(telemetry.InnerAuthSuccessTotal, 1)
-	c.recordDialStage(workerID, "inner_auth", "ok")
 
 	quicConn, err := dialQUIC(ctx, dtlsConn, dtlsConn)
 	if err != nil {
 		_ = dtlsConn.Close()
-		c.recordDialStage(workerID, "quic_dial", HC.ErrorCodeQUICDialFailed)
 		return nil, nil, fmt.Errorf("worker %d QUIC dial: %w", workerID, err)
 	}
-	c.recordDialStage(workerID, "quic_dial", "ok")
 	return quicConn, dtlsConn, nil
-}
-
-func (c *Client) recordDialStage(workerID uint16, stage, result string) {
-	c.metrics.RecordEvent(stage, stage, result, &workerID)
 }
 
 func (c *Client) RebindNetwork(generation ...uint64) {
@@ -347,17 +307,4 @@ func validateClientOptions(options ClientOptions) (ClientOptions, error) {
 
 func joinLinkForWorker(joinLinks []string, workerID uint16) string {
 	return joinLinks[int(workerID)%CallCount]
-}
-
-func (c *Client) recordInnerAuthFailure(metrics *telemetry.Accumulator, ctx context.Context, started time.Time, workerID uint16, reason string) {
-	metrics.Set(telemetry.InnerAuthLatencyMS, telemetry.LatencyMS(started))
-	if errors.Is(ctx.Err(), context.Canceled) {
-		metrics.RecordEvent("inner_auth_interrupted", "inner_auth", "rebind", &workerID)
-		return
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		reason = "timeout"
-	}
-	metrics.Add(telemetry.InnerAuthFailureTotal, 1)
-	metrics.RecordEvent("inner_auth_failed", "inner_auth", reason, &workerID)
 }

@@ -34,7 +34,7 @@ func TestRTPCodecPaddingDistribution(t *testing.T) {
 
 		counts[paddingLength]++
 
-		plain, err := receiver.unwrap(wire)
+		plain, err := receiver.unwrap(nil, wire)
 		require.NoError(t, err)
 		require.True(t, bytes.Equal(plain, payload))
 
@@ -90,7 +90,7 @@ func TestRTPCodecLargePayloadFallback(t *testing.T) {
 	require.Nil(t, raw)
 	codec.putBuffer(raw)
 
-	plain, err := receiver.unwrap(wire)
+	plain, err := receiver.unwrap(nil, wire)
 	require.NoError(t, err)
 	require.True(t, bytes.Equal(plain, largePayload))
 }
@@ -148,8 +148,7 @@ func TestRTPCodecRFC8285ExtensionAndDynamicPT(t *testing.T) {
 	require.NoError(t, err)
 	defer codec.putBuffer(raw)
 
-	plain, err := receiver.unwrap(wire)
+	plain, err := receiver.unwrap(nil, wire)
 	require.NoError(t, err)
 	require.Equal(t, payload, plain)
 }
-

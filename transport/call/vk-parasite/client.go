@@ -52,6 +52,7 @@ type Client struct {
 	sawPath      atomic.Bool
 	sawChallenge atomic.Bool
 	lastFailure  atomic.Pointer[HC.TransportFailure]
+	healthWake   chan struct{}
 	startedAt    time.Time
 }
 
@@ -104,14 +105,18 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 		server:    server,
 		key:       key,
 		sessionID: sessionID,
-		conv:      conv,
-		startedAt: time.Now(),
+		conv:       conv,
+		healthWake: make(chan struct{}, 1),
+		startedAt:  time.Now(),
 	}
 	client.relay = NewQUICRelay(ctx, QUICRelayOptions{
 		PathCount: options.Workers,
 		DialPath:  client.dialTrackedPath,
 		Logger:    log,
 	})
+	// Состояние транспорта меняется вместе с набором путей, поэтому цикл
+	// здоровья будит relay, а не тикер.
+	client.relay.SetPathsChangedHandler(client.wakeHealth)
 	client.relay.Start()
 	// Единственный публикатор транспортного состояния: платформа не завершает
 	// старт, пока снимок не станет healthy или degraded.

@@ -316,3 +316,38 @@ func TestPathIsUsable(t *testing.T) {
 func TestPathIsUsableWithoutBaseline(t *testing.T) {
 	require.True(t, pathIsUsable(PathQuality{SmoothedRTT: time.Second}, 0))
 }
+
+// Обработчик изменения путей обязан вызываться вне pathsMu: он читает тот же
+// набор путей, а RWMutex в Go не рекурсивен, поэтому вызов под замком повесил
+// бы цикл здоровья намертво.
+func TestPathsChangedHandlerRunsOutsideTheLock(t *testing.T) {
+	relay := NewQUICRelay(context.Background(), QUICRelayOptions{})
+	defer relay.Close()
+
+	fired := make(chan int, 1)
+	relay.SetPathsChangedHandler(func() {
+		relay.PathStats()
+		fired <- relay.ActivePaths()
+	})
+
+	path := &quicPathConn{id: 3}
+	relay.pathsMu.Lock()
+	relay.paths = append(relay.paths, path)
+	relay.pathsMu.Unlock()
+
+	relay.removePath(path)
+	select {
+	case active := <-fired:
+		require.Equal(t, 0, active)
+	case <-time.After(5 * time.Second):
+		t.Fatal("paths changed handler did not run")
+	}
+}
+
+// Keep-alive должен оставаться заметно короче idle timeout: иначе путь умрёт
+// раньше, чем его успеет удержать первый же пропущенный пакет.
+func TestKeepAlivePeriodLeavesRoomForRetries(t *testing.T) {
+	idleTimeout := quicConfig().MaxIdleTimeout
+	require.Greater(t, idleTimeout, quicKeepAlivePeriod)
+	require.LessOrEqual(t, 2*quicKeepAlivePeriod, idleTimeout)
+}

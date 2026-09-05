@@ -10,6 +10,10 @@ import (
 )
 
 const (
+	// Страховочный интервал публикации состояния транспорта: набор путей будит
+	// цикл сам, поэтому тикер нужен только чтобы снимок не выглядел старым.
+	healthHeartbeatPeriod = 5 * time.Second
+
 	turnConcurrencyLimit   = 2
 	dtlsConcurrencyLimit   = 4
 	turnAllocationSpacing  = 250 * time.Millisecond
@@ -115,23 +119,42 @@ func transportFailureDomain(kind string) string {
 	}
 }
 
+// healthLoop публикует состояние транспорта по событиям, а не по опросу.
+//
+// Раньше это был тикер раз в секунду на всё время жизни клиента — 86 400
+// пробуждений в сутки при том, что снимок меняется только когда меняется набор
+// активных путей или причина последнего отказа. Теперь набор путей будит цикл
+// сам, а тикер остаётся редким страховочным ударом: он обновляет ObservedAt,
+// чтобы платформа не считала снимок просроченным.
 func (c *Client) healthLoop() {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(healthHeartbeatPeriod)
 	defer ticker.Stop()
 	c.publishObservedHealth(time.Now())
 	for {
 		select {
 		case now := <-ticker.C:
 			c.publishObservedHealth(now)
+		case <-c.healthWake:
+			c.publishObservedHealth(time.Now())
 		case <-c.ctx.Done():
 			return
 		}
 	}
 }
 
+// wakeHealth просит цикл опубликовать снимок вне очереди. Сигнал сжимается до
+// одного ожидающего: публикация всё равно берёт состояние целиком.
+func (c *Client) wakeHealth() {
+	select {
+	case c.healthWake <- struct{}{}:
+	default:
+	}
+}
+
 func (c *Client) recordPathFailure(err error) *HC.TransportFailure {
 	failure := transportFailure(err)
 	c.lastFailure.Store(failure)
+	c.wakeHealth()
 	return failure
 }
 

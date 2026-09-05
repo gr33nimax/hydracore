@@ -94,6 +94,7 @@ type QUICRelay struct {
 	pathCount                int
 	nextPath                 atomic.Uint64
 	onAccept                 atomic.Pointer[func(net.Conn, string)]
+	onPathsChanged           atomic.Pointer[func()]
 	pathsMu                  sync.RWMutex
 	paths                    []*quicPathConn
 	generationCtx            context.Context
@@ -170,6 +171,7 @@ func (r *QUICRelay) addPath(path *quicPathConn) {
 	r.pathsMu.Lock()
 	r.paths = append(r.paths, path)
 	r.pathsMu.Unlock()
+	r.notifyPathsChanged()
 
 	go r.watchPath(path)
 	go r.acceptStreamsLoop(path)
@@ -178,12 +180,29 @@ func (r *QUICRelay) addPath(path *quicPathConn) {
 
 func (r *QUICRelay) removePath(path *quicPathConn) {
 	r.pathsMu.Lock()
-	defer r.pathsMu.Unlock()
 	for i, candidate := range r.paths {
 		if candidate == path {
 			r.paths = append(r.paths[:i], r.paths[i+1:]...)
 			break
 		}
+	}
+	r.pathsMu.Unlock()
+	r.notifyPathsChanged()
+}
+
+// SetPathsChangedHandler регистрирует обработчик, который вызывается после
+// каждого изменения набора активных путей. Он заменяет опрос: состояние
+// транспорта меняется только здесь, поэтому опрашивать его раз в секунду было
+// нечем оправдать.
+func (r *QUICRelay) SetPathsChangedHandler(handler func()) {
+	r.onPathsChanged.Store(&handler)
+}
+
+// notifyPathsChanged вызывается только вне pathsMu: обработчик читает набор
+// путей, а RWMutex в Go не рекурсивен.
+func (r *QUICRelay) notifyPathsChanged() {
+	if handler := r.onPathsChanged.Load(); handler != nil && *handler != nil {
+		(*handler)()
 	}
 }
 

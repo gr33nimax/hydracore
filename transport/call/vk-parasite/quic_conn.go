@@ -12,6 +12,14 @@ import (
 
 const quicALPN = "hcvk/1"
 
+// Период keep-alive на путь.
+//
+// Их четыре и они независимы, поэтому каждое сокращение периода умножается на
+// четыре пробуждения радио. При MaxIdleTimeout 60 с период 25 с оставляет два
+// шанса дожить до простоя вместо четырёх, которые давали 15 с, и снимает
+// 40 % пустых пакетов с простаивающего туннеля.
+const quicKeepAlivePeriod = 25 * time.Second
+
 type datagramPacketConn struct {
 	conn net.Conn
 }
@@ -57,7 +65,7 @@ func quicConfig() *quic.Config {
 		InitialPacketSize:       quicPacketSize,
 		DisablePathMTUDiscovery: true,
 		MaxIdleTimeout:          60 * time.Second,
-		KeepAlivePeriod:         15 * time.Second,
+		KeepAlivePeriod:         quicKeepAlivePeriod,
 		EnableDatagrams:         true,
 		MaxIncomingStreams:      1024,
 		MaxIncomingUniStreams:   0,

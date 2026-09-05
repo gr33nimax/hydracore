@@ -685,6 +685,11 @@ func (s *StartedService) SubscribeConnections(request *SubscribeConnectionsReque
 		return err
 	}
 	defer s.connectionEventObserver.UnSubscribe(subscription)
+	trafficSubscription, trafficDone, err := s.trafficObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.trafficObserver.UnSubscribe(trafficSubscription)
 
 	connectionSnapshots := make(map[uuid.UUID]connectionSnapshot)
 	initialEvents := s.buildInitialConnectionState(trafficManager, connectionSnapshots)
@@ -700,8 +705,13 @@ func (s *StartedService) SubscribeConnections(request *SubscribeConnectionsReque
 	if interval <= 0 {
 		interval = time.Second
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	var trafficTimer *time.Timer
+	var trafficTimerC <-chan time.Time
+	defer func() {
+		if trafficTimer != nil {
+			trafficTimer.Stop()
+		}
+	}()
 
 	for {
 		select {
@@ -710,6 +720,8 @@ func (s *StartedService) SubscribeConnections(request *SubscribeConnectionsReque
 		case <-server.Context().Done():
 			return server.Context().Err()
 		case <-done:
+			return nil
+		case <-trafficDone:
 			return nil
 
 		case event := <-subscription:
@@ -735,7 +747,16 @@ func (s *StartedService) SubscribeConnections(request *SubscribeConnectionsReque
 				}
 			}
 
-		case <-ticker.C:
+		case <-trafficSubscription:
+			if trafficTimerC != nil {
+				continue
+			}
+			trafficTimer = time.NewTimer(interval)
+			trafficTimerC = trafficTimer.C
+			continue
+
+		case <-trafficTimerC:
+			trafficTimerC = nil
 			protoEvents := s.buildTrafficUpdates(trafficManager, connectionSnapshots)
 			if len(protoEvents) == 0 {
 				continue

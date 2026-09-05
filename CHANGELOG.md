@@ -18,6 +18,11 @@
   is published on events instead of once a second.
 - Telemost, wbstream, VK P2P and Dion Call platforms moved behind
   `with_call_legacy` and are absent from release builds.
+- The runtime event stream no longer stops the world once a second to read
+  process memory, and no longer rebuilds the outbound group list — with its
+  per-item url-test lookups and per-group cache-file reads — on every tick.
+- The `vk_parasite` server no longer allocates per packet for its ingress queue
+  and per-peer queue.
 
 ## v1.13.16-extended-hydracore.11-debug.52
 

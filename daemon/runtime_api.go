@@ -37,6 +37,17 @@ func (s *StartedService) GetRuntimeSnapshot(context.Context, *emptypb.Empty) (*R
 }
 
 func (s *StartedService) readRuntimeSnapshot() *RuntimeSnapshot {
+	return s.readRuntimeSnapshotWithGroups(nil)
+}
+
+// readRuntimeSnapshotWithGroups собирает снимок, переиспользуя список групп.
+//
+// Группы — самая дорогая часть снимка: обход всех outbound'ов, поиск истории
+// url-теста на каждый элемент и чтение cache file на каждую группу. Меняются они
+// только по событию (выбор сервера или завершившийся url-тест), поэтому
+// подписчик, у которого это событие есть, передаёт сюда уже собранное значение,
+// а nil означает «собрать заново».
+func (s *StartedService) readRuntimeSnapshotWithGroups(groups *Groups) *RuntimeSnapshot {
 	s.serviceAccess.RLock()
 	serviceStatus := proto.Clone(s.serviceStatus).(*ServiceStatus)
 	if serviceStatus.Status == ServiceStatus_FATAL && serviceStatus.ErrorMessage != "" {
@@ -63,10 +74,15 @@ func (s *StartedService) readRuntimeSnapshot() *RuntimeSnapshot {
 	if !isStarted {
 		return snapshot
 	}
+	if groups != nil {
+		snapshot.Groups = groups
+	}
 
 	s.serviceAccess.RLock()
 	if s.serviceStatus.Status == ServiceStatus_STARTED && s.instance != nil {
-		snapshot.Groups = s.readGroups()
+		if groups == nil {
+			snapshot.Groups = s.readGroups()
+		}
 		if s.instance.clashServer != nil {
 			snapshot.ClashMode = &ClashModeStatus{
 				ModeList:    s.instance.clashServer.ModeList(),
@@ -82,16 +98,28 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 	if request == nil {
 		request = &RuntimeEventRequest{}
 	}
+	// Подписка на изменение групп: она есть у SubscribeGroups и покрывает и
+	// выбор сервера, и завершившийся url-тест. Без неё цикл пересобирал группы
+	// на каждый тик — обход всех outbound'ов, поиск истории на каждый элемент и
+	// чтение cache file на каждую группу, раз в секунду всё время жизни туннеля.
+	groupsChanged, groupsDone, err := s.urlTestObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.urlTestObserver.UnSubscribe(groupsChanged)
+
 	previous := s.readRuntimeSnapshot()
 	sequence := uint64(1)
 	previous.Sequence = sequence
-	if err := server.Send(&RuntimeEvents{
+	if err = server.Send(&RuntimeEvents{
 		Sequence: sequence,
 		Reset_:   true,
 		Snapshot: previous,
 	}); err != nil {
 		return err
 	}
+	cachedGroups := previous.Groups
+	startedBefore := previous.Service.GetStatus() == ServiceStatus_STARTED
 
 	ticker := time.NewTicker(normalizeRuntimeEventInterval(request.IntervalMillis))
 	defer ticker.Stop()
@@ -104,10 +132,21 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 			return server.Context().Err()
 		case <-ticker.C:
 		case <-healthChanged:
+		case <-groupsChanged:
+			cachedGroups = nil
+		case <-groupsDone:
+			return nil
 		}
 
 		healthChanged = HC.TransportHealthChanged()
-		current := s.readRuntimeSnapshot()
+		current := s.readRuntimeSnapshotWithGroups(cachedGroups)
+		// Переход в STARTED поднимает группы, которых до него не было.
+		startedNow := current.Service.GetStatus() == ServiceStatus_STARTED
+		if startedNow != startedBefore {
+			startedBefore = startedNow
+			current = s.readRuntimeSnapshotWithGroups(nil)
+		}
+		cachedGroups = current.Groups
 		populateRuntimeTrafficRates(previous, current)
 		var events []*RuntimeEvent
 		if !proto.Equal(previous.Service, current.Service) || previous.StartedAt != current.StartedAt {
@@ -120,7 +159,7 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 		if !proto.Equal(previous.Status, current.Status) {
 			events = append(events, &RuntimeEvent{Type: RuntimeEventType_RUNTIME_EVENT_STATUS, Status: current.Status})
 		}
-		if !proto.Equal(previous.Groups, current.Groups) {
+		if current.Groups != previous.Groups && !proto.Equal(previous.Groups, current.Groups) {
 			events = append(events, &RuntimeEvent{Type: RuntimeEventType_RUNTIME_EVENT_GROUPS, Groups: current.Groups})
 		}
 		if !proto.Equal(previous.ClashMode, current.ClashMode) {

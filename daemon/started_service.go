@@ -18,7 +18,6 @@ import (
 	"github.com/sagernet/sing-box/protocol/group"
 	"github.com/sagernet/sing/common"
 	E "github.com/sagernet/sing/common/exceptions"
-	"github.com/sagernet/sing/common/memory"
 	"github.com/sagernet/sing/common/observable"
 	"github.com/sagernet/sing/common/x/list"
 	"github.com/sagernet/sing/service"
@@ -437,7 +436,7 @@ func (s *StartedService) SubscribeStatus(request *SubscribeStatusRequest, server
 
 func (s *StartedService) readStatus() *Status {
 	var status Status
-	status.Memory = memory.Total()
+	status.Memory = processMemoryInUse()
 	status.Goroutines = int32(runtime.NumGoroutine())
 	s.serviceAccess.RLock()
 	nowService := s.instance

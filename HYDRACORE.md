@@ -23,7 +23,7 @@ Required capability fields are:
 {
   "features": {
     "call_vk_parasite": true,
-    "call_vk_parasite_quic": true,
+    "call_vk_parasite_quic": true
   },
   "protocols": {"call_modes": ["vk_parasite"]}
 }

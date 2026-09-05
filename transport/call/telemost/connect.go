@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/transport/call/common"
+	rtc "github.com/sagernet/sing-box/transport/call/common/rtc"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
@@ -62,8 +62,8 @@ func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf in
 		dialer,
 		dnsRouter,
 		nil,
-		common.AddTunnelTracks,
-		common.ReadTrack,
+		rtc.AddTunnelTracks,
+		rtc.ReadTrack,
 	)
 	tunCh := make(chan tunnel.DataTunnel, 1)
 	joiner.OnConnected = func(tun tunnel.DataTunnel) {

@@ -1,7 +1,8 @@
-package common
+package rtc
 
 import (
 	"fmt"
+	"github.com/sagernet/sing-box/transport/call/common"
 
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
@@ -28,7 +29,7 @@ func AddTunnelTracks(pc *webrtc.PeerConnection, logger logger.ContextLogger, pre
 
 func ReadTrack(track *webrtc.TrackRemote, handler func([]byte), logger logger.ContextLogger, prefix string) {
 	if track.Codec().MimeType != webrtc.MimeTypeVP8 {
-		buf := make([]byte, UDPBufSize)
+		buf := make([]byte, common.UDPBufSize)
 		for {
 			if _, _, err := track.Read(buf); err != nil {
 				return
@@ -42,7 +43,7 @@ func ReadTrack(track *webrtc.TrackRemote, handler func([]byte), logger logger.Co
 	var haveLastSeq bool
 	frameValid := false
 	recvCount := 0
-	buf := make([]byte, RTPBufSize)
+	buf := make([]byte, common.RTPBufSize)
 	for {
 		n, _, err := track.Read(buf)
 		if err != nil {

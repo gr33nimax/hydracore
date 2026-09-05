@@ -77,6 +77,11 @@ Credentials and join links are secrets. Do not commit real values.
 
 The release baseline, Go version, Android API, NDK, JDK, gomobile version, and
 build tags are pinned in [release/UPSTREAM_BASELINE](release/UPSTREAM_BASELINE).
+
+`mode` accepts only `vk_parasite`, so the other Call platforms — Telemost,
+wbstream, VK P2P and Dion — are behind `with_call_legacy` and are absent from
+release builds. They carry the whole `pion/webrtc` stack, which nothing in
+`vk_parasite` uses.
 CI builds all distributable artifacts. Local checks may use `go test`, `go vet`,
 `go build`, and the baseline verifier, but must not produce release artifacts.
 

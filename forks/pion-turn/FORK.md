@@ -19,9 +19,9 @@ else in the tree has been touched, so a three-way merge against that commit is e
 
 ## Local changes
 
-Both are allocation removals on the inbound packet path, found by CPU/heap profiling the Android
-client: `handleChannelData` was the largest single allocation site in the process and
-`HandleInbound` the second.
+All three are allocation removals, found by CPU/heap profiling the Android client. The first two
+are on the inbound packet path, where `handleChannelData` was the largest single allocation site
+in the process and `HandleInbound` the second; the third is the outbound counterpart.
 
 ### 1. `client.go` — `Client.handleChannelData` decodes in place
 
@@ -47,6 +47,20 @@ entry once, so those are all the release points there are.
 
 Deliberately not pooled at `maxDataBufferSize` (65535): `maxReadQueueSize` is 1024, so a full
 queue of maximum-size buffers would hold 64 MB.
+
+### 3. `internal/client/udp_conn.go` — pooled outbound ChannelData frame
+
+Was: `sendChannelData` built a fresh `proto.ChannelData` whose `Raw` was nil, so `Encode` grew a
+new slice and copied the whole payload into it for every outbound datagram.
+
+Measured at 1416 B and two allocations per packet, against none with the buffer kept — 492 ns/op
+against 27 ns/op for a 1287-byte payload, which is one QUIC packet inside a DTLS record.
+
+The frame is encoded into a `sync.Pool` buffer of `pooledOutboundSize` (2048), with a plain
+allocation for anything larger, which never enters the pool. `Client.WriteTo` hands the frame
+straight to the socket and retains nothing, so the release point is immediately after it returns —
+on the error path as well, since the frame is dead either way. A buffer that `Encode` had to grow
+anyway is not returned, which is why the capacity is checked rather than the length.
 
 ## Verification
 

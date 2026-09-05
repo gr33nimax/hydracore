@@ -63,6 +63,8 @@ type StartedService struct {
 	runtimeSequence          atomic.Uint64
 	clashModeSubscriber      *observable.Subscriber[struct{}]
 	clashModeObserver        *observable.Observer[struct{}]
+	trafficSubscriber        *observable.Subscriber[struct{}]
+	trafficObserver          *observable.Observer[struct{}]
 
 	connectionEventSubscriber *observable.Subscriber[trafficontrol.ConnectionEvent]
 	connectionEventObserver   *observable.Observer[trafficontrol.ConnectionEvent]
@@ -108,6 +110,7 @@ func NewStartedService(options ServiceOptions) *StartedService {
 		urlTestSessionByGroup:     make(map[string]string),
 		urlTestSessionSubscriber:  observable.NewSubscriber[struct{}](1),
 		clashModeSubscriber:       observable.NewSubscriber[struct{}](1),
+		trafficSubscriber:         observable.NewSubscriber[struct{}](1),
 		connectionEventSubscriber: observable.NewSubscriber[trafficontrol.ConnectionEvent](256),
 	}
 	s.serviceStatusObserver = observable.NewObserver(s.serviceStatusSubscriber, 2)
@@ -115,6 +118,7 @@ func NewStartedService(options ServiceOptions) *StartedService {
 	s.urlTestObserver = observable.NewObserver(s.urlTestSubscriber, 1)
 	s.urlTestSessionObserver = observable.NewObserver(s.urlTestSessionSubscriber, 1)
 	s.clashModeObserver = observable.NewObserver(s.clashModeSubscriber, 1)
+	s.trafficObserver = observable.NewObserver(s.trafficSubscriber, 1)
 	s.connectionEventObserver = observable.NewObserver(s.connectionEventSubscriber, 64)
 	return s
 }
@@ -210,7 +214,9 @@ func (s *StartedService) StartOrReloadService(profileContent string, options *Ov
 	instance.urlTestHistoryStorage.SetHook(s.urlTestSubscriber)
 	if instance.clashServer != nil {
 		instance.clashServer.SetModeUpdateHook(s.clashModeSubscriber)
-		instance.clashServer.(*clashapi.Server).TrafficManager().SetEventHook(s.connectionEventSubscriber)
+		trafficManager := instance.clashServer.(*clashapi.Server).TrafficManager()
+		trafficManager.SetEventHook(s.connectionEventSubscriber)
+		trafficManager.SetTrafficHook(s.trafficSubscriber)
 	}
 	s.serviceAccess.Unlock()
 	err = instance.Start()
@@ -239,6 +245,7 @@ func (s *StartedService) Close() {
 	s.urlTestSubscriber.Close()
 	s.urlTestSessionSubscriber.Close()
 	s.clashModeSubscriber.Close()
+	s.trafficSubscriber.Close()
 	s.connectionEventSubscriber.Close()
 }
 

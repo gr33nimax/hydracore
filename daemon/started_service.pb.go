@@ -1556,6 +1556,7 @@ type TransportHealth struct {
 	RuntimeGeneration       uint64                 `protobuf:"varint,11,opt,name=runtimeGeneration,proto3" json:"runtimeGeneration,omitempty"`
 	NetworkGeneration       uint64                 `protobuf:"varint,12,opt,name=networkGeneration,proto3" json:"networkGeneration,omitempty"`
 	Failure                 *TransportFailure      `protobuf:"bytes,13,opt,name=failure,proto3" json:"failure,omitempty"`
+	QuicRttMillis           int64                  `protobuf:"varint,14,opt,name=quicRttMillis,proto3" json:"quicRttMillis,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -1679,6 +1680,13 @@ func (x *TransportHealth) GetFailure() *TransportFailure {
 		return x.Failure
 	}
 	return nil
+}
+
+func (x *TransportHealth) GetQuicRttMillis() int64 {
+	if x != nil {
+		return x.QuicRttMillis
+	}
+	return 0
 }
 
 type RuntimeEventRequest struct {
@@ -3118,7 +3126,7 @@ const file_daemon_started_service_proto_rawDesc = "" +
 	"\x10retryAfterMillis\x18\x04 \x01(\x03R\x10retryAfterMillis\x12 \n" +
 	"\vchallengeId\x18\x05 \x01(\tR\vchallengeId\x12\x16\n" +
 	"\x06domain\x18\x06 \x01(\tR\x06domain\x12\x1a\n" +
-	"\bterminal\x18\a \x01(\bR\bterminal\"\xfd\x03\n" +
+	"\bterminal\x18\a \x01(\bR\bterminal\"\xa3\x04\n" +
 	"\x0fTransportHealth\x12\"\n" +
 	"\ftransportTag\x18\x01 \x01(\tR\ftransportTag\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12 \n" +
@@ -3139,7 +3147,8 @@ const file_daemon_started_service_proto_rawDesc = "" +
 	"applicable\x12,\n" +
 	"\x11runtimeGeneration\x18\v \x01(\x04R\x11runtimeGeneration\x12,\n" +
 	"\x11networkGeneration\x18\f \x01(\x04R\x11networkGeneration\x122\n" +
-	"\afailure\x18\r \x01(\v2\x18.daemon.TransportFailureR\afailure\"=\n" +
+	"\afailure\x18\r \x01(\v2\x18.daemon.TransportFailureR\afailure\x12$\n" +
+	"\rquicRttMillis\x18\x0e \x01(\x03R\rquicRttMillis\"=\n" +
 	"\x13RuntimeEventRequest\x12&\n" +
 	"\x0eintervalMillis\x18\x01 \x01(\x03R\x0eintervalMillis\"\x97\x03\n" +
 	"\fRuntimeEvent\x12,\n" +

@@ -61,6 +61,7 @@ type TransportHealth struct {
 	Applicable              bool
 	RuntimeGeneration       int64
 	NetworkGeneration       int64
+	QuicRttMillis           int64
 	Failure                 *TransportFailure
 }
 
@@ -678,6 +679,7 @@ func transportHealthFromGRPC(health *daemon.TransportHealth) *TransportHealth {
 		Applicable:              health.Applicable,
 		RuntimeGeneration:       int64(health.RuntimeGeneration),
 		NetworkGeneration:       int64(health.NetworkGeneration),
+		QuicRttMillis:           health.QuicRttMillis,
 	}
 	if health.Failure != nil {
 		result.Failure = &TransportFailure{

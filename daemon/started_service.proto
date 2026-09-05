@@ -215,6 +215,7 @@ message TransportHealth {
   uint64 runtimeGeneration = 11;
   uint64 networkGeneration = 12;
   TransportFailure failure = 13;
+  int64 quicRttMillis = 14;
 }
 
 message RuntimeEventRequest {

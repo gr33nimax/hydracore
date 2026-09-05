@@ -93,8 +93,40 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 		return err
 	}
 
-	ticker := time.NewTicker(normalizeRuntimeEventInterval(request.IntervalMillis))
-	defer ticker.Stop()
+	serviceSubscription, serviceDone, err := s.serviceStatusObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.serviceStatusObserver.UnSubscribe(serviceSubscription)
+	urlTestSubscription, urlTestDone, err := s.urlTestObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.urlTestObserver.UnSubscribe(urlTestSubscription)
+	urlTestSessionSubscription, urlTestSessionDone, err := s.urlTestSessionObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.urlTestSessionObserver.UnSubscribe(urlTestSessionSubscription)
+	clashModeSubscription, clashModeDone, err := s.clashModeObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.clashModeObserver.UnSubscribe(clashModeSubscription)
+	trafficSubscription, trafficDone, err := s.trafficObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.trafficObserver.UnSubscribe(trafficSubscription)
+
+	interval := normalizeRuntimeEventInterval(request.IntervalMillis)
+	var trafficTimer *time.Timer
+	var trafficTimerC <-chan time.Time
+	defer func() {
+		if trafficTimer != nil {
+			trafficTimer.Stop()
+		}
+	}()
 	healthChanged := HC.TransportHealthChanged()
 	for {
 		select {
@@ -102,8 +134,30 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 			return s.ctx.Err()
 		case <-server.Context().Done():
 			return server.Context().Err()
-		case <-ticker.C:
+		case <-serviceDone:
+			return os.ErrClosed
+		case <-urlTestDone:
+			return os.ErrClosed
+		case <-urlTestSessionDone:
+			return os.ErrClosed
+		case <-clashModeDone:
+			return os.ErrClosed
+		case <-trafficDone:
+			return os.ErrClosed
+		case <-serviceSubscription:
+		case <-urlTestSubscription:
+		case <-urlTestSessionSubscription:
+		case <-clashModeSubscription:
 		case <-healthChanged:
+		case <-trafficSubscription:
+			if trafficTimerC != nil {
+				continue
+			}
+			trafficTimer = time.NewTimer(interval)
+			trafficTimerC = trafficTimer.C
+			continue
+		case <-trafficTimerC:
+			trafficTimerC = nil
 		}
 
 		healthChanged = HC.TransportHealthChanged()
@@ -163,6 +217,7 @@ func runtimeTransportHealth(health HC.TransportHealthSnapshot) *TransportHealth 
 		Applicable:              health.Applicable,
 		RuntimeGeneration:       health.RuntimeGeneration,
 		NetworkGeneration:       health.NetworkGeneration,
+		QuicRttMillis:           health.QuicRttMillis,
 	}
 	if health.Failure != nil {
 		result.Failure = &TransportFailure{

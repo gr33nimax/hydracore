@@ -38,6 +38,7 @@ type TransportHealthSnapshot struct {
 	Applicable              bool              `json:"applicable"`
 	RuntimeGeneration       uint64            `json:"runtime_generation"`
 	NetworkGeneration       uint64            `json:"network_generation"`
+	QuicRttMillis           int64             `json:"quic_rtt_millis"`
 	Failure                 *TransportFailure `json:"failure,omitempty"`
 }
 

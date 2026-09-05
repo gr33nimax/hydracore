@@ -281,3 +281,38 @@ func TestRebindNetworkGeneration(t *testing.T) {
 	require.NotSame(t, generationCtx, relay.generationCtx)
 	relay.pathsMu.RUnlock()
 }
+
+func TestPathIsUsable(t *testing.T) {
+	best := 20 * time.Millisecond
+	for _, testCase := range []struct {
+		name    string
+		quality PathQuality
+		usable  bool
+	}{
+		{"no measurement yet", PathQuality{}, true},
+		{"the best path itself", PathQuality{SmoothedRTT: best}, true},
+		{"within the tolerance factor", PathQuality{SmoothedRTT: 2 * best}, true},
+		{"beyond the factor but within the slack", PathQuality{SmoothedRTT: best + pathRTTSlack}, true},
+		{"beyond both", PathQuality{SmoothedRTT: best + pathRTTSlack + time.Millisecond}, false},
+		{
+			"lossy",
+			PathQuality{SmoothedRTT: best, PacketsSent: 1000, PacketsLost: 300},
+			false,
+		},
+		{
+			"lossy below the sample floor",
+			PathQuality{SmoothedRTT: best, PacketsSent: pathLossMinPackets - 1, PacketsLost: 40},
+			true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.Equal(t, testCase.usable, pathIsUsable(testCase.quality, best))
+		})
+	}
+}
+
+// Без измеренного RTT ни один путь не должен отбраковываться: иначе первый же
+// поток после старта не найдёт куда идти.
+func TestPathIsUsableWithoutBaseline(t *testing.T) {
+	require.True(t, pathIsUsable(PathQuality{SmoothedRTT: time.Second}, 0))
+}

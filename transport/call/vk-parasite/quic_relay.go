@@ -17,15 +17,67 @@ import (
 const (
 	defaultQUICPathCount = DefaultWorkerCount
 	pathDialTimeout      = 30 * time.Second
+
+	// Путь перестаёт получать новые потоки, когда его сглаженный RTT и
+	// превышает лучший более чем в pathRTTTolerance раз, и отстаёт от него
+	// хотя бы на pathRTTSlack. Второе условие нужно, чтобы на быстрой сети
+	// 6 мс против 2 мс не выбрасывали три пути из четырёх.
+	pathRTTTolerance = 2
+	pathRTTSlack     = 30 * time.Millisecond
+
+	// Доля потерь, за которой путь тоже перестаёт получать новые потоки, и
+	// минимальное число отправленных пакетов, до которого доля не считается.
+	pathLossLimit      = 0.2
+	pathLossMinPackets = 50
 )
 
 var ErrNoActiveQUICPaths = errors.New("call vk_parasite: no active QUIC paths")
 
 type quicPathConn struct {
-	id     uint16
-	conn   *quic.Conn
-	closer io.Closer
-	cancel context.CancelFunc
+	id      uint16
+	conn    *quic.Conn
+	closer  io.Closer
+	cancel  context.CancelFunc
+	streams atomic.Uint64
+}
+
+// PathQuality — снимок одного пути. Числа приходят из счётчиков самого quic-go
+// (они атомарные, поэтому читать их можно из любой горутины), кроме streams,
+// который relay считает сам.
+type PathQuality struct {
+	WorkerID        uint16
+	SmoothedRTT     time.Duration
+	MinRTT          time.Duration
+	MeanDeviation   time.Duration
+	PacketsSent     uint64
+	PacketsLost     uint64
+	BytesSent       uint64
+	BytesReceived   uint64
+	StreamsAssigned uint64
+}
+
+// LossRatio возвращает долю потерянных пакетов, пока выборка достаточна.
+func (q PathQuality) LossRatio() float64 {
+	if q.PacketsSent < pathLossMinPackets {
+		return 0
+	}
+	return float64(q.PacketsLost) / float64(q.PacketsSent)
+}
+
+func (p *quicPathConn) quality() PathQuality {
+	quality := PathQuality{WorkerID: p.id, StreamsAssigned: p.streams.Load()}
+	if p.conn == nil {
+		return quality
+	}
+	stats := p.conn.ConnectionStats()
+	quality.SmoothedRTT = stats.SmoothedRTT
+	quality.MinRTT = stats.MinRTT
+	quality.MeanDeviation = stats.MeanDeviation
+	quality.PacketsSent = stats.PacketsSent
+	quality.PacketsLost = stats.PacketsLost
+	quality.BytesSent = stats.BytesSent
+	quality.BytesReceived = stats.BytesReceived
+	return quality
 }
 
 type QUICRelayOptions struct {
@@ -183,17 +235,63 @@ func (r *QUICRelay) reconnectPath(workerID uint16) {
 	}
 }
 
+// pickPath раздаёт потоки по кругу, пропуская пути, которые заметно хуже
+// лучшего активного.
+//
+// Раньше обход был чисто круговым, и живой, но плохой путь — высокий RTT или
+// потери — получал ровно ту же долю новых потоков, что и здоровые. Порядок
+// обхода сохранён: счётчик по-прежнему двигается на каждый вызов, так что
+// среди годных путей раздача остаётся равномерной.
 func (r *QUICRelay) pickPath(_ context.Context) (*quicPathConn, error) {
 	r.pathsMu.RLock()
+	defer r.pathsMu.RUnlock()
 	activeCount := len(r.paths)
-	if activeCount > 0 {
-		index := int(r.nextPath.Add(1)-1) % activeCount
-		path := r.paths[index]
-		r.pathsMu.RUnlock()
-		return path, nil
+	if activeCount == 0 {
+		return nil, ErrNoActiveQUICPaths
 	}
-	r.pathsMu.RUnlock()
-	return nil, ErrNoActiveQUICPaths
+	start := int(r.nextPath.Add(1) - 1)
+	if activeCount == 1 {
+		return r.paths[0], nil
+	}
+	best := time.Duration(0)
+	for _, path := range r.paths {
+		if rtt := path.quality().SmoothedRTT; rtt > 0 && (best == 0 || rtt < best) {
+			best = rtt
+		}
+	}
+	for offset := range activeCount {
+		path := r.paths[(start+offset)%activeCount]
+		if pathIsUsable(path.quality(), best) {
+			return path, nil
+		}
+	}
+	// Все пути хуже порога: раздаём по кругу, как раньше, — лучше плохой путь,
+	// чем отказ в соединении.
+	return r.paths[start%activeCount], nil
+}
+
+func pathIsUsable(quality PathQuality, best time.Duration) bool {
+	if quality.LossRatio() > pathLossLimit {
+		return false
+	}
+	rtt := quality.SmoothedRTT
+	if rtt <= 0 || best <= 0 {
+		return true
+	}
+	return rtt <= best*pathRTTTolerance || rtt <= best+pathRTTSlack
+}
+
+// PathStats снимает качество всех активных путей. Единственный способ увидеть
+// на устройстве, какой из путей плохой: транспорт больше ничего наружу не
+// публикует.
+func (r *QUICRelay) PathStats() []PathQuality {
+	r.pathsMu.RLock()
+	defer r.pathsMu.RUnlock()
+	stats := make([]PathQuality, 0, len(r.paths))
+	for _, path := range r.paths {
+		stats = append(stats, path.quality())
+	}
+	return stats
 }
 
 func (r *QUICRelay) DialContext(ctx context.Context, destination string) (net.Conn, error) {
@@ -205,6 +303,7 @@ func (r *QUICRelay) DialContext(ctx context.Context, destination string) (net.Co
 	if err != nil {
 		return nil, err
 	}
+	path.streams.Add(1)
 	dest := M.ParseSocksaddr(destination)
 	if err := writeStreamHeader(stream, streamKindTCP, dest); err != nil {
 		stream.CancelWrite(0)
@@ -271,6 +370,7 @@ func (r *QUICRelay) ListenPacket(ctx context.Context, destination string) (net.C
 	if err != nil {
 		return nil, err
 	}
+	path.streams.Add(1)
 	assoc := r.dgramRouter.newAssociation(path.conn, M.ParseSocksaddr(destination))
 	return assoc, nil
 }

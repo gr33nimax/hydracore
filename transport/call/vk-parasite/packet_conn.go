@@ -14,6 +14,35 @@ var errPacketConnClosed = errors.New("call vk_parasite: packet connection closed
 type receivedPacket struct {
 	payload []byte
 	addr    net.Addr
+	// owner — буфер из пула, если payload взят оттуда. Освобождает его тот, кто
+	// пакет прочитал: очередь передаёт владение вместе с записью.
+	owner *wireBuffer
+}
+
+// Пул буферов под один внешний пакет.
+//
+// Через очереди сервера пакет обязан ехать в собственной памяти: буфер чтения
+// перезаписывается следующим read, а запись ждёт другую горутину. Копия нужна,
+// источник памяти — нет. Размер покрывает любой реальный пакет при path MTU
+// 1400; всё, что больше, аллоцируется обычным образом и в пул не возвращается,
+// иначе полная очередь держала бы память по максимальному размеру пакета.
+var packetBufferPool = sync.Pool{New: func() any { return new(wireBuffer) }}
+
+// takePacketCopy копирует пакет в память, которой владеет вызывающий.
+func takePacketCopy(payload []byte) ([]byte, *wireBuffer) {
+	if len(payload) > maxCodecWireBuffer {
+		return append([]byte(nil), payload...), nil
+	}
+	owner := packetBufferPool.Get().(*wireBuffer)
+	return owner[:copy(owner[:], payload)], owner
+}
+
+// releasePacketCopy возвращает буфер в пул. Пакеты, которые в пул не влезли,
+// собирает сборщик, поэтому nil здесь — нормальный случай.
+func releasePacketCopy(owner *wireBuffer) {
+	if owner != nil {
+		packetBufferPool.Put(owner)
+	}
 }
 
 // peerPacketConn gives one QUIC listener a connected view of a shared UDP
@@ -88,13 +117,15 @@ func (c *peerPacketConn) replayAuthAck() bool {
 }
 
 func (c *peerPacketConn) enqueue(payload []byte, addr net.Addr) bool {
-	copyPayload := append([]byte(nil), payload...)
+	copyPayload, owner := takePacketCopy(payload)
 	select {
-	case c.readQueue <- receivedPacket{payload: copyPayload, addr: addr}:
+	case c.readQueue <- receivedPacket{payload: copyPayload, addr: addr, owner: owner}:
 		return true
 	case <-c.closed:
+		releasePacketCopy(owner)
 		return false
 	default:
+		releasePacketCopy(owner)
 		return false
 	}
 }
@@ -105,7 +136,11 @@ func (c *peerPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		select {
 		case packet := <-c.readQueue:
 			stopPacketTimer(timer)
-			return copy(buffer, packet.payload), packet.addr, nil
+			// Очередь отдаёт запись ровно одному читателю, и после копирования
+			// payload больше не нужен — здесь и есть точка освобождения.
+			n := copy(buffer, packet.payload)
+			releasePacketCopy(packet.owner)
+			return n, packet.addr, nil
 		case <-c.closed:
 			stopPacketTimer(timer)
 			return 0, nil, errPacketConnClosed
@@ -116,9 +151,8 @@ func (c *peerPacketConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 			continue
 		case <-c.deadlineChanged:
 			stopPacketTimer(timer)
-			// A DTLS cancellation changes the read deadline after ReadFrom is
-			// already blocked. Recalculate it instead of leaving the handshake
-			// goroutine asleep forever.
+			// Отмена меняет read deadline, когда ReadFrom уже заблокирован.
+			// Пересчитываем его, а не оставляем горутину спать навсегда.
 			continue
 		}
 	}

@@ -297,13 +297,15 @@ func (s *Server) readLoop(packetConn net.PacketConn, decoders []*rtpCodec) {
 			}
 		}
 		key := remote.Network() + "|" + remote.String()
-		packet := receivedPacket{payload: append([]byte(nil), buffer[:n]...), addr: remote}
+		payload, owner := takePacketCopy(buffer[:n])
+		packet := receivedPacket{payload: payload, addr: remote, owner: owner}
 		queue := s.ingressQueues[ingressShard(key, len(s.ingressQueues))]
 		s.ingressDepth.Add(1)
 		select {
 		case queue <- packet:
 		default:
 			s.ingressDepth.Add(-1)
+			releasePacketCopy(owner)
 		}
 	}
 }
@@ -318,6 +320,7 @@ func (s *Server) processIngress(packets <-chan receivedPacket, decoder *rtpCodec
 			}
 			s.ingressDepth.Add(-1)
 			s.processWirePacket(packet.payload, packet.addr, decoder, plainBuffer)
+			releasePacketCopy(packet.owner)
 		case <-s.ctx.Done():
 			return
 		}

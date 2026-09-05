@@ -183,3 +183,39 @@ func TestPeerPacketConnIgnoresSupersededDeadlineTimer(t *testing.T) {
 		t.Fatal("read did not survive a superseded deadline")
 	}
 }
+
+// Буфер из пула обязан вернуться в пул после чтения, а пакет крупнее пула —
+// доехать целым и в пул не попасть.
+func TestPacketCopyOwnership(t *testing.T) {
+	t.Parallel()
+	small := make([]byte, 1200)
+	for index := range small {
+		small[index] = byte(index)
+	}
+	payload, owner := takePacketCopy(small)
+	require.NotNil(t, owner, "пакет по path MTU обязан приходить из пула")
+	require.Equal(t, small, payload)
+	releasePacketCopy(owner)
+
+	large := make([]byte, maxCodecWireBuffer+1)
+	payload, owner = takePacketCopy(large)
+	require.Nil(t, owner, "пакет больше пула не должен в него возвращаться")
+	require.Equal(t, large, payload)
+	releasePacketCopy(owner)
+}
+
+// Полная очередь не должна терять буфер: иначе пул течёт при каждом дропе.
+func TestPeerPacketConnEnqueueReleasesOnFullQueue(t *testing.T) {
+	t.Parallel()
+	codec, err := newRTPCodec([wrapKeyLength]byte{3})
+	require.NoError(t, err)
+	peer := newPeerPacketConn(inertPacketConn{}, testAddr("peer"), codec, 1)
+
+	require.True(t, peer.enqueue([]byte("first"), testAddr("peer")))
+	require.False(t, peer.enqueue([]byte("second"), testAddr("peer")))
+
+	buffer := make([]byte, 16)
+	n, _, err := peer.ReadFrom(buffer)
+	require.NoError(t, err)
+	require.Equal(t, "first", string(buffer[:n]))
+}

@@ -224,6 +224,9 @@ type datagramAssociation struct {
 	closed      chan struct{}
 	closeOnce   sync.Once
 	nextPacket  atomic.Uint64
+	writeMu     sync.Mutex
+	headerBase  []byte
+	header      bytes.Buffer
 	pendingMu   sync.Mutex
 	pending     []*pendingDatagram
 }
@@ -255,8 +258,11 @@ func (a *datagramAssociation) deliverFragment(frame datagramFrame) {
 		return
 	default:
 	}
+	// quic-go копирует каждую принятую датаграмму в свой буфер и отдаёт его
+	// нам во владение (datagramQueue.HandleDatagramFrame), поэтому фрагмент уже
+	// принадлежит нам и второй копии не требует.
 	if frame.total == 1 {
-		a.deliver(append([]byte(nil), frame.fragment...))
+		a.deliver(frame.fragment)
 		return
 	}
 	a.pendingMu.Lock()
@@ -265,7 +271,7 @@ func (a *datagramAssociation) deliverFragment(frame datagramFrame) {
 		a.pendingMu.Unlock()
 		return
 	}
-	pending.fragments[frame.index] = append([]byte(nil), frame.fragment...)
+	pending.fragments[frame.index] = frame.fragment
 	pending.size += len(frame.fragment)
 	pending.remaining--
 	if pending.size > maxDatagramPayload {
@@ -369,6 +375,8 @@ func (a *datagramAssociation) Write(p []byte) (int, error) {
 	if len(p) > maxDatagramPayload {
 		return 0, fmt.Errorf("%w: %d bytes for %s", errDatagramTooLarge, len(p), a.destination)
 	}
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	prefix, err := a.framePrefix()
 	if err != nil {
 		return 0, err
@@ -402,16 +410,30 @@ func (a *datagramAssociation) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// framePrefix собирает заголовок фрейма в буфер, живущий на ассоциации.
+//
+// Раньше это был свежий bytes.Buffer на каждую исходящую датаграмму: четыре
+// аллокации ради заголовка длиной девять байт. Идентификатор ассоциации и
+// назначение за её жизнь не меняются, поэтому они кодируются один раз, а на
+// датаграмму приходится только uvarint номера пакета — в установившемся режиме
+// заголовок не аллоцирует ничего.
+//
+// Возвращённый срез смотрит в буфер ассоциации и действителен, пока держится
+// writeMu. Вызывается под writeMu.
 func (a *datagramAssociation) framePrefix() ([]byte, error) {
-	var buffer bytes.Buffer
 	var varint [binary.MaxVarintLen64]byte
-	buffer.Write(varint[:binary.PutUvarint(varint[:], a.id)])
-	if err := M.SocksaddrSerializer.WriteAddrPort(&buffer, a.destination); err != nil {
-		return nil, err
+	if a.headerBase == nil {
+		var base bytes.Buffer
+		base.Write(varint[:binary.PutUvarint(varint[:], a.id)])
+		if err := M.SocksaddrSerializer.WriteAddrPort(&base, a.destination); err != nil {
+			return nil, err
+		}
+		a.headerBase = base.Bytes()
 	}
-	packetID := a.nextPacket.Add(1)
-	buffer.Write(varint[:binary.PutUvarint(varint[:], packetID)])
-	return buffer.Bytes(), nil
+	a.header.Reset()
+	a.header.Write(a.headerBase)
+	a.header.Write(varint[:binary.PutUvarint(varint[:], a.nextPacket.Add(1))])
+	return a.header.Bytes(), nil
 }
 
 func (a *datagramAssociation) Close() error {

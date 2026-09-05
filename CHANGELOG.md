@@ -21,8 +21,13 @@
 - The runtime event stream no longer stops the world once a second to read
   process memory, and no longer rebuilds the outbound group list — with its
   per-item url-test lookups and per-group cache-file reads — on every tick.
-- The `vk_parasite` server no longer allocates per packet for its ingress queue
-  and per-peer queue.
+- The `vk_parasite` server serves every worker from one QUIC listener on the
+  shared UDP socket instead of a per-peer packet queue and a per-peer listener,
+  so an inbound packet is no longer copied twice on its way to a connection and
+  connections are told apart by their QUIC connection ID. Worker authentication
+  moved to the first stream of the connection, which makes it reliable and
+  removes the frame retransmission it needed as a datagram. `ingress_workers`,
+  `ingress_queue_packets` and `peer_read_queue_packets` are now ignored.
 
 ## v1.13.16-extended-hydracore.11-debug.52
 

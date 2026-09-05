@@ -2,80 +2,41 @@ package vkparasite
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"net"
+	"io"
 	"time"
+
+	"github.com/sagernet/quic-go"
 )
 
-// Интервал между повторами auth-фрейма. Совпадает с FlightInterval, который
-// прежде задавал темп повторов DTLS-handshake.
-const authRetryInterval = 500 * time.Millisecond
-
-var errAuthTimeout = errors.New("call vk_parasite: inner auth timed out")
-
-// exchangeAuth посылает auth-фрейм и ждёт ack на том же пакетном соединении.
+// exchangeAuth аутентифицирует worker'а на первом потоке QUIC-соединения.
 //
-// Раньше эту фазу несла DTLS-сессия, которая переспрашивала потерянные пакеты
-// сама. Обёртка ненадёжна, поэтому запрос повторяется до дедлайна: на мобильной
-// сети потерять первый пакет — обычное дело, а отказ стоит целого пути и его
-// backoff. Сервер запоминает ответ и переотправляет его на повтор, так что
-// потеря ack тоже лечится.
+// Раньше auth-фрейм ехал отдельной датаграммой поверх обёртки, а до этого — по
+// DTLS. Датаграмма ненадёжна, поэтому фрейм приходилось повторять до дедлайна, а
+// сервер держал последний ack, чтобы ответить на повтор. Поток надёжен и
+// упорядочен, так что вся эта механика не нужна: одна запись, одно чтение.
 //
-// Пакеты, которые не разбираются как ack, пропускаются: на этом соединении
-// ничего другого быть не должно, но чужой пакет не повод рвать дозвон.
-func exchangeAuth(
-	ctx context.Context,
-	conn net.PacketConn,
-	remote net.Addr,
-	request []byte,
-	timeout time.Duration,
-) (uint64, error) {
-	deadline := time.Now().Add(timeout)
-	defer func() { _ = conn.SetDeadline(time.Time{}) }()
-	ack := make([]byte, maximumAuthFrameLen)
-	for attempt := 0; ; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		now := time.Now()
-		if !now.Before(deadline) {
-			return 0, errAuthTimeout
-		}
-		if _, err := conn.WriteTo(request, remote); err != nil {
-			return 0, fmt.Errorf("write inner auth: %w", err)
-		}
-		attemptDeadline := now.Add(authRetryInterval)
-		if attemptDeadline.After(deadline) {
-			attemptDeadline = deadline
-		}
-		if err := conn.SetReadDeadline(attemptDeadline); err != nil {
-			return 0, err
-		}
-		for {
-			n, _, err := conn.ReadFrom(ack)
-			if err != nil {
-				var timeoutErr net.Error
-				if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
-					break
-				}
-				return 0, fmt.Errorf("read inner auth: %w", err)
-			}
-			generation, decodeErr := decodeAuthAck(ack[:n])
-			if decodeErr == nil {
-				return generation, nil
-			}
-			if isTerminalAuthAck(decodeErr) {
-				return 0, decodeErr
-			}
-		}
+// Соединение открывается до аутентификации. Пускать в него посторонних всё равно
+// нечем: пакет без ключа обёртки не проходит внешний AEAD и до QUIC не доходит.
+func exchangeAuth(ctx context.Context, conn *quic.Conn, request []byte, timeout time.Duration) (uint64, error) {
+	streamCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	stream, err := conn.OpenStreamSync(streamCtx)
+	if err != nil {
+		return 0, err
 	}
-}
-
-// isTerminalAuthAck отличает отказ сервера от пакета, который просто не ack.
-//
-// Отказ повторять бессмысленно: пароль не изменится за 500 мс. Всё остальное —
-// мусор на соединении, его нужно пропустить и продолжать ждать.
-func isTerminalAuthAck(err error) bool {
-	return errors.Is(err, errAuthRejected)
+	defer func() {
+		stream.CancelRead(0)
+		_ = stream.Close()
+	}()
+	if err = stream.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return 0, err
+	}
+	if _, err = stream.Write(request); err != nil {
+		return 0, err
+	}
+	var ack [authAckFrameLen]byte
+	if _, err = io.ReadFull(stream, ack[:]); err != nil {
+		return 0, err
+	}
+	return decodeAuthAck(ack[:])
 }

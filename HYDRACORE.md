@@ -14,8 +14,14 @@ worker authentication.
 Version 10 removed the DTLS layer. It ran underneath the RTP wrapper, so every
 byte of it — handshake included — travelled inside the sealed
 ChaCha20-Poly1305 payload and was never visible to an observer on the path,
-while costing 37 bytes and one AES-GCM pass per packet in each direction. The
-worker authentication frame and QUIC now travel directly in the wrapper.
+while costing 37 bytes and one AES-GCM pass per packet in each direction. QUIC
+now travels directly in the wrapper, and worker authentication is the first
+stream of each QUIC connection.
+
+The VPS inbound serves every worker from one QUIC listener on the shared UDP
+socket; connections are told apart by their QUIC connection ID. `ingress_workers`,
+`ingress_queue_packets` and `peer_read_queue_packets` no longer do anything and
+are accepted only so an older configuration still loads.
 
 The client requires exactly four distinct `join_links`. It starts four paths by
 default. `workers` and `max_workers_per_session` accept only `4`, `8`, `12`,

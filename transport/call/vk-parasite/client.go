@@ -160,6 +160,11 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 	}
 	packetConn := newObfsPacketConn(allocation, c.server, codec)
 
+	quicConn, err := dialQUIC(ctx, packetConn, c.server, packetConn)
+	if err != nil {
+		_ = packetConn.Close()
+		return nil, nil, fmt.Errorf("worker %d QUIC dial: %w", workerID, err)
+	}
 	request, err := encodeAuthRequest(authRequest{
 		SessionID:      c.sessionID,
 		Conv:           c.conv,
@@ -171,12 +176,12 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 		Password:       c.options.Password,
 	})
 	if err != nil {
-		_ = packetConn.Close()
+		_ = quicConn.CloseWithError(0, "")
 		return nil, nil, fmt.Errorf("worker %d inner auth encode: %w", workerID, err)
 	}
-	generation, err := exchangeAuth(ctx, packetConn, c.server, request, c.options.WorkerConnectTimeout)
+	generation, err := exchangeAuth(ctx, quicConn, request, c.options.WorkerConnectTimeout)
 	if err != nil {
-		_ = packetConn.Close()
+		_ = quicConn.CloseWithError(0, "")
 		return nil, nil, fmt.Errorf("worker %d inner auth: %w", workerID, err)
 	}
 	expectedGeneration := c.generation.Load()
@@ -185,14 +190,8 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 		expectedGeneration = c.generation.Load()
 	}
 	if generation != expectedGeneration {
-		_ = packetConn.Close()
+		_ = quicConn.CloseWithError(0, "")
 		return nil, nil, errors.New("call vk_parasite: server session state was reset")
-	}
-
-	quicConn, err := dialQUIC(ctx, packetConn, c.server, packetConn)
-	if err != nil {
-		_ = packetConn.Close()
-		return nil, nil, fmt.Errorf("worker %d QUIC dial: %w", workerID, err)
 	}
 	return quicConn, packetConn, nil
 }

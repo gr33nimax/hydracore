@@ -91,19 +91,16 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			users = append(users, vkparasite.ServerUser{Name: user.Name, Password: user.Password, MaxSessions: user.MaxSessions})
 		}
 		h.server, err = vkparasite.NewServer(ctx, vkparasite.ServerOptions{
-			ObfsPassword:         options.ObfsPassword,
-			Users:                users,
-			MaxSessions:          options.MaxSessions,
-			MaxWorkersPerSession: options.MaxWorkersPerSession,
-			MaxPendingHandshakes: options.MaxPendingHandshakes,
-			HandshakeTimeout:     time.Duration(options.HandshakeTimeout),
-			SessionIdleTimeout:   time.Duration(options.SessionIdleTimeout),
+			ObfsPassword:          options.ObfsPassword,
+			Users:                 users,
+			MaxSessions:           options.MaxSessions,
+			MaxWorkersPerSession:  options.MaxWorkersPerSession,
+			MaxPendingHandshakes:  options.MaxPendingHandshakes,
+			HandshakeTimeout:      time.Duration(options.HandshakeTimeout),
+			SessionIdleTimeout:    time.Duration(options.SessionIdleTimeout),
 			UDPReceiveBufferBytes: options.UDPReceiveBufferBytes,
 			UDPSendBufferBytes:    options.UDPSendBufferBytes,
-			IngressWorkers:        options.IngressWorkers,
-			IngressQueuePackets:   options.IngressQueuePackets,
-			PeerReadQueuePackets:  options.PeerReadQueuePackets,
-			SessionHandler:       h.handleParasiteSession,
+			SessionHandler:        h.handleParasiteSession,
 		}, logger)
 		if err != nil {
 			return nil, err

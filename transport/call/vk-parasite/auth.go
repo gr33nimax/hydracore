@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"unicode/utf8"
 )
 
@@ -18,9 +19,13 @@ const (
 	maximumUserLength   = 64
 	maximumPasswordLen  = 256
 	maximumAuthFrameLen = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
-	CallCount           = 4
-	DefaultWorkerCount  = 4
-	MaximumWorkerCount  = 20
+
+	// Длина ack: magic, версия, accept-бит и восемь байт generation либо
+	// причины отказа.
+	authAckFrameLen    = 14
+	CallCount          = 4
+	DefaultWorkerCount = 4
+	MaximumWorkerCount = 20
 )
 
 var (
@@ -190,7 +195,7 @@ func encodeAuthAck(accepted bool, generation uint64, reason byte) []byte {
 }
 
 func decodeAuthAck(frame []byte) (uint64, error) {
-	if len(frame) != 14 || !bytes.Equal(frame[0:4], ackMagic[:]) || frame[4] != authProtocolVersion {
+	if len(frame) != authAckFrameLen || !bytes.Equal(frame[0:4], ackMagic[:]) || frame[4] != authProtocolVersion {
 		return 0, errors.New("call vk_parasite: invalid server auth response")
 	}
 	if frame[5] != 1 {
@@ -203,29 +208,27 @@ func decodeAuthAck(frame []byte) (uint64, error) {
 	return generation, nil
 }
 
-// isAuthFrame отвечает, начинается ли расшифрованный пакет с auth-фрейма.
+// readAuthRequest читает auth-фрейм из потока.
 //
-// Это первое, что посылает новый worker, поэтому сервер по нему отличает нового
-// пира от продолжения уже поднятой сессии. Раньше ту же роль играл DTLS
-// ClientHello.
-func isAuthFrame(packet []byte) bool {
-	_, ok := authAttachIdentity(packet)
-	return ok
-}
-
-// authAttachIdentity опознаёт попытку присоединения worker'а.
-//
-// Идентичность — это тройка (session, conv, worker): повтор того же auth-фрейма
-// даёт то же значение, а новый клиент с того же UDP-адреса — другое. Сервер
-// держит по одной попытке на идентичность, чтобы копия, оставшаяся от прежней
-// TURN-аллокации, не занимала слот до таймаута.
-func authAttachIdentity(packet []byte) ([32]byte, bool) {
-	var identity [32]byte
-	if len(packet) < 48 || !bytes.Equal(packet[0:4], authMagic[:]) || packet[4] != authProtocolVersion {
-		return identity, false
+// Длина фрейма записана в самом фрейме: фиксированные 48 байт заголовка несут
+// длины имени и пароля. Поэтому кадрирование поверх потока не нужно — читаем
+// заголовок, считаем остаток, читаем его.
+func readAuthRequest(reader io.Reader) (authRequest, error) {
+	const headerLength = 48
+	frame := make([]byte, maximumAuthFrameLen)
+	if _, err := io.ReadFull(reader, frame[:headerLength]); err != nil {
+		return authRequest{}, err
 	}
-	copy(identity[0:16], packet[5:21])   // session id
-	copy(identity[16:20], packet[21:25]) // conv
-	copy(identity[20:22], packet[25:27]) // worker id
-	return identity, true
+	userLength := int(frame[45])
+	passwordLength := int(binary.BigEndian.Uint16(frame[46:48]))
+	total := headerLength + userLength + passwordLength
+	if total > maximumAuthFrameLen {
+		return authRequest{}, errors.New("call vk_parasite: auth frame is too large")
+	}
+	if total > headerLength {
+		if _, err := io.ReadFull(reader, frame[headerLength:total]); err != nil {
+			return authRequest{}, err
+		}
+	}
+	return decodeAuthRequest(frame[:total])
 }

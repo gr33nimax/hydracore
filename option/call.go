@@ -66,22 +66,26 @@ type CallCommonOptions struct {
 type CallInboundOptions struct {
 	DialerOptions
 	CallCommonOptions
-	Listen               *badoption.Addr    `json:"listen,omitempty"`
-	ListenPort           uint16             `json:"listen_port,omitempty"`
-	Cookies              CallCookieList     `json:"cookies,omitempty"`
-	JoinLink             string             `json:"join_link,omitempty"`
-	ObfsPassword         string             `json:"obfs_password,omitempty"`
-	Users                []CallUser         `json:"users,omitempty"`
-	MaxSessions          int                `json:"max_sessions,omitempty"`
-	MaxWorkersPerSession int                `json:"max_workers_per_session,omitempty"`
-	MaxPendingHandshakes int                `json:"max_pending_handshakes,omitempty"`
-	HandshakeTimeout     badoption.Duration `json:"handshake_timeout,omitempty"`
-	SessionIdleTimeout   badoption.Duration `json:"session_idle_timeout,omitempty"`
-	UDPReceiveBufferBytes int               `json:"udp_receive_buffer_bytes,omitempty"`
-	UDPSendBufferBytes    int               `json:"udp_send_buffer_bytes,omitempty"`
-	IngressWorkers        int               `json:"ingress_workers,omitempty"`
-	IngressQueuePackets   int               `json:"ingress_queue_packets,omitempty"`
-	PeerReadQueuePackets  int               `json:"peer_read_queue_packets,omitempty"`
+	Listen                *badoption.Addr    `json:"listen,omitempty"`
+	ListenPort            uint16             `json:"listen_port,omitempty"`
+	Cookies               CallCookieList     `json:"cookies,omitempty"`
+	JoinLink              string             `json:"join_link,omitempty"`
+	ObfsPassword          string             `json:"obfs_password,omitempty"`
+	Users                 []CallUser         `json:"users,omitempty"`
+	MaxSessions           int                `json:"max_sessions,omitempty"`
+	MaxWorkersPerSession  int                `json:"max_workers_per_session,omitempty"`
+	MaxPendingHandshakes  int                `json:"max_pending_handshakes,omitempty"`
+	HandshakeTimeout      badoption.Duration `json:"handshake_timeout,omitempty"`
+	SessionIdleTimeout    badoption.Duration `json:"session_idle_timeout,omitempty"`
+	UDPReceiveBufferBytes int                `json:"udp_receive_buffer_bytes,omitempty"`
+	UDPSendBufferBytes    int                `json:"udp_send_buffer_bytes,omitempty"`
+	// Deprecated: ignored. The server no longer queues packets per peer: QUIC
+	// demultiplexes connections by connection ID on the shared listener.
+	IngressWorkers int `json:"ingress_workers,omitempty"`
+	// Deprecated: ignored, see IngressWorkers.
+	IngressQueuePackets int `json:"ingress_queue_packets,omitempty"`
+	// Deprecated: ignored, see IngressWorkers.
+	PeerReadQueuePackets int `json:"peer_read_queue_packets,omitempty"`
 	// Email and Password are used to re-authenticate with the dion.vc
 	// platform when the refresh cookie is missing or rejected.
 	Email    string `json:"email,omitempty"`
@@ -98,12 +102,12 @@ type CallOutboundOptions struct {
 	DialerOptions
 	ServerOptions
 	CallCommonOptions
-	JoinLink            string             `json:"join_link,omitempty"`
-	JoinLinks           []string           `json:"join_links,omitempty"`
-	User                string             `json:"user,omitempty"`
-	Password            string             `json:"password,omitempty"`
-	ObfsPassword        string             `json:"obfs_password,omitempty"`
-	Workers             int                `json:"workers,omitempty"`
+	JoinLink             string             `json:"join_link,omitempty"`
+	JoinLinks            []string           `json:"join_links,omitempty"`
+	User                 string             `json:"user,omitempty"`
+	Password             string             `json:"password,omitempty"`
+	ObfsPassword         string             `json:"obfs_password,omitempty"`
+	Workers              int                `json:"workers,omitempty"`
 	WorkerConnectTimeout badoption.Duration `json:"worker_connect_timeout,omitempty"`
-	Cookies             CallCookieList     `json:"cookies,omitempty"`
+	Cookies              CallCookieList     `json:"cookies,omitempty"`
 }

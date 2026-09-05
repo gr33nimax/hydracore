@@ -1,7 +1,6 @@
 package vkparasite
 
 import (
-	"encoding/binary"
 	"errors"
 	"net"
 	"testing"
@@ -10,39 +9,95 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDTLSClientHelloDetection(t *testing.T) {
+func TestAuthFrameDetection(t *testing.T) {
 	t.Parallel()
-	packet := make([]byte, 59)
-	packet[0] = 22
-	packet[1] = 0xfe
-	packet[2] = 0xfd
-	binary.BigEndian.PutUint16(packet[11:13], uint16(len(packet)-13))
-	packet[13] = 1
-	for index := 27; index < 59; index++ {
-		packet[index] = byte(index)
-	}
+	frame, err := encodeAuthRequest(authRequest{
+		SessionID:      [16]byte{7},
+		Conv:           0x11223344,
+		WorkerID:       2,
+		WorkerTotal:    4,
+		WorkerEpoch:    1,
+		LaneGeneration: 1,
+		User:           "tester",
+		Password:       "secret",
+	})
+	require.NoError(t, err)
 
-	require.True(t, isDTLSClientHello(packet))
-	identity, ok := dtlsClientHelloIdentity(packet)
+	require.True(t, isAuthFrame(frame))
+	identity, ok := authAttachIdentity(frame)
 	require.True(t, ok)
-	require.Equal(t, packet[27:59], identity[:])
-	packet[13] = 2
-	require.False(t, isDTLSClientHello(packet))
-	packet[13] = 1
-	packet[3] = 1
-	require.False(t, isDTLSClientHello(packet))
-	require.False(t, isDTLSClientHello(packet[:13]))
+	require.Equal(t, frame[5:21], identity[0:16], "идентичность обязана нести session id")
+	require.Equal(t, frame[21:25], identity[16:20], "идентичность обязана нести conv")
+	require.Equal(t, frame[25:27], identity[20:22], "идентичность обязана нести worker id")
+
+	// Тот же worker с другой сессией — другая попытка.
+	other, err := encodeAuthRequest(authRequest{
+		SessionID:      [16]byte{8},
+		Conv:           0x11223344,
+		WorkerID:       2,
+		WorkerTotal:    4,
+		WorkerEpoch:    1,
+		LaneGeneration: 1,
+		User:           "tester",
+		Password:       "secret",
+	})
+	require.NoError(t, err)
+	otherIdentity, ok := authAttachIdentity(other)
+	require.True(t, ok)
+	require.NotEqual(t, identity, otherIdentity)
+
+	// Ни QUIC-пакет, ни обрезок auth-фреймом не считаются.
+	require.False(t, isAuthFrame(frame[:47]))
+	wrongVersion := append([]byte(nil), frame...)
+	wrongVersion[4] = authProtocolVersion - 1
+	require.False(t, isAuthFrame(wrongVersion))
+	wrongMagic := append([]byte(nil), frame...)
+	wrongMagic[0] = 'X'
+	require.False(t, isAuthFrame(wrongMagic))
 }
 
-func TestPeerPacketConnDistinguishesRetransmittedAndNewClientHello(t *testing.T) {
+func TestPeerPacketConnDistinguishesRetransmittedAndNewAttach(t *testing.T) {
 	t.Parallel()
 	peer := &peerPacketConn{}
 	first := [32]byte{1}
 	second := [32]byte{2}
 
-	require.False(t, peer.rememberClientHello(first))
-	require.False(t, peer.rememberClientHello(first))
-	require.True(t, peer.rememberClientHello(second))
+	require.False(t, peer.rememberAttach(first))
+	require.False(t, peer.rememberAttach(first))
+	require.True(t, peer.rememberAttach(second))
+}
+
+// Повтор auth-фрейма должен получить тот же ack: DTLS, который раньше
+// переспрашивал потерянное сам, снят.
+func TestPeerPacketConnReplaysStoredAuthAck(t *testing.T) {
+	t.Parallel()
+	codec, err := newRTPCodec([wrapKeyLength]byte{9})
+	require.NoError(t, err)
+	sink := &recordingPacketConn{}
+	peer := newPeerPacketConn(sink, testAddr("peer"), codec, 4)
+
+	require.False(t, peer.replayAuthAck(), "без запомненного ответа переотправлять нечего")
+
+	ack := encodeAuthAck(true, 42, AuthRejectUnspecified)
+	peer.storeAuthAck(ack)
+	require.True(t, peer.replayAuthAck())
+	require.Equal(t, 1, sink.writes)
+
+	plain, err := codec.unwrap(nil, sink.last)
+	require.NoError(t, err)
+	require.Equal(t, ack, plain, "переотправка обязана нести тот же ack")
+}
+
+type recordingPacketConn struct {
+	inertPacketConn
+	writes int
+	last   []byte
+}
+
+func (c *recordingPacketConn) WriteTo(payload []byte, _ net.Addr) (int, error) {
+	c.writes++
+	c.last = append([]byte(nil), payload...)
+	return len(payload), nil
 }
 
 type testAddr string

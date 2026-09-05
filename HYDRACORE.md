@@ -7,9 +7,15 @@ exposes the Call outbound; the VPS role exposes the Call inbound.
 ## `vk_parasite`
 
 `vk_parasite` carries authenticated QUIC streams and datagrams through VK Call
-paths. Each path uses VK signalling, TURN, DTLS, an RTP-shaped encrypted wrapper,
-and QUIC. The protocol version is 9; mixed protocol versions are rejected during
+paths. Each path uses VK signalling, TURN, an RTP-shaped encrypted wrapper, and
+QUIC. The protocol version is 10; mixed protocol versions are rejected during
 worker authentication.
+
+Version 10 removed the DTLS layer. It ran underneath the RTP wrapper, so every
+byte of it — handshake included — travelled inside the sealed
+ChaCha20-Poly1305 payload and was never visible to an observer on the path,
+while costing 37 bytes and one AES-GCM pass per packet in each direction. The
+worker authentication frame and QUIC now travel directly in the wrapper.
 
 The client requires exactly four distinct `join_links`. It starts four paths by
 default. `workers` and `max_workers_per_session` accept only `4`, `8`, `12`,

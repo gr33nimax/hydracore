@@ -3,6 +3,21 @@
 ## Unreleased
 
 - Removed the retired VK parasite telemetry collectors, reports, wire hooks, and capability flag.
+- `vk_parasite` protocol 10: removed the DTLS layer from the Call path. Worker
+  authentication and QUIC now travel directly inside the RTP-shaped wrapper,
+  which frees 37 bytes and one AES-GCM pass per packet in each direction. A
+  typical 1250-byte inner UDP datagram now travels as a single unreliable
+  fragment instead of two. Client and VPS artifacts must come from the same
+  release, as before.
+- Bounded the Go heap with a soft memory limit instead of `GOGC=10` when the
+  memory limit is enabled.
+- Stopped allocating per packet on the receive path, per outbound TURN frame and
+  per outbound UDP datagram.
+- Path selection now skips a path whose RTT or loss is far worse than the best
+  active one; keep-alive moved from 15 s to 25 s per path and transport health
+  is published on events instead of once a second.
+- Telemost, wbstream, VK P2P and Dion Call platforms moved behind
+  `with_call_legacy` and are absent from release builds.
 
 ## v1.13.16-extended-hydracore.11-debug.52
 

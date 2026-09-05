@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"io"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/pion/dtls/v3"
-	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,7 +33,9 @@ func newTestPacketConnPair() (*testPacketConnPair, error) {
 	}, nil
 }
 
-func TestQUICOverDTLSEcho(t *testing.T) {
+// TestQUICOverObfsEcho гоняет мегабайт по QUIC, поднятому прямо на
+// RTP-обёртке. Слоя DTLS между ними больше нет.
+func TestQUICOverObfsEcho(t *testing.T) {
 	var key [wrapKeyLength]byte
 	_, err := rand.Read(key[:])
 	require.NoError(t, err)
@@ -55,84 +54,18 @@ func TestQUICOverDTLSEcho(t *testing.T) {
 
 	clientObfs := newObfsPacketConn(pair.client, pair.server.LocalAddr(), clientCodec)
 	serverObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), serverCodec)
-	defer func() {
-		_ = clientObfs.Close()
-		_ = serverObfs.Close()
-	}()
 
-	cert, err := selfsign.GenerateSelfSigned()
+	cert, err := newSelfSignedCertificate()
 	require.NoError(t, err)
 
-	serverDTLSConfig := &dtls.Config{
-		Certificates:         []tls.Certificate{cert},
-		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-		FlightInterval:       100 * time.Millisecond,
-		MTU:                  dtlsMTU,
-	}
-
-	clientDTLSConfig := &dtls.Config{
-		InsecureSkipVerify:   true,
-		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-		FlightInterval:       100 * time.Millisecond,
-		MTU:                  dtlsMTU,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var serverDTLS net.Conn
-	var clientDTLS net.Conn
-
-	serverErrCh := make(chan error, 1)
-	clientErrCh := make(chan error, 1)
-
-	go func() {
-		sConn, sErr := dtls.Server(serverObfs, pair.client.LocalAddr(), serverDTLSConfig)
-		if sErr != nil {
-			serverErrCh <- sErr
-			return
-		}
-		if hsErr := sConn.HandshakeContext(ctx); hsErr != nil {
-			_ = sConn.Close()
-			serverErrCh <- hsErr
-			return
-		}
-		serverDTLS = sConn
-		serverErrCh <- nil
-	}()
-
-	go func() {
-		cConn, cErr := dtls.Client(clientObfs, pair.server.LocalAddr(), clientDTLSConfig)
-		if cErr != nil {
-			clientErrCh <- cErr
-			return
-		}
-		if hsErr := cConn.HandshakeContext(ctx); hsErr != nil {
-			_ = cConn.Close()
-			clientErrCh <- hsErr
-			return
-		}
-		clientDTLS = cConn
-		clientErrCh <- nil
-	}()
-
-	require.NoError(t, <-serverErrCh)
-	require.NoError(t, <-clientErrCh)
-
-	defer func() {
-		if serverDTLS != nil {
-			_ = serverDTLS.Close()
-		}
-		if clientDTLS != nil {
-			_ = clientDTLS.Close()
-		}
-	}()
-
-	quicListener, err := listenQUIC(serverDTLS, cert)
+	quicListener, listenerCloser, err := listenQUIC(serverObfs, cert)
 	require.NoError(t, err)
-	defer func() { _ = quicListener.Close() }()
+	defer func() { _ = listenerCloser.Close() }()
 
-	quicClientConn, err := dialQUIC(ctx, clientDTLS, nil)
+	quicClientConn, err := dialQUIC(ctx, clientObfs, pair.server.LocalAddr(), clientObfs)
 	require.NoError(t, err)
 	defer func() { _ = quicClientConn.CloseWithError(0, "") }()
 

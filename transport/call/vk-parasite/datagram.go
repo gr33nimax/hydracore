@@ -34,6 +34,16 @@ const (
 	// Длина полей фрагментации в заголовке фрейма.
 	datagramFragmentHeader = 2
 
+	// Сколько места бюджет отводит под uvarint'ы заголовка.
+	//
+	// Оба растут: идентификатор ассоциации — с их числом, номер пакета — со
+	// временем жизни ассоциации. Если считать бюджет по текущей длине, он молча
+	// уменьшается на ходу, и датаграмма, которая утром влезала в один фрейм,
+	// вечером начинает делиться на два. Резерв делает бюджет постоянным: четыре
+	// байта покрывают 2^28 ассоциаций, пять — 2^35 датаграмм на ассоциацию.
+	datagramAssocIDReserve  = 4
+	datagramPacketIDReserve = 5
+
 	// UDP-датаграмма не может быть длиннее этого ни на одном конце.
 	maxDatagramPayload = 65535
 
@@ -381,7 +391,10 @@ func (a *datagramAssociation) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	budget := maxDatagramFramePayload - len(prefix) - datagramFragmentHeader
+	if len(prefix) > a.framePrefixReserve() {
+		return 0, fmt.Errorf("%w: %s", errDatagramNoBudget, a.destination)
+	}
+	budget := a.fragmentBudget()
 	if budget < 1 {
 		return 0, fmt.Errorf("%w: %s", errDatagramNoBudget, a.destination)
 	}
@@ -408,6 +421,17 @@ func (a *datagramAssociation) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// framePrefixReserve — сколько места бюджет отводит заголовку фрейма.
+func (a *datagramAssociation) framePrefixReserve() int {
+	return datagramAssocIDReserve + M.SocksaddrSerializer.AddrPortLen(a.destination) + datagramPacketIDReserve
+}
+
+// fragmentBudget — сколько байт внутренней датаграммы уезжает в одном фрейме.
+// Постоянен на всю жизнь ассоциации.
+func (a *datagramAssociation) fragmentBudget() int {
+	return maxDatagramFramePayload - a.framePrefixReserve() - datagramFragmentHeader
 }
 
 // framePrefix собирает заголовок фрейма в буфер, живущий на ассоциации.

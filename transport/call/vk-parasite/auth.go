@@ -9,7 +9,12 @@ import (
 )
 
 const (
-	authProtocolVersion = 9
+	// Версия внешнего пути.
+	//
+	// 10 сняла слой DTLS: auth-фрейм и QUIC едут прямо в RTP-обёртке. Клиент
+	// версии 9 с этим сервером физически не договорится, поэтому версия
+	// поднята — чтобы несовпадение сборок отказывало явно, а не таймаутом.
+	authProtocolVersion = 10
 	maximumUserLength   = 64
 	maximumPasswordLen  = 256
 	maximumAuthFrameLen = 4 + 1 + 16 + 4 + 2 + 2 + 8 + 8 + 1 + 2 + maximumUserLength + maximumPasswordLen
@@ -21,6 +26,10 @@ const (
 var (
 	authMagic = [4]byte{'H', 'C', 'V', 'K'}
 	ackMagic  = [4]byte{'H', 'A', 'C', 'K'}
+
+	// errAuthRejected — отказ сервера, в отличие от «это вообще не ack».
+	// Повторять отказ бессмысленно: пароль не изменится за интервал повтора.
+	errAuthRejected = errors.New("call vk_parasite: authentication rejected")
 )
 
 type authRequest struct {
@@ -139,7 +148,7 @@ func validateAuthStrings(user, password string) error {
 // incident cost an afternoon.
 //
 // The reason travels in the byte that holds the top of the session generation, which is zero on
-// every refusal, so the frame stays fourteen bytes at protocol version 9. An older client reads
+// every refusal, so the frame stays fourteen bytes at protocol version 10. An older client reads
 // the accept bit and ignores this; an older server leaves it zero, which is Unspecified. Neither
 // side needs to know about the other.
 const (
@@ -185,11 +194,38 @@ func decodeAuthAck(frame []byte) (uint64, error) {
 		return 0, errors.New("call vk_parasite: invalid server auth response")
 	}
 	if frame[5] != 1 {
-		return 0, fmt.Errorf("call vk_parasite: authentication rejected: %s", authRejectReasonName(frame[6]))
+		return 0, fmt.Errorf("%w: %s", errAuthRejected, authRejectReasonName(frame[6]))
 	}
 	generation := binary.BigEndian.Uint64(frame[6:14])
 	if generation == 0 {
 		return 0, errors.New("call vk_parasite: invalid server session generation")
 	}
 	return generation, nil
+}
+
+// isAuthFrame отвечает, начинается ли расшифрованный пакет с auth-фрейма.
+//
+// Это первое, что посылает новый worker, поэтому сервер по нему отличает нового
+// пира от продолжения уже поднятой сессии. Раньше ту же роль играл DTLS
+// ClientHello.
+func isAuthFrame(packet []byte) bool {
+	_, ok := authAttachIdentity(packet)
+	return ok
+}
+
+// authAttachIdentity опознаёт попытку присоединения worker'а.
+//
+// Идентичность — это тройка (session, conv, worker): повтор того же auth-фрейма
+// даёт то же значение, а новый клиент с того же UDP-адреса — другое. Сервер
+// держит по одной попытке на идентичность, чтобы копия, оставшаяся от прежней
+// TURN-аллокации, не занимала слот до таймаута.
+func authAttachIdentity(packet []byte) ([32]byte, bool) {
+	var identity [32]byte
+	if len(packet) < 48 || !bytes.Equal(packet[0:4], authMagic[:]) || packet[4] != authProtocolVersion {
+		return identity, false
+	}
+	copy(identity[0:16], packet[5:21])   // session id
+	copy(identity[16:20], packet[21:25]) // conv
+	copy(identity[20:22], packet[25:27]) // worker id
+	return identity, true
 }

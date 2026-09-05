@@ -16,7 +16,7 @@ type receivedPacket struct {
 	addr    net.Addr
 }
 
-// peerPacketConn gives one DTLS server a connected view of a shared UDP
+// peerPacketConn gives one QUIC listener a connected view of a shared UDP
 // listener. The owner decodes the shared RTP wrapper before enqueueing data.
 type peerPacketConn struct {
 	base            net.PacketConn
@@ -27,7 +27,8 @@ type peerPacketConn struct {
 	closed          chan struct{}
 	closeOnce       sync.Once
 	established     atomic.Bool
-	clientHello     atomic.Pointer[[32]byte]
+	attach          atomic.Pointer[[32]byte]
+	authAck         atomic.Pointer[[]byte]
 	readDeadline    atomic.Int64
 	writeDeadline   atomic.Int64
 }
@@ -51,16 +52,39 @@ func (c *peerPacketConn) markEstablished() { c.established.Store(true) }
 
 func (c *peerPacketConn) isEstablished() bool { return c.established.Load() }
 
-func (c *peerPacketConn) rememberClientHello(identity [32]byte) bool {
-	stored := c.clientHello.Load()
+// rememberAttach запоминает попытку присоединения и отвечает, отличается ли
+// она от уже запомненной.
+func (c *peerPacketConn) rememberAttach(identity [32]byte) bool {
+	stored := c.attach.Load()
 	if stored == nil {
 		candidate := identity
-		if c.clientHello.CompareAndSwap(nil, &candidate) {
+		if c.attach.CompareAndSwap(nil, &candidate) {
 			return false
 		}
-		stored = c.clientHello.Load()
+		stored = c.attach.Load()
 	}
 	return stored != nil && *stored != identity
+}
+
+// storeAuthAck запоминает ответ на auth-фрейм.
+//
+// Обёртка ненадёжна, а DTLS, который раньше переспрашивал потерянное сам,
+// больше нет: если ack не дошёл, клиент повторит запрос, и ответить на повтор
+// нужно тем же ack, а не тишиной.
+func (c *peerPacketConn) storeAuthAck(ack []byte) {
+	frozen := append([]byte(nil), ack...)
+	c.authAck.Store(&frozen)
+}
+
+// replayAuthAck переотправляет запомненный ответ. Возвращает false, если
+// отвечать пока нечем.
+func (c *peerPacketConn) replayAuthAck() bool {
+	ack := c.authAck.Load()
+	if ack == nil {
+		return false
+	}
+	_, err := c.WriteTo(*ack, c.remote)
+	return err == nil
 }
 
 func (c *peerPacketConn) enqueue(payload []byte, addr net.Addr) bool {

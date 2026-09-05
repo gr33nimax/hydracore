@@ -20,46 +20,6 @@ const quicALPN = "hcvk/1"
 // 40 % пустых пакетов с простаивающего туннеля.
 const quicKeepAlivePeriod = 25 * time.Second
 
-type datagramPacketConn struct {
-	conn net.Conn
-}
-
-func newDatagramPacketConn(conn net.Conn) *datagramPacketConn {
-	return &datagramPacketConn{conn: conn}
-}
-
-func (c *datagramPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	n, err = c.conn.Read(p)
-	if err != nil {
-		return 0, nil, err
-	}
-	return n, c.conn.RemoteAddr(), nil
-}
-
-func (c *datagramPacketConn) WriteTo(p []byte, _ net.Addr) (n int, err error) {
-	return c.conn.Write(p)
-}
-
-func (c *datagramPacketConn) Close() error {
-	return c.conn.Close()
-}
-
-func (c *datagramPacketConn) LocalAddr() net.Addr {
-	return c.conn.LocalAddr()
-}
-
-func (c *datagramPacketConn) SetDeadline(t time.Time) error {
-	return c.conn.SetDeadline(t)
-}
-
-func (c *datagramPacketConn) SetReadDeadline(t time.Time) error {
-	return c.conn.SetReadDeadline(t)
-}
-
-func (c *datagramPacketConn) SetWriteDeadline(t time.Time) error {
-	return c.conn.SetWriteDeadline(t)
-}
-
 func quicConfig() *quic.Config {
 	return &quic.Config{
 		InitialPacketSize:       quicPacketSize,
@@ -72,24 +32,39 @@ func quicConfig() *quic.Config {
 	}
 }
 
-// dialQUIC establishes a QUIC connection over an existing DTLS connection.
-// Ownership: quic-go does not close the underlying PacketConn when the connection ends,
-// so lower layers are explicitly closed when quicConn.Context().Done() fires.
-func dialQUIC(ctx context.Context, dtlsConn net.Conn, closer io.Closer) (*quic.Conn, error) {
-	packetConn := newDatagramPacketConn(dtlsConn)
+// newQUICTransport готовит транспорт с фиксированной длиной connection ID.
+//
+// Длина названа, а не унаследована: бюджет DATAGRAM-фрейма считается от места,
+// которое остаётся в пакете после заголовка, а destination connection ID в
+// исходящем пакете выбирает удалённая сторона. Оба конца ставят одну и ту же
+// длину, поэтому размер пакета в обе стороны становится проверяемой величиной
+// вместо худшего легального 20.
+func newQUICTransport(packetConn net.PacketConn) *quic.Transport {
+	return &quic.Transport{
+		Conn:               packetConn,
+		ConnectionIDLength: quicConnectionIDLength,
+	}
+}
+
+// dialQUIC поднимает QUIC прямо на обёрнутом пакетном соединении.
+//
+// Ownership: quic-go не закрывает переданный PacketConn, поэтому транспорт и
+// нижние слои закрываются явно, когда сработает quicConn.Context().Done().
+func dialQUIC(ctx context.Context, packetConn net.PacketConn, remote net.Addr, closer io.Closer) (*quic.Conn, error) {
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true, // Authenticated by the outer key and the inner user attach.
 		NextProtos:         []string{quicALPN},
 		MinVersion:         tls.VersionTLS13,
 	}
-	quicConn, err := quic.Dial(ctx, packetConn, dtlsConn.RemoteAddr(), tlsConfig, quicConfig())
+	transport := newQUICTransport(packetConn)
+	quicConn, err := transport.Dial(ctx, remote, tlsConfig, quicConfig())
 	if err != nil {
-		_ = packetConn.Close()
+		_ = transport.Close()
 		return nil, err
 	}
 	go func() {
 		<-quicConn.Context().Done()
-		_ = packetConn.Close()
+		_ = transport.Close()
 		if closer != nil {
 			_ = closer.Close()
 		}
@@ -97,13 +72,26 @@ func dialQUIC(ctx context.Context, dtlsConn net.Conn, closer io.Closer) (*quic.C
 	return quicConn, nil
 }
 
-// listenQUIC creates a QUIC listener over a server-side DTLS connection.
-func listenQUIC(dtlsConn net.Conn, cert tls.Certificate) (*quic.Listener, error) {
-	packetConn := newDatagramPacketConn(dtlsConn)
+// listenQUIC поднимает QUIC-листенер на обёрнутом пакетном соединении одного
+// пира. Возвращённый closer закрывает и листенер, и транспорт.
+func listenQUIC(packetConn net.PacketConn, cert tls.Certificate) (*quic.Listener, io.Closer, error) {
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{quicALPN},
 		MinVersion:   tls.VersionTLS13,
 	}
-	return quic.Listen(packetConn, tlsConfig, quicConfig())
+	transport := newQUICTransport(packetConn)
+	listener, err := transport.Listen(tlsConfig, quicConfig())
+	if err != nil {
+		_ = transport.Close()
+		return nil, nil, err
+	}
+	return listener, closerFunc(func() error {
+		_ = listener.Close()
+		return transport.Close()
+	}), nil
 }
+
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }

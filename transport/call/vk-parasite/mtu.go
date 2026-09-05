@@ -6,13 +6,18 @@ package vkparasite
 //	TURN ChannelData                       4
 //	RTP header + RFC 8285 extension       20  = rtpTotalHeaderLength
 //	ChaCha20-Poly1305 tag                 16
-//	RTP padding (worst case)              24  = defaultRTPPadding
-//	DTLS record header + tag              29
+//	RTP padding (worst case)               8  = defaultRTPPadding
 //	------------------------------------------
-//	итого                                121
+//	итого                                 76
 //
-// При консервативном мобильном path MTU 1400 остаётся 1279 на QUIC-пакет,
-// что выше обязательного для QUIC минимума 1200.
+// При консервативном мобильном path MTU 1400 остаётся 1324 на QUIC-пакет.
+//
+// Слоя DTLS здесь больше нет. Он стоил 37 байт на пакет (13 record header +
+// 8 explicit nonce + 16 tag — не 29, как считала прежняя версия этого файла) и
+// один AES-GCM в каждую сторону, а наружу не давал ничего: DTLS работал поверх
+// RTP-обёртки, то есть каждый его байт, включая handshake, уезжал внутри
+// запечатанного ChaCha20-Poly1305 payload и ни одному наблюдателю в сети виден
+// не был.
 //
 // Значения здесь не должны расходиться с фактическим выводом rtpCodec.wrap:
 // это проверяет TestWrappedPacketFitsPathMTU, который измеряет реальный
@@ -25,60 +30,51 @@ const (
 	overheadRTPHeader   = rtpTotalHeaderLength
 	overheadRTPAEAD     = 16
 	overheadRTPPadding  = defaultRTPPadding
-	overheadDTLSRecord  = 29
 
 	pathOverheadTotal = overheadIPUDP + overheadTURNChannel +
-		overheadRTPHeader + overheadRTPAEAD + overheadRTPPadding +
-		overheadDTLSRecord
+		overheadRTPHeader + overheadRTPAEAD + overheadRTPPadding
 
-	// MTU для dtls.Config: сколько DTLS может положить в одну запись.
-	dtlsMTU = conservativePathMTU - overheadIPUDP - overheadTURNChannel -
-		overheadRTPHeader - overheadRTPAEAD - overheadRTPPadding
-
-	// Размер QUIC-пакета. Ниже dtlsMTU на размер DTLS-записи, с запасом.
-	quicPacketSize = 1250
+	// Размер внешнего QUIC-пакета. Ниже бюджета пути с запасом в 4 байта.
+	quicPacketSize = 1320
 
 	quicMinimumPacketSize = 1200
+
+	// Длина connection ID, которую выдаёт наш генератор.
+	//
+	// Она здесь не для экономии заголовка, а чтобы бюджет DATAGRAM-фрейма ниже
+	// опирался на проверяемое значение вместо худшего легального 20.
+	quicConnectionIDLength = 4
 
 	// Накладные внешнего QUIC-пакета над payload DATAGRAM-фрейма:
 	//
 	//	short header flags                  1
-	//	destination connection ID (макс.)  20
-	//	packet number                       4
+	//	destination connection ID           4  = quicConnectionIDLength
+	//	packet number (макс.)               4
 	//	AEAD tag                           16
 	//	DATAGRAM frame type + length        3
 	//	--------------------------------------
-	//	итого                              44
-	overheadQUICHeader    = 1 + 20 + 4
+	//	итого                              28
+	overheadQUICHeader    = 1 + quicConnectionIDLength + 4
 	overheadQUICAEAD      = 16
 	overheadDatagramFrame = 3
 
+	// Порог, на котором SendDatagram отдаёт DatagramTooLargeError.
+	//
+	// Проверено по sagernet/quic-go v0.59.0-sing-box-mod.4: SendDatagram
+	// пропускает min(MaxDataLen(16383), currentMTUEstimate), а при
+	// DisablePathMTUDiscovery оценка остаётся
+	// estimateMaxPayloadSize(InitialPacketSize) = size-1-20-16 и никогда не
+	// растёт. Оценка берёт худший легальный connection ID (20) независимо от
+	// того, какой выдан на самом деле, поэтому она ниже физического бюджета — и
+	// именно она ограничивает фрейм.
+	quicSendDatagramLimit = quicPacketSize - 1 - 20 - 16
+
 	// Бюджет payload одного DATAGRAM-фрейма.
 	//
-	// Проверено по sagernet/quic-go v0.59.0-sing-box-mod.4:
-	//
-	//  1. max_datagram_frame_size анонсируется как wire.MaxDatagramSize =
-	//     16383 (connection.go), а quicConfig его не переопределяет. То есть
-	//     транспортный параметр здесь ничего не ограничивает — вопреки
-	//     распространённому допущению про обязательный минимум 1200.
-	//  2. SendDatagram пропускает min(MaxDataLen(16383) = 16380,
-	//     currentMTUEstimate). При DisablePathMTUDiscovery оценка остаётся
-	//     estimateMaxPayloadSize(InitialPacketSize) = 1250-1-20-16 = 1213 и
-	//     никогда не растёт: поднимает её только mtuDiscoverer.
-	//  3. Эта оценка не учитывает номер пакета и заголовок самого фрейма,
-	//     поэтому она не доказывает, что фрейм влезет в пакет. Не влезший
-	//     фрейм packet_packer.go молча выбрасывает, оставив один debug-лог,
-	//     то есть nil из SendDatagram отправку не гарантирует.
-	//
-	// Поэтому берём не порог SendDatagram, а физический бюджет: наибольший
-	// payload, который влезает в quicPacketSize при худшем легальном
-	// connection ID (20) и худшем номере пакета (4). Он заведомо ниже 1213,
-	// что проверяет TestDatagramFrameFitsQUICPacket.
-	maxDatagramFramePayload = quicPacketSize - overheadQUICHeader -
-		overheadQUICAEAD - overheadDatagramFrame
-
-	// Порог, на котором SendDatagram отдаёт DatagramTooLargeError:
-	// estimateMaxPayloadSize из quic-go. Держим рядом, чтобы тест ловил уход
-	// бюджета выше того, что quic-go вообще принимает.
-	quicSendDatagramLimit = quicPacketSize - 1 - 20 - 16
+	// Это порог SendDatagram: он ниже физического места в пакете, которое
+	// гарантирует quicConnectionIDLength. Оба неравенства держит
+	// TestDatagramFrameFitsQUICPacket — просто пройти проверку quic-go
+	// недостаточно, потому что не влезший фрейм packet_packer.go молча
+	// выбрасывает, оставив один debug-лог.
+	maxDatagramFramePayload = quicSendDatagramLimit
 )

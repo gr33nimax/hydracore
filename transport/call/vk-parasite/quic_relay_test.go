@@ -3,15 +3,12 @@ package vkparasite
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"io"
 	"net"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/pion/dtls/v3"
-	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/sagernet/quic-go"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/stretchr/testify/require"
@@ -21,7 +18,7 @@ func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, se
 	var key [wrapKeyLength]byte
 	_, _ = rand.Read(key[:])
 
-	cert, err := selfsign.GenerateSelfSigned()
+	cert, err := newSelfSignedCertificate()
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,46 +38,10 @@ func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, se
 		cObfs := newObfsPacketConn(pair.client, pair.server.LocalAddr(), cCodec)
 		sObfs := newObfsPacketConn(pair.server, pair.client.LocalAddr(), sCodec)
 
-		sDTLSConfig := &dtls.Config{
-			Certificates:         []tls.Certificate{cert},
-			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-			FlightInterval:       100 * time.Millisecond,
-			MTU:                  dtlsMTU,
-		}
-		cDTLSConfig := &dtls.Config{
-			InsecureSkipVerify:   true,
-			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-			FlightInterval:       100 * time.Millisecond,
-			MTU:                  dtlsMTU,
-		}
-
-		sConnCh := make(chan net.Conn, 1)
-		go func() {
-			sConn, sErr := dtls.Server(sObfs, pair.client.LocalAddr(), sDTLSConfig)
-			if sErr == nil {
-				_ = sConn.HandshakeContext(dialCtx)
-			}
-			sConnCh <- sConn
-		}()
-
-		cConn, cErr := dtls.Client(cObfs, pair.server.LocalAddr(), cDTLSConfig)
-		if cErr != nil {
-			_ = cObfs.Close()
-			_ = sObfs.Close()
-			return nil, nil, cErr
-		}
-		if hsErr := cConn.HandshakeContext(dialCtx); hsErr != nil {
-			_ = cConn.Close()
-			_ = cObfs.Close()
-			_ = sObfs.Close()
-			return nil, nil, hsErr
-		}
-
-		sConn := <-sConnCh
-		sQL, qlErr := listenQUIC(sConn, cert)
+		sQL, listenerCloser, qlErr := listenQUIC(sObfs, cert)
 		if qlErr != nil {
-			_ = cConn.Close()
-			_ = sConn.Close()
+			_ = cObfs.Close()
+			_ = sObfs.Close()
 			return nil, nil, qlErr
 		}
 
@@ -90,19 +51,20 @@ func setupTestRelayPair(t *testing.T, pathCount int) (clientRelay *QUICRelay, se
 			sQConnCh <- sQC
 		}()
 
-		cQConn, qErr := dialQUIC(dialCtx, cConn, nil)
+		cQConn, qErr := dialQUIC(dialCtx, cObfs, pair.server.LocalAddr(), cObfs)
 		if qErr != nil {
-			_ = cConn.Close()
-			_ = sConn.Close()
+			_ = listenerCloser.Close()
+			_ = cObfs.Close()
+			_ = sObfs.Close()
 			return nil, nil, qErr
 		}
 
 		sQConn := <-sQConnCh
 		if sQConn != nil {
-			serverRelay.AttachServerConn(sQConn, sConn)
+			serverRelay.AttachServerConn(sQConn, listenerCloser)
 		}
 
-		return cQConn, cConn, nil
+		return cQConn, cObfs, nil
 	}
 
 	clientRelay = NewQUICRelay(ctx, QUICRelayOptions{

@@ -8,9 +8,6 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
-	"fmt"
-	"github.com/pion/dtls/v3"
-	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	"github.com/sagernet/sing/common/logger"
 	"net"
 	"runtime"
@@ -93,12 +90,12 @@ type Server struct {
 	options    ServerOptions
 	users      map[string]serverUser
 	key        [wrapKeyLength]byte
-	dtlsConfig *dtls.Config
+	serverCert tls.Certificate
 
 	packetConn    net.PacketConn
 	peersMu       sync.Mutex
 	peers         map[string]*peerPacketConn
-	helloPeers    map[[32]byte]*peerPacketConn
+	attachPeers   map[[32]byte]*peerPacketConn
 	ingressQueues []chan receivedPacket
 	ingressDepth  atomic.Int64
 
@@ -122,27 +119,21 @@ func NewServer(parent context.Context, options ServerOptions, log logger.Context
 	if err != nil {
 		return nil, err
 	}
-	certificate, err := selfsign.GenerateSelfSigned()
+	certificate, err := newSelfSignedCertificate()
 	if err != nil {
-		return nil, fmt.Errorf("call vk_parasite: generate DTLS certificate: %w", err)
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
 	server := &Server{
-		ctx:     ctx,
-		cancel:  cancel,
-		logger:  log,
-		options: normalized,
-		users:   users,
-		key:     key,
-		dtlsConfig: &dtls.Config{
-			Certificates:         []tls.Certificate{certificate},
-			CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-			ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-			FlightInterval:       500 * time.Millisecond,
-			MTU:                  dtlsMTU,
-		},
+		ctx:          ctx,
+		cancel:       cancel,
+		logger:       log,
+		options:      normalized,
+		users:        users,
+		key:          key,
+		serverCert:   certificate,
 		peers:        make(map[string]*peerPacketConn),
-		helloPeers:   make(map[[32]byte]*peerPacketConn),
+		attachPeers:  make(map[[32]byte]*peerPacketConn),
 		sessions:     make(map[[16]byte]*serverSession),
 		userSessions: make(map[string]int),
 		pending:      make(chan struct{}, normalized.MaxPendingHandshakes),
@@ -343,21 +334,21 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 		return
 	}
 	var replacedPeer *peerPacketConn
-	var duplicateHelloPeer *peerPacketConn
+	var duplicateAttachPeer *peerPacketConn
 	rejectNewPeer := false
 	s.peersMu.Lock()
 	peer = s.peers[key]
-	clientHello, isClientHello := dtlsClientHelloIdentity(plain)
-	if peer != nil && isClientHello && (peer.isEstablished() || peer.rememberClientHello(clientHello)) {
+	attach, isAttach := authAttachIdentity(plain)
+	if peer != nil && isAttach && (peer.isEstablished() || peer.rememberAttach(attach)) {
 		select {
 		case s.pending <- struct{}{}:
 			codec, codecErr := newRTPCodec(s.key)
 			if codecErr == nil {
 				replacedPeer = peer
 				peer = newPeerPacketConn(s.packetConn, remote, codec, s.options.PeerReadQueuePackets)
-				peer.rememberClientHello(clientHello)
+				peer.rememberAttach(attach)
 				s.peers[key] = peer
-				duplicateHelloPeer = s.registerClientHelloLocked(key, clientHello, peer)
+				duplicateAttachPeer = s.registerAttachLocked(key, attach, peer)
 				go s.handlePeer(key, peer)
 			} else {
 				<-s.pending
@@ -373,9 +364,9 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 			codec, codecErr := newRTPCodec(s.key)
 			if codecErr == nil {
 				peer = newPeerPacketConn(s.packetConn, remote, codec, s.options.PeerReadQueuePackets)
-				if isClientHello {
-					peer.rememberClientHello(clientHello)
-					duplicateHelloPeer = s.registerClientHelloLocked(key, clientHello, peer)
+				if isAttach {
+					peer.rememberAttach(attach)
+					duplicateAttachPeer = s.registerAttachLocked(key, attach, peer)
 				}
 				s.peers[key] = peer
 				go s.handlePeer(key, peer)
@@ -389,20 +380,27 @@ func (s *Server) processWirePacket(wire []byte, remote net.Addr, decoder *rtpCod
 	if replacedPeer != nil {
 		_ = replacedPeer.Close()
 	}
-	if duplicateHelloPeer != nil && duplicateHelloPeer != replacedPeer {
-		_ = duplicateHelloPeer.Close()
+	if duplicateAttachPeer != nil && duplicateAttachPeer != replacedPeer {
+		_ = duplicateAttachPeer.Close()
 	}
-	if peer != nil {
-		peer.enqueue(plain, remote)
+	if peer == nil {
+		return
 	}
+	// Повтор того же auth-фрейма пиру, который ещё не поднял QUIC, означает
+	// потерянный ack: отвечаем тем же ответом. Отдать повтор в очередь нельзя —
+	// quic-go выбросит его как мусор, и клиент будет ждать до таймаута.
+	if isAttach && !peer.isEstablished() && peer.replayAuthAck() {
+		return
+	}
+	peer.enqueue(plain, remote)
 }
 
-// registerClientHelloLocked keeps one pending DTLS state machine per actual
-// ClientHello even when a TURN allocation changes the observable UDP endpoint.
-// Without this, stale copies occupied handshake slots until timeout and could
-// reject the replacement workers needed by lane recovery.
-func (s *Server) registerClientHelloLocked(key string, identity [32]byte, peer *peerPacketConn) *peerPacketConn {
-	previous := s.helloPeers[identity]
+// registerAttachLocked keeps one pending attach per worker identity even when a
+// TURN allocation changes the observable UDP endpoint. Without this, stale
+// copies occupied slots until timeout and could reject the replacement workers
+// needed by path recovery.
+func (s *Server) registerAttachLocked(key string, identity [32]byte, peer *peerPacketConn) *peerPacketConn {
+	previous := s.attachPeers[identity]
 	if previous != nil && previous != peer {
 		for previousKey, candidate := range s.peers {
 			if candidate == previous && previousKey != key {
@@ -410,34 +408,8 @@ func (s *Server) registerClientHelloLocked(key string, identity [32]byte, peer *
 			}
 		}
 	}
-	s.helloPeers[identity] = peer
+	s.attachPeers[identity] = peer
 	return previous
-}
-
-func isDTLSClientHello(packet []byte) bool {
-	_, ok := dtlsClientHelloIdentity(packet)
-	return ok
-}
-
-func dtlsClientHelloIdentity(packet []byte) ([32]byte, bool) {
-	const dtlsRecordHeaderLength = 13
-	const dtlsHandshakeHeaderLength = 12
-	const clientHelloVersionLength = 2
-	var identity [32]byte
-	minimumLength := dtlsRecordHeaderLength + dtlsHandshakeHeaderLength + clientHelloVersionLength + len(identity)
-	if len(packet) < minimumLength || packet[0] != 22 || packet[1] != 0xfe {
-		return identity, false
-	}
-	if packet[3] != 0 || packet[4] != 0 {
-		return identity, false
-	}
-	payloadLength := int(binary.BigEndian.Uint16(packet[11:13]))
-	if payloadLength < minimumLength-dtlsRecordHeaderLength || len(packet) < dtlsRecordHeaderLength+payloadLength || packet[13] != 1 {
-		return identity, false
-	}
-	randomOffset := dtlsRecordHeaderLength + dtlsHandshakeHeaderLength + clientHelloVersionLength
-	copy(identity[:], packet[randomOffset:randomOffset+len(identity)])
-	return identity, true
 }
 
 func makeIngressQueues(workers, totalCapacity int) []chan receivedPacket {
@@ -477,53 +449,46 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		if s.peers[key] == peer {
 			delete(s.peers, key)
 		}
-		if identity := peer.clientHello.Load(); identity != nil && s.helloPeers[*identity] == peer {
-			delete(s.helloPeers, *identity)
+		if identity := peer.attach.Load(); identity != nil && s.attachPeers[*identity] == peer {
+			delete(s.attachPeers, *identity)
 		}
 		s.peersMu.Unlock()
 		_ = peer.Close()
 	}()
 
-	conn, err := dtls.Server(peer, peer.remote, s.dtlsConfig)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-	handshakeCtx, cancel := context.WithTimeout(s.ctx, s.options.HandshakeTimeout)
-	err = conn.HandshakeContext(handshakeCtx)
-	cancel()
-	if err != nil {
-		if s.ctx.Err() != nil {
-			return
-		}
-		return
-	}
-	_ = conn.SetReadDeadline(time.Now().Add(s.options.HandshakeTimeout))
+	// Auth-фрейм — первый пакет пира, он уже в очереди. Отвечаем на нём же
+	// пакетном соединении: DTLS, который раньше несла эта фаза, снят.
+	_ = peer.SetReadDeadline(time.Now().Add(s.options.HandshakeTimeout))
 	authBuffer := make([]byte, maximumAuthFrameLen)
-	n, err := conn.Read(authBuffer)
+	n, _, err := peer.ReadFrom(authBuffer)
 	if err != nil {
 		return
 	}
 	request, err := decodeAuthRequest(authBuffer[:n])
 	if reason, refused := s.refuseAuth(request, err); refused {
-		_, _ = conn.Write(encodeAuthAck(false, 0, reason))
+		refusal := encodeAuthAck(false, 0, reason)
+		peer.storeAuthAck(refusal)
+		_, _ = peer.WriteTo(refusal, peer.remote)
 		return
 	}
 	session, created, err := s.getOrCreateSession(request)
 	if err != nil {
-		_, _ = conn.Write(encodeAuthAck(false, 0, AuthRejectSession))
+		refusal := encodeAuthAck(false, 0, AuthRejectSession)
+		peer.storeAuthAck(refusal)
+		_, _ = peer.WriteTo(refusal, peer.remote)
 		return
 	}
-	_, writeErr := conn.Write(encodeAuthAck(true, session.generation, AuthRejectUnspecified))
-	if writeErr != nil {
+	ack := encodeAuthAck(true, session.generation, AuthRejectUnspecified)
+	peer.storeAuthAck(ack)
+	if _, writeErr := peer.WriteTo(ack, peer.remote); writeErr != nil {
 		s.releaseSessionAttach(session)
 		if created {
 			s.deleteSessionIfUnattached(request.SessionID, session)
 		}
 		return
 	}
-	_ = conn.SetDeadline(time.Time{})
-	quicListener, err := listenQUIC(conn, s.dtlsConfig.Certificates[0])
+	_ = peer.SetDeadline(time.Time{})
+	quicListener, listenerCloser, err := listenQUIC(peer, s.serverCert)
 	if err != nil {
 		s.releaseSessionAttach(session)
 		if created {
@@ -531,7 +496,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		}
 		return
 	}
-	defer quicListener.Close()
+	defer listenerCloser.Close()
 	quicConn, err := quicListener.Accept(s.ctx)
 	s.releaseSessionAttach(session)
 	if err != nil {
@@ -540,7 +505,7 @@ func (s *Server) handlePeer(key string, peer *peerPacketConn) {
 		}
 		return
 	}
-	session.relay.AttachServerConn(quicConn, conn)
+	session.relay.AttachServerConn(quicConn, listenerCloser)
 	peer.markEstablished()
 	releasePending()
 	select {

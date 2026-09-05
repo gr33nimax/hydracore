@@ -27,7 +27,7 @@ const (
 	rtpHeaderLength      = 12
 	rtpExtensionLength   = 8 // RFC 8285 One-Byte Header: 0xBEDE (2B) + len (2B) + ssrc-audio-level (4B)
 	rtpTotalHeaderLength = rtpHeaderLength + rtpExtensionLength
-	defaultRTPPadding    = 24
+	defaultRTPPadding    = 8
 	maxCodecWireBuffer   = 1536
 	maximumWirePacket    = 64 * 1024
 )

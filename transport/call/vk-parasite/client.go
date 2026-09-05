@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/dtls/v3"
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/sing-box/adapter"
 	HC "github.com/sagernet/sing-box/common/hydracore"
@@ -98,13 +97,13 @@ func ConnectClient(parent context.Context, options ClientOptions, log logger.Con
 	}
 	ctx, cancel := context.WithCancel(parent)
 	client := &Client{
-		ctx:       ctx,
-		cancel:    cancel,
-		options:   options,
-		logger:    log,
-		server:    server,
-		key:       key,
-		sessionID: sessionID,
+		ctx:        ctx,
+		cancel:     cancel,
+		options:    options,
+		logger:     log,
+		server:     server,
+		key:        key,
+		sessionID:  sessionID,
 		conv:       conv,
 		healthWake: make(chan struct{}, 1),
 		startedAt:  time.Now(),
@@ -160,29 +159,6 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 		return nil, nil, fmt.Errorf("worker %d RTP codec: %w", workerID, err)
 	}
 	packetConn := newObfsPacketConn(allocation, c.server, codec)
-	releaseDTLS, err := sharedTransportSupervisor.acquireDTLS(ctx)
-	if err != nil {
-		_ = packetConn.Close()
-		return nil, nil, fmt.Errorf("worker %d DTLS gate: %w", workerID, err)
-	}
-	dtlsConn, err := dtls.Client(packetConn, c.server, &dtls.Config{
-		InsecureSkipVerify:   true, // Authenticated by the outer key and the inner user attach.
-		CipherSuites:         []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
-		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-		FlightInterval:       500 * time.Millisecond,
-		MTU:                  dtlsMTU,
-	})
-	if err != nil {
-		releaseDTLS()
-		_ = packetConn.Close()
-		return nil, nil, fmt.Errorf("worker %d DTLS initialize: %w", workerID, err)
-	}
-	if err = dtlsConn.HandshakeContext(ctx); err != nil {
-		releaseDTLS()
-		_ = dtlsConn.Close()
-		return nil, nil, fmt.Errorf("worker %d DTLS handshake: %w", workerID, err)
-	}
-	releaseDTLS()
 
 	request, err := encodeAuthRequest(authRequest{
 		SessionID:      c.sessionID,
@@ -195,24 +171,13 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 		Password:       c.options.Password,
 	})
 	if err != nil {
-		_ = dtlsConn.Close()
+		_ = packetConn.Close()
 		return nil, nil, fmt.Errorf("worker %d inner auth encode: %w", workerID, err)
 	}
-	_ = dtlsConn.SetDeadline(time.Now().Add(c.options.WorkerConnectTimeout))
-	if _, err = dtlsConn.Write(request); err != nil {
-		_ = dtlsConn.Close()
-		return nil, nil, fmt.Errorf("worker %d inner auth write: %w", workerID, err)
-	}
-	ack := make([]byte, 14)
-	n, err := dtlsConn.Read(ack)
+	generation, err := exchangeAuth(ctx, packetConn, c.server, request, c.options.WorkerConnectTimeout)
 	if err != nil {
-		_ = dtlsConn.Close()
-		return nil, nil, fmt.Errorf("worker %d inner auth read: %w", workerID, err)
-	}
-	generation, err := decodeAuthAck(ack[:n])
-	if err != nil {
-		_ = dtlsConn.Close()
-		return nil, nil, fmt.Errorf("worker %d inner auth rejected: %w", workerID, err)
+		_ = packetConn.Close()
+		return nil, nil, fmt.Errorf("worker %d inner auth: %w", workerID, err)
 	}
 	expectedGeneration := c.generation.Load()
 	if expectedGeneration == 0 {
@@ -220,17 +185,16 @@ func (c *Client) DialPath(ctx context.Context, workerID uint16) (*quic.Conn, io.
 		expectedGeneration = c.generation.Load()
 	}
 	if generation != expectedGeneration {
-		_ = dtlsConn.Close()
+		_ = packetConn.Close()
 		return nil, nil, errors.New("call vk_parasite: server session state was reset")
 	}
-	_ = dtlsConn.SetDeadline(time.Time{})
 
-	quicConn, err := dialQUIC(ctx, dtlsConn, dtlsConn)
+	quicConn, err := dialQUIC(ctx, packetConn, c.server, packetConn)
 	if err != nil {
-		_ = dtlsConn.Close()
+		_ = packetConn.Close()
 		return nil, nil, fmt.Errorf("worker %d QUIC dial: %w", workerID, err)
 	}
-	return quicConn, dtlsConn, nil
+	return quicConn, packetConn, nil
 }
 
 func (c *Client) RebindNetwork(generation ...uint64) {

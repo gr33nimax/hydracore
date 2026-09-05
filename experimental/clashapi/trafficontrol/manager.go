@@ -44,7 +44,8 @@ type Manager struct {
 	closedConnections       list.List[TrackerMetadata]
 	memory                  uint64
 
-	eventSubscriber *observable.Subscriber[ConnectionEvent]
+	eventSubscriber   *observable.Subscriber[ConnectionEvent]
+	trafficSubscriber *observable.Subscriber[struct{}]
 }
 
 func NewManager() *Manager {
@@ -53,6 +54,17 @@ func NewManager() *Manager {
 
 func (m *Manager) SetEventHook(subscriber *observable.Subscriber[ConnectionEvent]) {
 	m.eventSubscriber = subscriber
+}
+
+// SetTrafficHook receives a coalesced signal whenever aggregate counters change.
+func (m *Manager) SetTrafficHook(subscriber *observable.Subscriber[struct{}]) {
+	m.trafficSubscriber = subscriber
+}
+
+func (m *Manager) notifyTrafficChanged() {
+	if m.trafficSubscriber != nil {
+		m.trafficSubscriber.Emit(struct{}{})
+	}
 }
 
 func (m *Manager) Join(c Tracker) {
@@ -65,6 +77,7 @@ func (m *Manager) Join(c Tracker) {
 			Metadata: metadata,
 		})
 	}
+	m.notifyTrafficChanged()
 }
 
 func (m *Manager) Leave(c Tracker) {
@@ -88,15 +101,18 @@ func (m *Manager) Leave(c Tracker) {
 				ClosedAt: closedAt,
 			})
 		}
+		m.notifyTrafficChanged()
 	}
 }
 
 func (m *Manager) PushUploaded(size int64) {
 	m.uploadTotal.Add(size)
+	m.notifyTrafficChanged()
 }
 
 func (m *Manager) PushDownloaded(size int64) {
 	m.downloadTotal.Add(size)
+	m.notifyTrafficChanged()
 }
 
 func (m *Manager) Total() (up int64, down int64) {

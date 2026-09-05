@@ -29,6 +29,12 @@
   removes the frame retransmission it needed as a datagram. `ingress_workers`,
   `ingress_queue_packets` and `peer_read_queue_packets` are now ignored.
 
+## v1.13.16-extended-hydracore.11-debug.57
+
+- Stop an XHTTP outbound from handing an `http2.StreamError` to whatever dialled
+  through it, which wedged an HTTP/2 client above the transport in a read loop that
+  held a full CPU core for the lifetime of the process.
+
 ## v1.13.16-extended-hydracore.11-debug.52
 
 - Fail fast when a `vk_parasite` relay has no active QUIC path.

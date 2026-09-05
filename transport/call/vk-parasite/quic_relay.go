@@ -461,6 +461,29 @@ func (r *QUICRelay) ActivePaths() int {
 	return len(r.paths)
 }
 
+// SmoothedRTT is the mean RTT reported by active QUIC paths. A zero value means
+// that no path has collected an RTT sample yet.
+func (r *QUICRelay) SmoothedRTT() time.Duration {
+	r.pathsMu.RLock()
+	defer r.pathsMu.RUnlock()
+	var total time.Duration
+	count := 0
+	for _, path := range r.paths {
+		if path.conn == nil {
+			continue
+		}
+		rtt := path.conn.ConnectionStats().SmoothedRTT
+		if rtt > 0 {
+			total += rtt
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / time.Duration(count)
+}
+
 // AttachServerConn adds an accepted server-side QUIC connection to the relay pool.
 func (r *QUICRelay) AttachServerConn(conn *quic.Conn, closer io.Closer) {
 	_, pathCancel := context.WithCancel(r.ctx)

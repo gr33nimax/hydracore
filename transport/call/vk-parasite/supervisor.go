@@ -176,6 +176,9 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 		ObservedAt:   now.UnixMilli(),
 		Applicable:   true,
 	}
+	if c.relay != nil {
+		health.QuicRttMillis = c.relay.SmoothedRTT().Milliseconds()
+	}
 	challenge := HC.CurrentRuntimeChallenge()
 	if challenge == nil && c.sawChallenge.Load() {
 		c.lastFailure.Store(nil)

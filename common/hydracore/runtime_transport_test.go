@@ -98,7 +98,7 @@ func TestTransportHealthJSONIsAdditive(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.JSONEq(t, `{"schema_version":2,"health":{"state":"","active_lanes":0,"total_lanes":0,"demand":false,"last_progress_at":0,"last_aggregate_progress_at":0,"last_inbound_at":0,"observed_at":0,"applicable":true,"runtime_generation":3,"network_generation":4,"failure":{"domain":"AUTH","terminal":true}}}`, string(payload))
+	require.JSONEq(t, `{"schema_version":2,"health":{"state":"","active_lanes":0,"total_lanes":0,"demand":false,"last_progress_at":0,"last_aggregate_progress_at":0,"last_inbound_at":0,"observed_at":0,"applicable":true,"runtime_generation":3,"network_generation":4,"quic_rtt_millis":0,"failure":{"domain":"AUTH","terminal":true}}}`, string(payload))
 }
 
 func TestTransportHealthJSONOmitsNilFailure(t *testing.T) {

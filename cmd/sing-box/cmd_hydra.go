@@ -13,23 +13,23 @@ var hydraCommand = &cobra.Command{
 	Short: "HydraCore runtime metadata",
 }
 
-var hydraCapabilitiesCommand = &cobra.Command{
-	Use:   "capabilities",
-	Short: "Print the HydraCore capability contract",
+var hydraContractCommand = &cobra.Command{
+	Use:   "contract",
+	Short: "Print the HydraCore product contract",
 	Args:  cobra.NoArgs,
 	RunE: func(command *cobra.Command, _ []string) error {
-		if !hydraCapabilitiesJSON {
-			return fmt.Errorf("capabilities output requires --json")
+		if !hydraContractJSON {
+			return fmt.Errorf("contract output requires --json")
 		}
-		_, err := fmt.Fprintln(command.OutOrStdout(), H.CapabilitiesJSON())
+		_, err := fmt.Fprintln(command.OutOrStdout(), H.ContractJSON())
 		return err
 	},
 }
 
-var hydraCapabilitiesJSON bool
+var hydraContractJSON bool
 
 func init() {
-	hydraCapabilitiesCommand.Flags().BoolVar(&hydraCapabilitiesJSON, "json", false, "print JSON capability data")
-	hydraCommand.AddCommand(hydraCapabilitiesCommand)
+	hydraContractCommand.Flags().BoolVar(&hydraContractJSON, "json", false, "print JSON product contract")
+	hydraCommand.AddCommand(hydraContractCommand)
 	mainCommand.AddCommand(hydraCommand)
 }

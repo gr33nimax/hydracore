@@ -11,12 +11,14 @@ import (
 	"time"
 
 	C "github.com/sagernet/sing-box/constant"
+	H "github.com/sagernet/sing-box/common/hydracore"
 	subscriptioncontract "github.com/sagernet/sing-box/contract/subscription"
 
 	"golang.org/x/mod/semver"
 )
 
 const (
+	hydraCoreAPIVersion         = H.APIVersion
 	hydraSubscriptionAPIVersion = "hydra.io/subscription/v2"
 	hydraSubscriptionKind       = "Subscription"
 	hydraSubscriptionMaxBytes   = 12 * 1024 * 1024

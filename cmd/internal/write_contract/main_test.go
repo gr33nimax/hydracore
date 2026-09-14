@@ -7,14 +7,14 @@ import (
 	H "github.com/sagernet/sing-box/common/hydracore"
 )
 
-func TestWriteCapabilitiesMatchesNativeBytes(t *testing.T) {
+func TestWriteContractMatchesNativeBytes(t *testing.T) {
 	var output strings.Builder
-	if err := writeCapabilities(&output); err != nil {
+	if err := writeContract(&output); err != nil {
 		t.Fatal(err)
 	}
 	written := output.String()
-	if written != H.CapabilitiesJSON() {
-		t.Fatal("capability writer changed the native capability bytes")
+	if written != H.ContractJSON() {
+		t.Fatal("contract writer changed the native contract bytes")
 	}
 	if strings.HasSuffix(written, "\n") {
 		t.Fatal("capability writer appended a newline")

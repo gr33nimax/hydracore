@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 
+	H "github.com/sagernet/sing-box/common/hydracore"
 	C "github.com/sagernet/sing-box/constant"
 )
 
@@ -26,6 +27,7 @@ var hydraCoreSourceCommit = "unknown"
 
 type hydraCoreBuildInformation struct {
 	SchemaVersion int `json:"schema_version"`
+	ClientABI     int `json:"client_abi"`
 	Distribution  struct {
 		ID      string `json:"id"`
 		Name    string `json:"name"`
@@ -61,6 +63,7 @@ type hydraCoreLineageEntry struct {
 func HydraCoreBuildInfo() string {
 	var info hydraCoreBuildInformation
 	info.SchemaVersion = 1
+	info.ClientABI = H.ClientABI
 	info.Distribution.ID = "io.hydrabox.hydracore"
 	info.Distribution.Name = "HydraCore"
 	info.Distribution.Version = C.Version

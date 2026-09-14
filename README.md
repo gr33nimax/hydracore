@@ -17,11 +17,11 @@ HydraBox (Android-клиент)          HYDRA-ULTIMATE (VPS)
 routing, DNS, TLS, все штатные протоколы, CLI. Собственная часть HydraCore:
 
 | Компонент | Где | Что делает |
-|---|---|---|
+| --- | --- | --- |
 | Транспорт `vk_parasite` | `transport/call/vk-parasite/` (18 файлов) | QUIC поверх VK-звонков |
 | Регистрация протокола | `protocol/call/` | inbound/outbound `call` в sing-box |
 | Конфиг-опции | `option/call.go` | `"type": "call"` в конфиге sing-box |
-| Контракт возможностей | `common/hydracore/` | capabilities JSON, типы health/failure, generation сети |
+| Контракт Hydra | `common/hydracore/` | минимальный VPS contract, типы health/failure, generation сети |
 | Android-рантайм | `experimental/libbox/` (42 файла) | AAR через gomobile: команды рантайму, снимки, URL-test |
 | Подписки | `contract/subscription/` | Hydra Subscription v2 |
 | Сборочные теги | `include/call*.go` | `with_call_client` / `with_call_server` |
@@ -79,23 +79,19 @@ VPS inbound:
 `workers` принимает только 4/8/12/16/20. `mode` — только `vk_parasite`.
 Креды и join-ссылки — секреты, реальные значения в репозиторий не коммитить.
 
-## Возможности рантайма
+## Контракт рантайма
 
-`sing-box hydra capabilities --json` печатает контракт, который читают
-клиенты:
+`sing-box hydra contract --json` сообщает ровно то, что Hydra Ultimate должна
+проверить перед запуском серверного ядра:
 
 ```json
 {
-  "features": {
-    "call_vk_parasite": true,
-    "call_vk_parasite_quic": true
-  },
-  "protocols": {"call_modes": ["vk_parasite"]}
+  "contract_version": 1,
+  "core_id": "io.hydrabox.hydracore",
+  "role": "vps",
+  "calls_mode": "vk_parasite"
 }
 ```
-
-Клиентская сборка добавляет `call_vk_parasite_client`, серверная —
-`call_vk_parasite_server`.
 
 ## Сборка
 

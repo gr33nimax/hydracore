@@ -52,14 +52,14 @@ type manifest struct {
 	RuntimeEventSchema    schemaRange `json:"runtimeEventSchema"`
 	ConfigSchema          schemaRange `json:"configSchema"`
 	SubscriptionSchema    schemaRange `json:"subscriptionSchema"`
-	CapabilitiesSHA256    string      `json:"capabilitiesSha256"`
+	ContractSHA256        string      `json:"contractSha256"`
 	KeyID                 string      `json:"keyId"`
 	Artifacts             []artifact  `json:"artifacts"`
 }
 
 var (
 	aarPath         string
-	capabilities    string
+	contract        string
 	outputDirectory string
 	version         string
 	sourceCommit    string
@@ -72,7 +72,7 @@ var (
 
 func init() {
 	flag.StringVar(&aarPath, "aar", "libbox.aar", "HydraCore Android AAR")
-	flag.StringVar(&capabilities, "capabilities", "", "client capabilities JSON")
+	flag.StringVar(&contract, "contract", "", "client contract JSON")
 	flag.StringVar(&outputDirectory, "out", "dist", "bundle output directory")
 	flag.StringVar(&version, "version", "", "HydraCore version")
 	flag.StringVar(&sourceCommit, "source-commit", "", "HydraCore source commit")
@@ -105,12 +105,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("published-at: %w", err)
 	}
-	capabilityBytes, err := os.ReadFile(capabilities)
+	contractBytes, err := os.ReadFile(contract)
 	if err != nil {
-		return fmt.Errorf("read capabilities: %w", err)
+		return fmt.Errorf("read contract: %w", err)
 	}
-	if !json.Valid(capabilityBytes) {
-		return fmt.Errorf("capabilities are not valid JSON")
+	if !json.Valid(contractBytes) {
+		return fmt.Errorf("contract is not valid JSON")
 	}
 	if err = os.MkdirAll(outputDirectory, 0o755); err != nil {
 		return err
@@ -119,7 +119,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	capabilityDigest := sha256.Sum256(capabilityBytes)
+	contractDigest := sha256.Sum256(contractBytes)
 	document := manifest{
 		SchemaVersion:         1,
 		DistributionID:        distributionID,
@@ -134,7 +134,7 @@ func run() error {
 		RuntimeEventSchema:    schemaRange{Min: 1, Max: 1},
 		ConfigSchema:          schemaRange{Min: 1, Max: 1},
 		SubscriptionSchema:    schemaRange{Min: 2, Max: 2},
-		CapabilitiesSHA256:    hex.EncodeToString(capabilityDigest[:]),
+		ContractSHA256:        hex.EncodeToString(contractDigest[:]),
 		KeyID:                 keyID,
 		Artifacts:             artifacts,
 	}

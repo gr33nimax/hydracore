@@ -149,16 +149,16 @@ jobs:
           client_build_tags="${LIBBOX_BUILD_TAGS//with_call/with_call_client}"
           go run -tags "$client_build_tags" \
             -ldflags "-X github.com/sagernet/sing-box/constant.Version=${version}" \
-            ./cmd/internal/write_capabilities \
-            > dist/hydracore-client-capabilities.json
-          jq --exit-status --arg version "$version" \
-            '.identity.core_version == $version and .identity.role == "client"' \
-            dist/hydracore-client-capabilities.json >/dev/null
+            ./cmd/internal/write_contract \
+            > dist/hydracore-client-contract.json
+          jq --exit-status \
+            '.contract_version == 1 and .core_id == "io.hydrabox.hydracore" and .role == "client"' \
+            dist/hydracore-client-contract.json >/dev/null
           python3 - <<'PY'
           from pathlib import Path
-          content = Path("dist/hydracore-client-capabilities.json").read_bytes()
+          content = Path("dist/hydracore-client-contract.json").read_bytes()
           if not content or content.endswith(b"\n"):
-              raise SystemExit("client capability bytes must match the native string exactly")
+              raise SystemExit("client contract bytes must match the native string exactly")
           PY
       - name: Upload libbox artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -209,15 +209,13 @@ jobs:
           chmod 0755 package/sing-box
           if [[ "${{ matrix.arch }}" == "amd64" ]]; then
             package/sing-box version | grep -F "$version"
-            package/sing-box hydra capabilities --json > capabilities.json
+            package/sing-box hydra contract --json > contract.json
             jq --exit-status \
-              '.identity.core_id == "io.hydrabox.hydracore" and
-               .identity.role == "vps" and
-               .features.call_vk_parasite == true and
-               .features.call_vk_parasite_client == false and
-               .features.call_vk_parasite_server == true and
-               .protocols.call_modes == ["vk_parasite"]' \
-              capabilities.json >/dev/null
+              '.contract_version == 1 and
+               .core_id == "io.hydrabox.hydracore" and
+               .role == "vps" and
+               .calls_mode == "vk_parasite"' \
+              contract.json >/dev/null
           fi
           tar \
             --sort=name \
@@ -279,13 +277,11 @@ jobs:
           mkdir -p verify-linux
           tar -xzf dist/hydracore-vps-linux-amd64.tar.gz -C verify-linux
           verify-linux/sing-box version | grep -F "$hydracore_version"
-          verify-linux/sing-box hydra capabilities --json | jq --exit-status \
-            '.identity.role == "vps" and
-             .features.call_vk_parasite == true and
-             .features.call_vk_parasite_quic == true and
-             .features.call_vk_parasite_client == false and
-             .features.call_vk_parasite_server == true and
-             .protocols.call_modes == ["vk_parasite"]' >/dev/null
+          verify-linux/sing-box hydra contract --json | jq --exit-status \
+            '.contract_version == 1 and
+             .core_id == "io.hydrabox.hydracore" and
+             .role == "vps" and
+             .calls_mode == "vk_parasite"' >/dev/null
       - name: Build and sign HydraCore bundle manifest
         shell: bash
         env:
@@ -300,7 +296,7 @@ jobs:
           published_at="$(git show -s --format=%cI HEAD)"
           go run ./cmd/internal/build_core_bundle \
             -aar dist/hydracore-client-libbox.aar \
-            -capabilities dist/hydracore-client-capabilities.json \
+            -contract dist/hydracore-client-contract.json \
             -out dist \
             -version "$version" \
             -source-commit "$GITHUB_SHA" \
@@ -309,7 +305,7 @@ jobs:
             -key-id "$key_id" \
             -release-sequence "$GITHUB_RUN_NUMBER" \
             -private-key "$HYDRACORE_ED25519_PRIVATE_KEY"
-          rm -f dist/hydracore-client-capabilities.json
+          rm -f dist/hydracore-client-contract.json
       - name: Inventory gate
         shell: bash
         run: |

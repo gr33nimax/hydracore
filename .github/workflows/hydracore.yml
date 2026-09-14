@@ -67,18 +67,29 @@ jobs:
           cache: true
       - name: Verify baseline
         run: bash release/verify_upstream_baseline.sh
+      - name: Resolve test link flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "LDFLAGS_SHARED=$(tr -d '\r\n' < release/LDFLAGS)" >> "$GITHUB_ENV"
       - name: Test
-        run: go test ./...
+        shell: bash
+        run: go test -exec sudo -ldflags "$LDFLAGS_SHARED" ./...
       - name: Test WireGuard libbox config gate
-        run: go test -tags with_wireguard ./experimental/libbox
+        shell: bash
+        run: go test -tags with_wireguard -ldflags "$LDFLAGS_SHARED" ./experimental/libbox
       - name: Test client Calls role
-        run: go test -tags with_call_client ./experimental/libbox ./protocol/call ./transport/call/... ./include
+        shell: bash
+        run: go test -tags with_call_client -ldflags "$LDFLAGS_SHARED" ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Test VPS Calls role
-        run: go test -tags with_call_server ./experimental/libbox ./protocol/call ./transport/call/... ./include
+        shell: bash
+        run: go test -tags with_call_server -ldflags "$LDFLAGS_SHARED" ./experimental/libbox ./protocol/call ./transport/call/... ./include
       - name: Race test Call transport
-        run: go test -race ./transport/call/vk-parasite ./transport/call/tunnel
+        shell: bash
+        run: go test -race -ldflags "$LDFLAGS_SHARED" ./transport/call/vk-parasite ./transport/call/tunnel
       - name: Race test HydraCore inherited runtime paths
-        run: go test -race ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
+        shell: bash
+        run: go test -race -ldflags "$LDFLAGS_SHARED" ./common/urltest ./daemon ./experimental/libbox ./protocol/vless/... ./transport/v2rayxhttp
 
   android:
     name: Build verified Android AAR
@@ -382,3 +393,37 @@ jobs:
               --prerelease=false \
               --latest
           fi
+      - name: Prune old releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The debug channel is a rolling window, not an archive: keep the ten
+          # most recent prereleases and drop the rest together with their tags.
+          keep=10
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,createdAt,isPrerelease \
+            --jq 'sort_by(.createdAt) | reverse | map(select(.isPrerelease)) | .[].tagName' \
+            > prereleases.txt
+          tail -n +$((keep + 1)) prereleases.txt | while read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "Removing superseded prerelease ${tag}"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          done
+          # A draft that never became a release is a leftover. Drop the ones
+          # older than a week; a draft from this run is left alone because the
+          # stable job publishes it in the same run.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,createdAt,isDraft \
+            --jq 'sort_by(.createdAt) | reverse | map(select(.isDraft)) | .[].tagName' \
+            > drafts.txt
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            created="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json createdAt --jq '.createdAt')"
+            age_days=$(( ( $(date -u +%s) - $(date -u -d "$created" +%s) ) / 86400 ))
+            if [ "$age_days" -ge 7 ]; then
+              echo "Removing abandoned draft ${tag} (${age_days} days old)"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            fi
+          done < drafts.txt

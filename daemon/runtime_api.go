@@ -318,7 +318,7 @@ func equalURLTestSessions(left []*URLTestSession, right []*URLTestSession) bool 
 	return true
 }
 
-func (s *StartedService) StartURLTest(_ context.Context, request *URLTestRequest) (*URLTestSession, error) {
+func (s *StartedService) StartURLTest(_ context.Context, request *StartURLTestRequest) (*URLTestSession, error) {
 	return s.startURLTest(request)
 }
 

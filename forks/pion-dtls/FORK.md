@@ -6,15 +6,15 @@ filesystem `replace` in the root `go.mod`; there is no external repository and n
 ## Upstream this was taken from
 
 | | |
-|---|---|
+| --- | --- |
 | module | `github.com/pion/dtls/v3` |
-| version | `v3.1.2` |
-| commit | `a621789e8dba850944500deda8eaa1c0dc4d92f0` (`refs/tags/v3.1.2`) |
-| tagged | 2026-02-12 |
+| version | `v3.1.5` |
+| commit | `9c642f885371954b6010f9605e963d54f654e917` (`refs/tags/v3.1.5`) |
+| tagged | 2026-08-27 |
 | module zip | `h1:gqEdOUXLtCGW+afsBLO0LtDD8GnuBBjEy6HRtyofZTc=` |
 | go.mod | `h1:Hw/igcX4pdY69z1Hgv5x7wJFrUkdgHwAn/Q/uo7YHRo=` |
 
-To resync: fetch the new tag, diff it against `v3.1.2`, and reapply the changes below. Nothing
+To resync: fetch the new tag, diff it against `v3.1.5`, and reapply the changes below. Nothing
 else in the tree has been touched, so a three-way merge against that commit is enough.
 
 ## Local changes

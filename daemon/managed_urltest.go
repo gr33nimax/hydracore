@@ -73,7 +73,7 @@ type urlTestProbe func(ctx context.Context, link string, outbound adapter.Outbou
 
 type urlTestResultHandler func(target urlTestTarget, delay uint16, err error)
 
-func (s *StartedService) startURLTest(request *URLTestRequest) (*URLTestSession, error) {
+func (s *StartedService) startURLTest(request *StartURLTestRequest) (*URLTestSession, error) {
 	if request == nil {
 		return nil, E.New("missing URL test request")
 	}
@@ -146,7 +146,7 @@ func (s *StartedService) startURLTest(request *URLTestRequest) (*URLTestSession,
 	return result, nil
 }
 
-func normalizeURLTestOptions(request *URLTestRequest) urlTestSessionOptions {
+func normalizeURLTestOptions(request *StartURLTestRequest) urlTestSessionOptions {
 	timeout := durationFromMilliseconds(request.TimeoutMillis, defaultURLTestTimeout)
 	timeout = clampDuration(timeout, minimumURLTestTimeout, maximumURLTestTimeout)
 	deadline := durationFromMilliseconds(request.DeadlineMillis, defaultURLTestDeadline)

@@ -32,7 +32,7 @@ func (s *StartedService) RunStandaloneURLTest(
 	if groupTag == "" || targetTag == "" {
 		return nil, E.New("standalone URL test requires group and target tags")
 	}
-	options := normalizeURLTestOptions(&URLTestRequest{
+	options := normalizeURLTestOptions(&StartURLTestRequest{
 		UrlTestUrl:     strings.TrimSpace(link),
 		TimeoutMillis:  timeoutMillis,
 		DeadlineMillis: deadlineMillis,

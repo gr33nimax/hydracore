@@ -111,10 +111,28 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			logger.ErrorContext(ctx, E.New("failed to prepare TLS config: ", err))
 			return
 		}
-		endpoint, err := appConfig.SelectEndpointFromConfig(options.UseHTTP2, options.UseIPv6, 443)
-		if err != nil {
-			logger.ErrorContext(ctx, E.New("failed to select endpoint: ", err))
-			return
+		var endpoint net.Addr
+		if options.Address != "" {
+			endpointPort := options.Port
+			if endpointPort == 0 {
+				endpointPort = 443
+			}
+			endpointIP := net.ParseIP(options.Address)
+			if endpointIP == nil {
+				logger.ErrorContext(ctx, E.New("invalid endpoint address: ", options.Address))
+				return
+			}
+			if options.UseHTTP2 {
+				endpoint = &net.TCPAddr{IP: endpointIP, Port: int(endpointPort)}
+			} else {
+				endpoint = &net.UDPAddr{IP: endpointIP, Port: int(endpointPort)}
+			}
+		} else {
+			endpoint, err = appConfig.SelectEndpointFromConfig(options.UseHTTP2, options.UseIPv6, 443)
+			if err != nil {
+				logger.ErrorContext(ctx, E.New("failed to select endpoint: ", err))
+				return
+			}
 		}
 		var udpTimeout time.Duration
 		if options.UDPTimeout != 0 {
@@ -155,7 +173,9 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 				Name:   options.Name,
 				CreateDialer: func(interfaceName string) N.Dialer {
 					return common.Must1(dialer.NewDefault(ctx, option.DialerOptions{
-						BindInterface: interfaceName,
+						AbstractDialerOptions: option.AbstractDialerOptions{
+							BindInterface: interfaceName,
+						},
 					}))
 				},
 				Dialer: outboundDialer,
@@ -300,6 +320,11 @@ func (w *Outbound) createConfig() (*Config, error) {
 		profile, err = api.CreateProfile(w.ctx, wgPrivateKey.PublicKey().String())
 		if err != nil {
 			return nil, err
+		}
+	}
+	if w.options.Profile.LicenseKey != "" && profile.Account.License != w.options.Profile.LicenseKey {
+		if _, err = api.UpdateAccount(w.ctx, profile.Token, profile.ID, w.options.Profile.LicenseKey); err != nil {
+			return nil, E.New("failed to apply license key: ", err)
 		}
 	}
 	privateKey, publicKey, err := masque.GenerateEcKeyPair()

@@ -81,7 +81,9 @@ func (s *StandaloneURLTestSession) Run(
 		Handler:           standalonePlatformHandler{},
 		Debug:             sDebug,
 		LogMaxLines:       sLogMaxLines,
-		OOMKiller:         memoryLimitEnabled,
+		OOMKillerEnabled:  sOOMKillerEnabled,
+		OOMKillerDisabled: sOOMKillerDisabled,
+		OOMMemoryLimit:    uint64(sOOMMemoryLimit),
 		StandaloneURLTest: true,
 	})
 	defer startedService.Close()
@@ -91,7 +93,7 @@ func (s *StandaloneURLTestSession) Run(
 		}
 	}()
 
-	if err := startedService.StartOrReloadService(configContent, nil); err != nil {
+	if err := startedService.StartOrReloadService(s.ctx, configContent, nil); err != nil {
 		return nil, err
 	}
 	result, err := startedService.RunStandaloneURLTest(
@@ -135,6 +137,10 @@ func (s *StandaloneURLTestSession) Close() {
 }
 
 type standalonePlatformHandler struct{}
+
+func (standalonePlatformHandler) ConnectSSHAgent() (int32, error) {
+	return 0, E.New("ssh agent is not available")
+}
 
 func (standalonePlatformHandler) ServiceStop() error { return nil }
 

@@ -32,15 +32,16 @@ type Adapter struct {
 	outboundsByTag map[string]adapter.Outbound
 	ticker         *time.Ticker
 	checking       atomic.Bool
-	history        adapter.URLTestHistoryStorage
+	history        *urltest.HistoryStorage
 	callbackAccess sync.Mutex
 	callbacks      list.List[adapter.ProviderUpdateCallback]
 
-	link         string
-	enabled      bool
-	removeEmojis bool
-	timeout      time.Duration
-	interval     time.Duration
+	link                  string
+	enabled               bool
+	removeEmojis          bool
+	overrideDialerOptions *option.DialerOptions
+	timeout               time.Duration
+	interval              time.Duration
 }
 
 func NewAdapter(ctx context.Context, router adapter.Router, outbound adapter.OutboundManager, logFactory log.Factory, logger log.ContextLogger, providerTag string, providerType string, options option.ProviderHealthCheckOptions) Adapter {
@@ -75,14 +76,14 @@ func (a *Adapter) SetRemoveEmojis(remove bool) {
 	a.removeEmojis = remove
 }
 
+func (a *Adapter) SetOverrideDialerOptions(options *option.DialerOptions) {
+	a.overrideDialerOptions = options
+}
+
 func (a *Adapter) Start() error {
-	a.history = service.FromContext[adapter.URLTestHistoryStorage](a.ctx)
+	a.history = service.PtrFromContext[urltest.HistoryStorage](a.ctx)
 	if a.history == nil {
-		if clashServer := service.FromContext[adapter.ClashServer](a.ctx); clashServer != nil {
-			a.history = clashServer.HistoryStorage()
-		} else {
-			a.history = urltest.NewHistoryStorage()
-		}
+		a.history = urltest.NewHistoryStorage()
 	}
 	go a.loopCheck()
 	return nil
@@ -123,6 +124,11 @@ func (a *Adapter) UpdateOutbounds(oldOpts []option.Outbound, newOpts []option.Ou
 		oldOptByTag[opt.Tag] = opt
 	}
 	for i, opt := range newOpts {
+		if a.overrideDialerOptions != nil {
+			if wrapper, ok := opt.Options.(option.DialerOptionsWrapper); ok {
+				wrapper.ReplaceDialerOptions(*a.overrideDialerOptions)
+			}
+		}
 		var tag string
 		if opt.Tag != "" {
 			tag = F.ToString(a.providerTag, "/", opt.Tag)

@@ -5,12 +5,15 @@ package dtls
 
 import (
 	"crypto/tls"
+	"net"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/dtls/v3/pkg/crypto/selfsign"
 	dtlsnet "github.com/pion/dtls/v3/pkg/net"
+	"github.com/pion/dtls/v3/pkg/protocol"
 	"github.com/pion/transport/v4/dpipe"
 	"github.com/stretchr/testify/require"
 )
@@ -266,6 +269,14 @@ func TestInvalidNumericOptionsReturnError(t *testing.T) {
 		_, err = buildServerConfig(WithExtendedMasterSecret(ExtendedMasterSecretType(100)))
 		require.ErrorIs(t, err, errInvalidExtendedMasterSecretType)
 	})
+
+	t.Run("InvalidVersions", func(t *testing.T) {
+		_, err := buildClientConfig(withMinVersion(protocol.Version{}))
+		require.ErrorIs(t, err, errUnsupportedProtocolVersion)
+
+		_, err = buildClientConfig(withMaxVersion(protocol.Version{}))
+		require.ErrorIs(t, err, errUnsupportedProtocolVersion)
+	})
 }
 
 // TestDefaultsAreApplied verifies that defaults are applied before options.
@@ -359,12 +370,18 @@ func TestValidOptionsSucceed(t *testing.T) {
 			WithCertificates(cert),
 			WithClientAuth(RequireAndVerifyClientCert),
 			WithInsecureSkipVerifyHello(true),
+			WithListenConfig(net.ListenConfig{
+				Control: func(network, address string, c syscall.RawConn) error {
+					return nil
+				},
+			}),
 		)
 		require.NoError(t, err)
 
 		require.Len(t, config.Certificates, 1)
 		require.Equal(t, RequireAndVerifyClientCert, config.ClientAuth)
 		require.True(t, config.InsecureSkipVerifyHello)
+		require.NotNil(t, config.listenConfig.Control)
 	})
 }
 

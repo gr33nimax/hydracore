@@ -5,7 +5,6 @@ import (
 	"time"
 
 	C "github.com/sagernet/sing-box/constant"
-	"github.com/sagernet/sing-tun"
 
 	"github.com/stretchr/testify/require"
 )
@@ -19,9 +18,9 @@ func TestRejectFloodCounter(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		err := action.Error(nil)
-		require.ErrorIs(t, err, tun.ErrReset, "отказ до порога обязан сбрасывать соединение, событие %d", i)
+		require.ErrorIs(t, err, ErrReset, "отказ до порога обязан сбрасывать соединение, событие %d", i)
 	}
-	require.ErrorIs(t, action.Error(nil), tun.ErrDrop, "за порогом отказ обязан стать тихим")
+	require.ErrorIs(t, action.Error(nil), ErrDrop, "за порогом отказ обязан стать тихим")
 	require.Len(t, action.dropCounter, 51)
 
 	// Записи старше окна обязаны уходить, и отказ снова становится сбросом.
@@ -31,7 +30,7 @@ func TestRejectFloodCounter(t *testing.T) {
 		action.dropCounter[index] = stale
 	}
 	action.dropAccess.Unlock()
-	require.ErrorIs(t, action.Error(nil), tun.ErrReset, "после истечения окна порог обязан сброситься")
+	require.ErrorIs(t, action.Error(nil), ErrReset, "после истечения окна порог обязан сброситься")
 	require.Len(t, action.dropCounter, 1)
 }
 
@@ -59,7 +58,7 @@ func TestRejectNoDropSkipsTheCounter(t *testing.T) {
 	t.Parallel()
 	action := &RuleActionReject{Method: C.RuleActionRejectMethodDefault, NoDrop: true}
 	for i := 0; i < 100; i++ {
-		require.ErrorIs(t, action.Error(nil), tun.ErrReset)
+		require.ErrorIs(t, action.Error(nil), ErrReset)
 	}
 	require.Empty(t, action.dropCounter)
 }

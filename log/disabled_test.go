@@ -33,6 +33,8 @@ func newDisabledFactoryForTest(t *testing.T, writer *recordingPlatformWriter) Fa
 		PlatformWriter: writer,
 	})
 	require.NoError(t, err)
+	require.NoError(t, factory.Start())
+	t.Cleanup(func() { _ = factory.Close() })
 	return factory
 }
 
@@ -135,6 +137,8 @@ func TestAFactoryStartedEnabledCanTurnOffAndBackOn(t *testing.T) {
 		PlatformWriter: writer,
 	})
 	require.NoError(t, err)
+	require.NoError(t, factory.Start())
+	t.Cleanup(func() { _ = factory.Close() })
 
 	logger := factory.NewLogger("test")
 	logger.Error("while on")

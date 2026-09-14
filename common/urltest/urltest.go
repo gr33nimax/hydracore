@@ -18,12 +18,10 @@ import (
 	"github.com/sagernet/sing/common/observable"
 )
 
-var _ adapter.URLTestHistoryStorage = (*HistoryStorage)(nil)
-
 type HistoryStorage struct {
 	access       sync.RWMutex
 	delayHistory map[string]*adapter.URLTestHistory
-	updateHook   *observable.Subscriber[struct{}]
+	updateHooks  []*observable.Subscriber[struct{}]
 }
 
 func NewHistoryStorage() *HistoryStorage {
@@ -32,10 +30,16 @@ func NewHistoryStorage() *HistoryStorage {
 	}
 }
 
-func (s *HistoryStorage) SetHook(hook *observable.Subscriber[struct{}]) {
+func (s *HistoryStorage) AddUpdateHook(hook *observable.Subscriber[struct{}]) {
 	s.access.Lock()
 	defer s.access.Unlock()
-	s.updateHook = hook
+	s.updateHooks = append(s.updateHooks, hook)
+}
+
+func (s *HistoryStorage) NotifyUpdated() {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	s.notifyUpdated()
 }
 
 func (s *HistoryStorage) LoadURLTestHistory(tag string) *adapter.URLTestHistory {
@@ -55,9 +59,8 @@ func (s *HistoryStorage) LoadURLTestHistory(tag string) *adapter.URLTestHistory 
 func (s *HistoryStorage) DeleteURLTestHistory(tag string) {
 	s.access.Lock()
 	delete(s.delayHistory, tag)
-	updateHook := s.updateHook
 	s.access.Unlock()
-	notifyUpdated(updateHook)
+	s.notifyUpdated()
 }
 
 func (s *HistoryStorage) StoreURLTestHistory(tag string, history *adapter.URLTestHistory) {
@@ -68,13 +71,12 @@ func (s *HistoryStorage) StoreURLTestHistory(tag string, history *adapter.URLTes
 	historyCopy := *history
 	s.access.Lock()
 	s.delayHistory[tag] = &historyCopy
-	updateHook := s.updateHook
 	s.access.Unlock()
-	notifyUpdated(updateHook)
+	s.notifyUpdated()
 }
 
-func notifyUpdated(updateHook *observable.Subscriber[struct{}]) {
-	if updateHook != nil {
+func (s *HistoryStorage) notifyUpdated() {
+	for _, updateHook := range s.updateHooks {
 		updateHook.Emit(struct{}{})
 	}
 }
@@ -82,7 +84,7 @@ func notifyUpdated(updateHook *observable.Subscriber[struct{}]) {
 func (s *HistoryStorage) Close() error {
 	s.access.Lock()
 	defer s.access.Unlock()
-	s.updateHook = nil
+	s.updateHooks = nil
 	return nil
 }
 

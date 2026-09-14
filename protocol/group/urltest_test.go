@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -82,6 +83,7 @@ func (o *countingOutbound) DialContext(context.Context, string, M.Socksaddr) (ne
 
 func TestURLTestRequestCancellationStopsChildProbe(t *testing.T) {
 	groupCtx, stopGroup := context.WithCancel(t.Context())
+	groupCtx = service.ContextWithPtr(groupCtx, U.NewHistoryStorage())
 	defer stopGroup()
 	outbound := &cancellationObservingOutbound{
 		urlTestSelectionOutbound: urlTestSelectionOutbound{tag: "blocking"},
@@ -127,6 +129,7 @@ func TestURLTestRequestCancellationStopsChildProbe(t *testing.T) {
 
 func TestURLTestProbeTimeoutBoundsTheChildProbe(t *testing.T) {
 	groupCtx, stopGroup := context.WithCancel(t.Context())
+	groupCtx = service.ContextWithPtr(groupCtx, U.NewHistoryStorage())
 	defer stopGroup()
 	outbound := &cancellationObservingOutbound{
 		urlTestSelectionOutbound: urlTestSelectionOutbound{tag: "blocking"},
@@ -164,6 +167,7 @@ func TestURLTestProbeTimeoutBoundsTheChildProbe(t *testing.T) {
 
 func TestURLTestProbeConcurrencyLimitsParallelProbes(t *testing.T) {
 	groupCtx, stopGroup := context.WithCancel(t.Context())
+	groupCtx = service.ContextWithPtr(groupCtx, U.NewHistoryStorage())
 	defer stopGroup()
 	const probeCount = 4
 	var access sync.Mutex
@@ -208,7 +212,7 @@ func TestURLTestProbeConcurrencyLimitsParallelProbes(t *testing.T) {
 
 func TestURLTestProbeBudgetDefaults(t *testing.T) {
 	group, err := NewURLTestGroup(
-		t.Context(),
+		service.ContextWithPtr(t.Context(), U.NewHistoryStorage()),
 		&urlTestOutboundManager{outbound: &urlTestSelectionOutbound{tag: "default"}},
 		log.NewNOPFactory().Logger(),
 		[]adapter.Outbound{&urlTestSelectionOutbound{tag: "default"}},

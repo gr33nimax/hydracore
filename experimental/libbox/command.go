@@ -8,4 +8,5 @@ const (
 	CommandConnections
 	CommandRuntimeEvents
 	CommandURLTestEvents
+	CommandOutbounds
 )

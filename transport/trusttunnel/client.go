@@ -17,11 +17,10 @@ import (
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
-	"github.com/sagernet/sing/common/bufio"
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ntp"
-	"github.com/sagernet/sing/common/logger"
 
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
@@ -101,7 +100,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				if err != nil {
 					return nil, err
 				}
-				conn, err := qtls.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), options.TLSConfig, cfg)
+				conn, err := qtls.DialEarly(ctx, udpConn, options.TLSConfig, cfg)
 				if err != nil {
 					return nil, err
 				}

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.2
+
+- Restored the `Libbox.setMemoryLimit` entry point the Android application calls. The
+  function was dropped in the 2.7.1 merge because no Go code used it, but the client
+  reaches it through gomobile and could not compile against the published AAR without
+  it. Behaviour is unchanged: GOGC stays at its default and the limit is a soft heap
+  ceiling, while the upstream OOM service keeps its own path.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.1
 
 - Moved the core to `sing-box-extended v1.14.0-extended-2.7.1`. The Hydra layer keeps

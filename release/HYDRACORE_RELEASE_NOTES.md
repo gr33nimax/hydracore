@@ -17,6 +17,13 @@ Release names now carry the upstream base and an integration cycle:
 `<upstream>-hydracore.<cycle>-debug.<iteration>`. The cycle increments when the
 upstream base changes, the iteration per build inside a cycle.
 
+debug.2 restores the memory-limit entry point the Android application calls. The
+function was dropped in the merge because no Go code used it, but the client
+reaches it through gomobile as `Libbox.setMemoryLimit`; without it a client does
+not compile against the published AAR. Its behaviour is unchanged: GOGC stays at
+its default and the limit is a soft heap ceiling, while the upstream OOM service
+keeps its own path.
+
 This prerelease ships the protocol-v10 `vk_parasite` transport: QUIC over four
 required VK/TURN paths, with four paths by default and up to twenty workers in
 multiples of four.

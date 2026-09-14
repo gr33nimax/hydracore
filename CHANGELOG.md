@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.1
+
+- Moved the core to `sing-box-extended v1.14.0-extended-2.7.1`. The Hydra layer keeps
+  its behaviour across the merge: the Calls runtime, the runtime event stream, the TURN
+  edge store, the URL-test probe budget and the release tooling, while the upstream
+  documentation and CI the distribution does not ship stay deleted.
+- The client ABI is now 2. The complete AmneziaWG 3.1 configuration is accepted,
+  including `random_trailers` and `disable_cookies`, which the pinned `wireguard-go`
+  fork already understands at the UAPI level. An application built against ABI 1
+  refuses to run with this core instead of failing to parse a 3.1 profile.
+- Release names now carry the upstream base and an integration cycle:
+  `<upstream>-hydracore.<cycle>-debug.<iteration>`.
+- The vendored `pion/dtls` fork is resynced to v3.1.5 with its allocation patch
+  re-applied; `pion/turn` stays on upstream v4.1.4.
+
 ## v1.13.16-extended-hydracore.11-debug.61
 
 - The TURN edge store re-reads the current runtime generation inside the same critical
@@ -58,7 +73,6 @@
   capability, so a client can measure the edge with a single STUN Binding
   instead of raising a transport. The store answers from the file on every
   read, so an edge recorded by a later process is visible to the next question.
-
 
 ## v1.13.16-extended-hydracore.11-debug.58
 

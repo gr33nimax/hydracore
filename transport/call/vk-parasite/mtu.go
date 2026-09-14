@@ -60,13 +60,15 @@ const (
 
 	// Порог, на котором SendDatagram отдаёт DatagramTooLargeError.
 	//
-	// Проверено по sagernet/quic-go v0.59.0-sing-box-mod.4: SendDatagram
-	// пропускает min(MaxDataLen(16383), currentMTUEstimate), а при
-	// DisablePathMTUDiscovery оценка остаётся
+	// Проверено по sagernet/quic-go v0.59.0-sing-box-mod.4 и перепроверено на
+	// v0.61.0-sing-box-mod.7 (connection.go): формула не менялась. SendDatagram
+	// пропускает min(MaxDataLen(peerMaxDatagramFrameSize), maxPayloadSizeEstimate),
+	// а при DisablePathMTUDiscovery оценка остаётся
 	// estimateMaxPayloadSize(InitialPacketSize) = size-1-20-16 и никогда не
 	// растёт. Оценка берёт худший легальный connection ID (20) независимо от
 	// того, какой выдан на самом деле, поэтому она ниже физического бюджета — и
-	// именно она ограничивает фрейм.
+	// именно она ограничивает фрейм. Новые для mod.7 параметры
+	// (OmitMaxDatagramFrameSize, AssumePeerMaxDatagramFrameSize) не задаются.
 	quicSendDatagramLimit = quicPacketSize - 1 - 20 - 16
 
 	// Бюджет payload одного DATAGRAM-фрейма.

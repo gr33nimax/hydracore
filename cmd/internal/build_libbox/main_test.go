@@ -8,9 +8,9 @@ import (
 )
 
 func TestResolveBuildVersionPreservesExplicitReleaseIdentity(t *testing.T) {
-	const expected = "v1.13.16-extended-hydracore.11-debug.16"
+	const expected = "v1.14.0-extended-2.7.1-hydracore.12-debug.1"
 	actual := resolveBuildVersion(expected, func() (string, error) {
-		return "1.13.16-extended-hydracore.11-debug.16", nil
+		return "1.14.0-extended-2.7.1-hydracore.12-debug.1", nil
 	})
 	require.Equal(t, expected, actual)
 }

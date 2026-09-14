@@ -1,5 +1,22 @@
 # HydraCore debug release notes
 
+This release moves the core to `sing-box-extended v1.14.0-extended-2.7.1`. The
+Hydra layer is unchanged in behaviour: the merge keeps the Calls runtime, the
+runtime event stream, the TURN edge store and the release tooling, and drops the
+upstream documentation and CI the distribution does not ship. The vendored
+`pion/dtls` fork is resynced to v3.1.5 with its allocation patch re-applied;
+`pion/turn` stays on the upstream v4.1.4.
+
+The client ABI is now 2. The core accepts the complete AmneziaWG 3.1
+configuration, including `random_trailers` and `disable_cookies`, which the
+pinned `wireguard-go` fork already understands at the UAPI level; an application
+built against ABI 1 refuses to run with this core instead of failing to parse a
+3.1 profile at tunnel start.
+
+Release names now carry the upstream base and an integration cycle:
+`<upstream>-hydracore.<cycle>-debug.<iteration>`. The cycle increments when the
+upstream base changes, the iteration per build inside a cycle.
+
 This prerelease ships the protocol-v10 `vk_parasite` transport: QUIC over four
 required VK/TURN paths, with four paths by default and up to twenty workers in
 multiples of four.

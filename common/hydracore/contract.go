@@ -5,8 +5,12 @@ import "encoding/json"
 const (
 	APIVersion      = 2
 	ContractVersion = 1
-	ClientABI       = 1
-	CoreID          = "io.hydrabox.hydracore"
+	// ClientABI is the versioned contract with the Android application. It moves
+	// to 2 with the AWG 3.1 configuration fields: the core now accepts
+	// random_trailers and disable_cookies, and a core that predates them fails to
+	// parse a 3.1 profile, so the app must refuse the mismatch up front.
+	ClientABI = 2
+	CoreID    = "io.hydrabox.hydracore"
 )
 
 type ProductContract struct {

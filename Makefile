@@ -1,29 +1,29 @@
 # pi-lens-ignore: SC2283 (make assignment syntax; the file is LF in index, HEAD and worktree)
-NAME = sing-box
-COMMIT = $(shell git rev-parse --short HEAD)
-TAGS ?= $(shell cat release/DEFAULT_BUILD_TAGS_OTHERS)
+NAME=sing-box
+COMMIT=$(shell git rev-parse --short HEAD)
+TAGS?=$(shell cat release/DEFAULT_BUILD_TAGS_OTHERS)
 
-GOHOSTOS = $(shell go env GOHOSTOS)
-GOHOSTARCH = $(shell go env GOHOSTARCH)
+GOHOSTOS=$(shell go env GOHOSTOS)
+GOHOSTARCH=$(shell go env GOHOSTARCH)
 VERSION=$(shell CGO_ENABLED=0 GOOS=$(GOHOSTOS) GOARCH=$(GOHOSTARCH) go run github.com/sagernet/sing-box/cmd/internal/read_tag@latest)
 
-LDFLAGS_SHARED = $(shell cat release/LDFLAGS)
-PARAMS = -v -trimpath -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$(VERSION)' $(LDFLAGS_SHARED) -s -w -buildid="
-MAIN_PARAMS = $(PARAMS) -tags "$(TAGS)"
-MAIN = ./cmd/sing-box
-PREFIX ?= $(shell go env GOPATH)
-SING_FFI ?= sing-ffi
-LIBBOX_FFI_CONFIG ?= ./experimental/libbox/ffi.json
+LDFLAGS_SHARED=$(shell cat release/LDFLAGS)
+PARAMS=-v -trimpath -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=$(VERSION)' $(LDFLAGS_SHARED) -s -w -buildid="
+MAIN_PARAMS=$(PARAMS) -tags "$(TAGS)"
+MAIN=./cmd/sing-box
+PREFIX?=$(shell go env GOPATH)
+SING_FFI?=sing-ffi
+LIBBOX_FFI_CONFIG?=./experimental/libbox/ffi.json
 
-ADMIN_PANEL_DIR = service/admin_panel
-ADMIN_PANEL_WEB = $(ADMIN_PANEL_DIR)/web
-ADMIN_PANEL_DIST = $(ADMIN_PANEL_DIR)/dist
-ADMIN_PANEL_TAGS = $(TAGS),with_admin_panel
+ADMIN_PANEL_DIR=service/admin_panel
+ADMIN_PANEL_WEB=$(ADMIN_PANEL_DIR)/web
+ADMIN_PANEL_DIST=$(ADMIN_PANEL_DIR)/dist
+ADMIN_PANEL_TAGS=$(TAGS),with_admin_panel
 
-DOCKER_IMAGE ?= shtorm7/sing-box-extended
-DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
+DOCKER_IMAGE?=shtorm7/sing-box-extended
+DOCKER_PLATFORMS?=linux/amd64,linux/arm64
 
-CRONET_GO_PATH ?= $(shell pwd)/cronet-go
+CRONET_GO_PATH?=$(shell pwd)/cronet-go
 
 .PHONY: test release docs build schema
 

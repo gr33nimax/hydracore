@@ -1,3 +1,4 @@
+# pi-lens-ignore: SC2283 (make assignment syntax; the file is LF in index, HEAD and worktree)
 NAME = sing-box
 COMMIT = $(shell git rev-parse --short HEAD)
 TAGS ?= $(shell cat release/DEFAULT_BUILD_TAGS_OTHERS)

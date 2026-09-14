@@ -409,7 +409,9 @@ jobs:
           tail -n +$((keep + 1)) prereleases.txt | while read -r tag; do
             [ -n "$tag" ] || continue
             echo "Removing superseded prerelease ${tag}"
-            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            if ! gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes; then
+              echo "::warning::Could not remove ${tag}; its tag may already be gone"
+            fi
           done
           # A draft that never became a release is a leftover. Drop the ones
           # older than a week; a draft from this run is left alone because the
@@ -424,6 +426,8 @@ jobs:
             age_days=$(( ( $(date -u +%s) - $(date -u -d "$created" +%s) ) / 86400 ))
             if [ "$age_days" -ge 7 ]; then
               echo "Removing abandoned draft ${tag} (${age_days} days old)"
-              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+              if ! gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes; then
+                echo "::warning::Could not remove draft ${tag}; continuing"
+              fi
             fi
           done < drafts.txt

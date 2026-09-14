@@ -1,0 +1,6 @@
+# The release tooling and CI scripts are checked with shellcheck. The repository
+# also ships a GNU makefile without a shebang; analysers that classify it as a
+# shell script flag its assignment syntax and the CRLF working-tree checkout.
+# Both codes are noise for a makefile and meaningless for these scripts.
+disable=SC2283
+disable=SC1017

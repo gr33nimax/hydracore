@@ -227,6 +227,12 @@ jobs:
                .role == "vps" and
                .calls_mode == "vk_parasite"' \
               contract.json >/dev/null
+            # A configuration with Clash in it is exactly what a live server asks the core to
+            # validate before replacing its kernel, and building the Clash service is a startup
+            # path no unit test covers: a core that crashed there could not be switched to at all.
+            # The release that shipped that crash reads as green here, and this is the step that
+            # would have said otherwise.
+            package/sing-box check -c release/smoke-config.json
           fi
           tar \
             --sort=name \

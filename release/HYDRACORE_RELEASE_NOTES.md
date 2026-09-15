@@ -115,3 +115,19 @@ subscription, so any configuration with Clash in it used to end at startup in an
 interface conversion — the refusal a live server met when it switched kernels.
 Platform writers attached while logging is off are handed to the factory built
 when it is turned on.
+
+## v1.14.0-extended-2.7.1-hydracore.12-debug.5
+
+Random trailers no longer break an AmneziaWG handshake. With the trailer switched on, the send buffer is
+longer than the handshake message, and three call sites in the WireGuard fork assumed the two were the
+same length: the marshallers refuse a longer buffer and that error was ignored, so the initiation went out
+with an all-zero message, and the MAC writer placed its MACs at the end of the buffer — inside the trailer
+— and computed them over the wrong range. A peer could therefore only answer `received message with
+unknown type` or `received packet with invalid mac1`. Each call now receives exactly its message, the way
+the receive side already trims a packet to its message size.
+
+The WireGuard fork is vendored into `forks/wireguard-go`: HydraCore builds from its own tree instead of a
+third-party module tag. `forks/wireguard-go/FORK.md` records the origin, the patch, and the one known
+platform gap (the Windows ring-I/O receive path). The vendored copy also carries test files that do not
+compile as published; fixing or replacing them is a separate task.
+

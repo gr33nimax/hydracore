@@ -237,7 +237,7 @@ func solveVKCaptcha(ctx context.Context, captchaErr *vkCaptchaError, dialer N.Di
 	defer func() { captchaFlowGate <- struct{}{} }()
 
 	logger.Info("vk-auth: captcha challenge requires user interaction")
-	proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer)
+	proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer, logger)
 	if proxyPort == 0 {
 		return "", newControlPlaneError("vk_legacy", "captcha_proxy", "start_failed", ErrVKCaptchaRequired)
 	}

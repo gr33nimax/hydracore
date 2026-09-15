@@ -15,8 +15,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+)
+
+// A page that cannot be fetched inside these bounds is reported as a failure rather than waited
+// on: the core gives the whole question 120 seconds, and a WebView with nothing to show is not a
+// state a person can act on.
+const (
+	captchaDialTimeout     = 45 * time.Second
+	captchaUpstreamTimeout = 60 * time.Second
 )
 
 var activeCaptchaProxy struct {
@@ -27,7 +36,7 @@ var activeCaptchaProxy struct {
 	doneCh   chan struct{}
 }
 
-func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
+func StartCaptchaProxy(redirectURI string, dialer N.Dialer, logger logger.ContextLogger) int {
 	StopCaptchaProxy()
 	targetURL, err := url.Parse(redirectURI)
 	if err != nil {
@@ -42,19 +51,32 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 	upstreamOrigin := targetURL.Scheme + "://" + targetURL.Host
 	keyCh := make(chan string, 1)
 	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-		ForceAttemptHTTP2:   false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ForceAttemptHTTP2:     false,
+		ResponseHeaderTimeout: captchaUpstreamTimeout,
 	}
 	if dialer != nil {
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
+			dialCtx, cancel := context.WithTimeout(ctx, captchaDialTimeout)
+			defer cancel()
+			return dialer.DialContext(dialCtx, network, M.ParseSocksaddr(addr))
 		}
+	} else {
+		transport.DialContext = (&net.Dialer{Timeout: captchaDialTimeout}).DialContext
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// A white page with no explanation is the one outcome a person cannot act on: say what
+			// failed, so the overlay can show it and the journal keeps it.
+			if logger != nil {
+				logger.Warn("vk-auth: captcha page fetch failed: ", err)
+			}
+			http.Error(w, "captcha page unavailable: "+err.Error(), http.StatusBadGateway)
+		},
 		Rewrite: func(req *httputil.ProxyRequest) {
 			req.Out.URL.Scheme = targetURL.Scheme
 			req.Out.URL.Host = targetURL.Host
@@ -137,7 +159,9 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 			default:
 			}
 		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Only the page this proxy serves posts a token here: it is same-origin, so the header
+		// names that origin instead of leaving every site on the device free to call it.
+		w.Header().Set("Access-Control-Allow-Origin", localOrigin)
 		fmt.Fprint(w, "ok")
 	})
 	mux.HandleFunc("/generic_proxy", func(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +172,8 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 			return
 		}
 		genericProxy := &httputil.ReverseProxy{
-			Transport: transport,
+			Transport:    transport,
+			ErrorHandler: proxy.ErrorHandler,
 			Rewrite: func(req *httputil.ProxyRequest) {
 				req.Out.URL.Scheme = parsed.Scheme
 				req.Out.URL.Host = parsed.Host

@@ -17,6 +17,20 @@ Release names now carry the upstream base and an integration cycle:
 `<upstream>-hydracore.<cycle>-debug.<iteration>`. The cycle increments when the
 upstream base changes, the iteration per build inside a cycle.
 
+debug.3 answers the capability document HYDRA read before the product contract
+replaced it. A HYDRA older than the contract validates a core with
+`hydra capabilities --json` and refuses to install one that does not answer, while
+its successor requires this core — so without the answer a server in the field
+cannot move at all, which is what an update on a running machine did. Nothing else
+about the core's identity changed: the document is derived from the same build tags
+the contract reads, and CI now checks both readers against the published VPS
+runtime.
+
+debug.3 also carries two fixes found by running the stack: a failed URL test is
+recorded as an unavailable observation instead of deleting the history that
+clients render, and the VK captcha proxy has deadlines and a readable failure
+instead of an answer that never comes.
+
 debug.2 restores the memory-limit entry point the Android application calls. The
 function was dropped in the merge because no Go code used it, but the client
 reaches it through gomobile as `Libbox.setMemoryLimit`; without it a client does

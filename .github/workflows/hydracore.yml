@@ -293,6 +293,16 @@ jobs:
              .core_id == "io.hydrabox.hydracore" and
              .role == "vps" and
              .calls_mode == "vk_parasite"' >/dev/null
+          # A HYDRA older than the product contract validates a core through the capability
+          # document and refuses to install one that does not answer it. Machines in the field
+          # still run that HYDRA, and this core is what their successor requires, so the release
+          # proves it can be installed by both readers.
+          verify-linux/sing-box hydra capabilities --json | jq --exit-status \
+            '.api_version == 2 and
+             .identity.core_id == "io.hydrabox.hydracore" and
+             .identity.role == "vps" and
+             .features.call_vk_parasite == true and
+             (.protocols.call_modes | index("vk_parasite") != null)' >/dev/null
       - name: Build and sign HydraCore bundle manifest
         shell: bash
         env:

@@ -566,7 +566,14 @@ func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint
 			t, err := urltest.URLTest(testCtx, g.link, p)
 			if err != nil {
 				g.logger.Debug("outbound ", tag, " unavailable: ", err)
-				g.history.DeleteURLTestHistory(realTag)
+				// A failed probe is a fact about the server, not a missing measurement. Deleting the
+				// history left the last good delay in place, and every client that renders it kept
+				// claiming a dead server was fast until the observation window expired.
+				g.history.StoreURLTestHistory(realTag, &adapter.URLTestHistory{
+					Time:   time.Now(),
+					Status: adapter.URLTestStatusUnavailable,
+					Error:  err.Error(),
+				})
 			} else {
 				g.logger.Debug("outbound ", tag, " available: ", t, "ms")
 				g.history.StoreURLTestHistory(realTag, &adapter.URLTestHistory{

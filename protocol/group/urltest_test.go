@@ -165,6 +165,42 @@ func TestURLTestProbeTimeoutBoundsTheChildProbe(t *testing.T) {
 	require.Equal(t, probeTimeout, group.probeTimeout)
 }
 
+func TestURLTestProbeRecordsUnavailableHistory(t *testing.T) {
+	groupCtx, stopGroup := context.WithCancel(t.Context())
+	history := U.NewHistoryStorage()
+	groupCtx = service.ContextWithPtr(groupCtx, history)
+	defer stopGroup()
+	// Refusing every dial is what a dead server looks like to a probe.
+	outbound := &urlTestSelectionOutbound{tag: "dead"}
+	manager := &urlTestOutboundManager{outbound: outbound}
+	group, err := NewURLTestGroup(
+		groupCtx,
+		manager,
+		log.NewNOPFactory().Logger(),
+		[]adapter.Outbound{outbound},
+		"http://example.invalid/",
+		0,
+		0,
+		0,
+		0,
+		0,
+		false,
+	)
+	require.NoError(t, err)
+
+	_, _ = group.URLTest(t.Context())
+
+	// A failure has to be recorded rather than deleted: with no history at all the client keeps
+	// showing the last good delay, because "nothing to report" and "the server is down" are
+	// different facts and only one of them is true here.
+	recorded := history.LoadURLTestHistory(RealTag(group.outbound, outbound))
+	require.NotNil(t, recorded, "a failed probe left no history behind")
+	require.Equal(t, adapter.URLTestStatusUnavailable, recorded.Status)
+	require.Zero(t, recorded.Delay)
+	require.NotEmpty(t, recorded.Error)
+	require.False(t, adapter.URLTestHistoryIsAvailable(recorded))
+}
+
 func TestURLTestProbeConcurrencyLimitsParallelProbes(t *testing.T) {
 	groupCtx, stopGroup := context.WithCancel(t.Context())
 	groupCtx = service.ContextWithPtr(groupCtx, U.NewHistoryStorage())

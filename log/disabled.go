@@ -20,6 +20,12 @@ var ErrClosed = errors.New("log factory is closed")
 // one atomic load, an enabled call is a delegate resolved once per state and reused, so a
 // suppressed line costs what an ordinary logger's line costs instead of a fresh logger per
 // call on top.
+// A factory this package hands out is the switchable one, and the core requires that factory to be
+// observable: Clash, the daemon's attached service and the log subscription all assert it. A wrapper
+// that answered only half the interface turned that assertion into a panic during startup — and since
+// New returns the wrapper for every configuration, that was every configuration with Clash in it.
+var _ ObservableFactory = (*disabledFactory)(nil)
+
 type disabledFactory struct {
 	access  sync.Mutex
 	options Options
@@ -27,6 +33,10 @@ type disabledFactory struct {
 	started bool
 	closed  bool
 	counter uint64
+	// Writers a platform attached while logging was off. A platform attaches once, usually before
+	// logging is turned on; the factory built later has to receive them, or the platform that asked
+	// for messages is the one that hears nothing.
+	platformWriters []PlatformWriter
 }
 
 type disabledFactoryState struct {
@@ -44,6 +54,7 @@ func (f *disabledFactory) install(active Factory) {
 	f.access.Lock()
 	defer f.access.Unlock()
 	f.counter++
+	f.attachAllLocked(active)
 	f.active.Store(&disabledFactoryState{factory: active, revision: f.counter})
 }
 
@@ -117,6 +128,7 @@ func (f *disabledFactory) Enable(level Level) error {
 		}
 	}
 	f.counter++
+	f.attachAllLocked(active)
 	f.active.Store(&disabledFactoryState{factory: active, revision: f.counter})
 	return nil
 }
@@ -162,6 +174,33 @@ func (f *disabledFactory) UnSubscribe(subscription observable.Subscription[Entry
 	}
 	if active, ok := state.factory.(ObservableFactory); ok {
 		active.UnSubscribe(subscription)
+	}
+}
+
+// AttachPlatformWriter registers a platform writer and hands it to the active factory, if any.
+func (f *disabledFactory) AttachPlatformWriter(writer PlatformWriter) {
+	f.access.Lock()
+	defer f.access.Unlock()
+	f.platformWriters = append(f.platformWriters, writer)
+	state := f.active.Load()
+	if state == nil {
+		return
+	}
+	if active, ok := state.factory.(ObservableFactory); ok {
+		active.AttachPlatformWriter(writer)
+	}
+}
+
+// attachAllLocked hands every writer attached so far to a factory that is about to go live, so a
+// writer attached while logging was off is not lost when logging is turned on. Each factory receives
+// them once, at the moment it becomes the active one.
+func (f *disabledFactory) attachAllLocked(factory Factory) {
+	active, ok := factory.(ObservableFactory)
+	if !ok {
+		return
+	}
+	for _, writer := range f.platformWriters {
+		active.AttachPlatformWriter(writer)
 	}
 }
 

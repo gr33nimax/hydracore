@@ -104,3 +104,14 @@ advertises `call_vk_parasite_server`; the client advertises
 CI verifies every release before publication. Assets are the Android AAR and
 sources, three Android shared libraries, two Linux archives, and a signed bundle
 manifest.
+
+Both sides of an update are readable in this release. The core answers the
+capability document the previous HYDRA reads and the product contract it prints
+itself, so a server whose core and its updater sit a release apart can move in
+either direction. A switchable log factory also answers the whole observable
+interface: `New` returns that wrapper for every configuration and the core
+asserts it while building Clash, the daemon's attached service and the log
+subscription, so any configuration with Clash in it used to end at startup in an
+interface conversion — the refusal a live server met when it switched kernels.
+Platform writers attached while logging is off are handed to the factory built
+when it is turned on.

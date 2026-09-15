@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.4
+
+- A switchable log factory answers the whole observable interface. `New` returns that
+  wrapper for every configuration, and the core asserts it while building Clash, the
+  daemon's attached service and the log subscription, so any configuration with Clash
+  in it ended at startup in an interface conversion — the refusal a live server met
+  when it tried to switch kernels. Platform writers attached while logging is off are
+  handed to the factory built when it is turned on, and the core reports a factory it
+  cannot use instead of converting it.
+
+## v1.14.0-extended-2.7.1-hydracore.12-debug.3
+
+- The core answers the capability document the previous HYDRA reads, alongside the
+  product contract it prints itself. A server running an older release could not take
+  a new core, and an older core could not be judged by a contract that did not exist
+  when it was built: both halves of that transition now exist, derived from the same
+  build tags. Drop this when no pre-contract HYDRA remains in the field.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.2
 
 - Restored the `Libbox.setMemoryLimit` entry point the Android application calls. The

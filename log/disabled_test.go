@@ -38,6 +38,24 @@ func newDisabledFactoryForTest(t *testing.T, writer *recordingPlatformWriter) Fa
 	return factory
 }
 
+// A platform attaches its writer once, usually while logging is still off, and the core asserts the
+// factory it was handed to be observable while building Clash. The factory built when logging is
+// turned on has to receive that writer, or the platform that asked for messages hears nothing.
+func TestDisabledFactoryCarriesPlatformWritersIntoTheEnabledFactory(t *testing.T) {
+	initial := new(recordingPlatformWriter)
+	factory := newDisabledFactoryForTest(t, initial)
+	observableFactory, ok := factory.(ObservableFactory)
+	require.True(t, ok, "the factory New returned is not observable")
+
+	late := new(recordingPlatformWriter)
+	observableFactory.AttachPlatformWriter(late)
+	require.NoError(t, factory.(*disabledFactory).Enable(LevelError))
+
+	factory.Logger().Error("after")
+	require.Equal(t, 1, initial.count(), "the writer the options carried stopped receiving lines")
+	require.Equal(t, 1, late.count(), "the writer attached while logging was off was lost")
+}
+
 func TestDisabledFactoryEnablesExistingLogger(t *testing.T) {
 	writer := new(recordingPlatformWriter)
 	factory := newDisabledFactoryForTest(t, writer)

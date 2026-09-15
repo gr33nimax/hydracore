@@ -462,7 +462,12 @@ func New(options Options) (*Box, error) {
 	if needClashAPI {
 		clashAPIOptions := common.PtrValueOrDefault(experimentalOptions.ClashAPI)
 		clashAPIOptions.ModeList = experimental.CalculateClashModeList(options.Options)
-		clashServer, err := experimental.NewClashServer(ctx, logFactory.(log.ObservableFactory), clashAPIOptions)
+		observableLogFactory, isObservable := logFactory.(log.ObservableFactory)
+		if !isObservable {
+			// Say so instead of taking the process down with an interface conversion nobody can read.
+			return nil, E.New("clash-server requires an observable log factory")
+		}
+		clashServer, err := experimental.NewClashServer(ctx, observableLogFactory, clashAPIOptions)
 		if err != nil {
 			return nil, E.Cause(err, "create clash-server")
 		}

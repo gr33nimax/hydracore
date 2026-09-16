@@ -236,7 +236,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	cip, err := peer.device.HeaderProtectionCipher(crypt[:HeaderCipherNonceSize])
+	cip, err := peer.device.HeaderProtectionCipher(crypt)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.timersAnyAuthenticatedPacketTraversal()
 	peer.timersAnyAuthenticatedPacketSent()
 
-	cip, err := peer.device.HeaderProtectionCipher(crypt[:HeaderCipherNonceSize])
+	cip, err := peer.device.HeaderProtectionCipher(crypt)
 	if err != nil {
 		return err
 	}
@@ -343,7 +343,7 @@ func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement)
 	packet := buf[padding:]
 	_ = reply.marshal(packet[:MessageCookieReplySize])
 
-	cip, err := device.HeaderProtectionCipher(crypt[:HeaderCipherNonceSize])
+	cip, err := device.HeaderProtectionCipher(crypt)
 	if err != nil {
 		return err
 	}
@@ -804,6 +804,32 @@ func (peer *Peer) randomTrailer(packetSize int) int {
 	return int(fastrandn(uint32(udpWindow - packetSize)))
 }
 
+func (device *Device) ensureOutboundBuffer(elem *QueueOutboundElement, contentPadding int) bool {
+	required := MessageEncapsulatingTransportSize + int(elem.padding) + MessageTransportHeaderSize + len(elem.packet) + contentPadding + chacha20poly1305.Overhead
+	if required > MaxMessageSize {
+		device.log.Verbosef("Dropping outbound packet: required size %d exceeds maximum", required)
+		return false
+	}
+
+	offset := MessageEncapsulatingTransportSize + int(elem.padding) + MessageTransportHeaderSize
+	if cap(elem.buffer) < required {
+		buffer := device.GetOutboundBuffer(required)
+		if buffer == nil {
+			device.log.Verbosef("Dropping outbound packet: unable to allocate %d bytes", required)
+			return false
+		}
+		packet := buffer[offset : offset+len(elem.packet)]
+		copy(packet, elem.packet)
+		device.PutOutboundBuffer(elem.buffer)
+		elem.buffer = buffer
+		elem.packet = packet
+		return true
+	}
+
+	elem.buffer = elem.buffer[:required]
+	return true
+}
+
 /* Encrypts the elements in the queue
  * and marks them for sequential consumption (by releasing the mutex)
  *
@@ -817,27 +843,10 @@ func (device *Device) RoutineEncryption(id int) {
 
 	for elemsContainer := range device.queue.encryption.c {
 		for _, elem := range elemsContainer.elems {
-			buf := elem.buffer[MessageEncapsulatingTransportSize:]
-
 			udpWindow := elem.padding + MinMessageSize + uint32(len(elem.packet))
 			if elem.peer.udpWindow.Load() < udpWindow {
 				elem.peer.udpWindow.Store(udpWindow)
 			}
-
-			// fill crypto padding
-			crypt := buf[:elem.padding]
-			rand.Read(crypt)
-
-			// populate header fields
-			header := buf[elem.padding : elem.padding+MessageTransportHeaderSize]
-
-			fieldType := header[0:4]
-			fieldReceiver := header[4:8]
-			fieldNonce := header[8:16]
-
-			binary.LittleEndian.PutUint32(fieldType, device.headers.transport.Load().PickOne())
-			binary.LittleEndian.PutUint32(fieldReceiver, elem.keypair.remoteIndex)
-			binary.LittleEndian.PutUint64(fieldNonce, elem.nonce)
 
 			packetSize := len(elem.packet) + MinMessageSize + int(elem.padding)
 			mtu := int(device.tun.mtu.Load())
@@ -850,6 +859,23 @@ func (device *Device) RoutineEncryption(id int) {
 				// pad content to multiple of 16
 				paddingSize = calculatePaddingSize(len(elem.packet), mtu)
 			}
+			if !device.ensureOutboundBuffer(elem, paddingSize) {
+				elem.packet = nil
+				continue
+			}
+
+			buf := elem.buffer[MessageEncapsulatingTransportSize:]
+			crypt := buf[:elem.padding]
+			rand.Read(crypt)
+			header := buf[elem.padding : elem.padding+MessageTransportHeaderSize]
+
+			fieldType := header[0:4]
+			fieldReceiver := header[4:8]
+			fieldNonce := header[8:16]
+
+			binary.LittleEndian.PutUint32(fieldType, device.headers.transport.Load().PickOne())
+			binary.LittleEndian.PutUint32(fieldReceiver, elem.keypair.remoteIndex)
+			binary.LittleEndian.PutUint64(fieldNonce, elem.nonce)
 
 			// append trailing zeroes
 			oldLen := len(elem.packet)
@@ -867,7 +893,7 @@ func (device *Device) RoutineEncryption(id int) {
 				nil,
 			)
 
-			cip, err := device.HeaderProtectionCipher(crypt[:HeaderCipherNonceSize])
+			cip, err := device.HeaderProtectionCipher(crypt)
 			if err != nil {
 				device.log.Errorf("Routing: header obfuscation failed - packet dropped")
 				elem.packet = nil

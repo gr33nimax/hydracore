@@ -651,7 +651,14 @@ func (device *Device) DeterminePacketTypeAndPadding(packet []byte, typeHash []by
 	if size == expectedSize || randomTrailers && size > expectedSize {
 		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
 		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
-			return MessageInitiationSize, MessageInitiationType, padding
+			if !randomTrailers {
+				return MessageInitiationSize, MessageInitiationType, padding
+			}
+			if msgSize, msgType, transportPadding := device.determineTransportPacketTypeAndPadding(packet, typeHash); msgType != MessageTransportType || device.validHandshakeMAC1(packet, padding, MessageInitiationSize, typeHash) {
+				return MessageInitiationSize, MessageInitiationType, padding
+			} else {
+				return msgSize, msgType, transportPadding
+			}
 		}
 	}
 
@@ -662,7 +669,14 @@ func (device *Device) DeterminePacketTypeAndPadding(packet []byte, typeHash []by
 	if size == expectedSize || randomTrailers && size > expectedSize {
 		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
 		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
-			return MessageResponseSize, MessageResponseType, padding
+			if !randomTrailers {
+				return MessageResponseSize, MessageResponseType, padding
+			}
+			if msgSize, msgType, transportPadding := device.determineTransportPacketTypeAndPadding(packet, typeHash); msgType != MessageTransportType || device.validHandshakeMAC1(packet, padding, MessageResponseSize, typeHash) {
+				return MessageResponseSize, MessageResponseType, padding
+			} else {
+				return msgSize, msgType, transportPadding
+			}
 		}
 	}
 
@@ -673,26 +687,46 @@ func (device *Device) DeterminePacketTypeAndPadding(packet []byte, typeHash []by
 	if size == expectedSize || randomTrailers && size > expectedSize {
 		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
 		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
+			if msgSize, msgType, transportPadding := device.determineTransportPacketTypeAndPadding(packet, typeHash); randomTrailers && msgType == MessageTransportType {
+				return msgSize, msgType, transportPadding
+			}
 			return MessageCookieReplySize, MessageCookieReplyType, padding
 		}
 	}
 
-	padding = device.paddings.transport.Load()
-	header = device.headers.transport.Load()
-	expectedSize = int(padding) + MessageTransportSize
+	return device.determineTransportPacketTypeAndPadding(packet, typeHash)
+}
 
-	if size >= expectedSize {
-		applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
-		if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
-			return MessageTransportSize, MessageTransportType, padding
-		}
+func (device *Device) determineTransportPacketTypeAndPadding(packet []byte, typeHash []byte) (int, uint32, uint32) {
+	var headerBytes [4]byte
+	padding := device.paddings.transport.Load()
+	header := device.headers.transport.Load()
+	expectedSize := int(padding) + MessageTransportSize
 
-		if padding > 0 && size >= MessageTransportHeaderSize {
-			if header.Contains(binary.LittleEndian.Uint32(packet)) {
-				return MessageTransportSize, MessageTransportType, 0
-			}
-		}
+	if len(packet) < expectedSize {
+		return 0, MessageUnknownType, 0
 	}
-
+	applyHash(headerBytes[:], packet[padding:padding+4], typeHash)
+	if header.Contains(binary.LittleEndian.Uint32(headerBytes[:])) {
+		return MessageTransportSize, MessageTransportType, padding
+	}
+	if padding > 0 && len(packet) >= MessageTransportHeaderSize && header.Contains(binary.LittleEndian.Uint32(packet)) {
+		return MessageTransportSize, MessageTransportType, 0
+	}
 	return 0, MessageUnknownType, 0
+}
+
+func (device *Device) validHandshakeMAC1(packet []byte, padding uint32, messageSize int, typeHash []byte) bool {
+	candidate := make([]byte, messageSize)
+	copy(candidate, packet[padding:padding+uint32(messageSize)])
+	applyHash(candidate[:4], candidate[:4], typeHash)
+
+	cipher, err := device.HeaderProtectionCipher(packet[:HeaderCipherNonceSize])
+	if err != nil {
+		return false
+	}
+	if cipher != nil {
+		cipher.XORKeyStream(candidate[4:], candidate[4:])
+	}
+	return device.cookieChecker.CheckMAC1(candidate)
 }

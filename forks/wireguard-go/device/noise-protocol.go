@@ -758,6 +758,9 @@ func (device *Device) HeaderProtectionCipher(salt []byte) (*chacha20.Cipher, err
 	if device.headerProtection.key.IsZero() {
 		return nil, nil
 	}
+	if len(salt) < HeaderCipherNonceSize {
+		return nil, errors.New("header protection salt is too short")
+	}
 
-	return chacha20.NewUnauthenticatedCipher(device.headerProtection.key[:], salt)
+	return chacha20.NewUnauthenticatedCipher(device.headerProtection.key[:], salt[:HeaderCipherNonceSize])
 }

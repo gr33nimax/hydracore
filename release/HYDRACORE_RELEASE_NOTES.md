@@ -116,6 +116,28 @@ interface conversion — the refusal a live server met when it switched kernels.
 Platform writers attached while logging is off are handed to the factory built
 when it is turned on.
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.8
+
+An AmneziaWG profile with a large transport padding no longer ends the core in a panic. The
+encryption worker derived its slice bounds from `S4` before proving that the element's buffer could
+hold them, so a padding of 278 bytes over a 256-byte buffer died in `RoutineEncryption` with
+`slice bounds out of range [:278] with capacity 256` — the crash an Android client met while
+starting a 3.1 profile. The worker sizes the buffer from the layout it is about to write, carries
+the plaintext into a replacement when the element's own buffer is too small, and drops a packet
+that cannot fit the transport message rather than letting it through or panicking.
+
+The same padding is no longer sliced before the core knows it needs it: `HeaderProtectionCipher`
+receives the whole padding and returns without a key, so an `S1`-`S4` below the twelve-byte nonce
+stays legal while header protection is off — which is what the configuration gate always allowed.
+
+Random trailers no longer swallow established traffic. With the trailer switched on, a transport
+datagram is longer than the handshake message it is compared against, and the receive path tested
+the handshake headers `H1`-`H3` first: a padding byte or a transport header landing inside one of
+those ranges classified the packet as a handshake, which then failed its MAC1 and was discarded
+without a word. A handshake-looking packet is confirmed by MAC1 before it wins, and a cookie reply
+that could be either yields to transport, because a handshake can be retried and a dropped data
+packet cannot be recovered.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.7
 
 A server whose probe failed is asked again sooner than the general interval grants. The automatic

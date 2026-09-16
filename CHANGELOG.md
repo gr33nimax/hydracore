@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.8
+
+- AmneziaWG transport padding no longer reaches a slice before the buffer is proven to hold it:
+  the encryption worker sizes the outbound buffer from the layout it is about to write, carries the
+  payload into a replacement buffer when the old one is too small, and drops a packet that cannot
+  fit the transport message instead of panicking with `slice bounds out of range [:278] with
+  capacity 256`.
+- Header protection takes the whole `S1`-`S4` padding and returns without a key, so a padding
+  shorter than the twelve-byte nonce is legal again while the feature is off.
+- With `random_trailers` on, a transport datagram whose padding makes it look like a handshake
+  header is no longer taken for one and silently discarded: a handshake candidate is confirmed by
+  MAC1, and an ambiguous cookie reply yields to transport.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.7
 
 - The automatic group honours `unavailable_interval`: a server whose probe failed is retried after

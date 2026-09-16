@@ -8,7 +8,7 @@
 | Completed | TSK-002 | `go test ./device -run TestEnsureOutboundBuffer -count=1` passes. |
 | Completed | TSK-003 | `go test ./device -run TestDeterminePacketTypeAndPadding_RandomTrailer -count=1` passes. |
 | Completed | TSK-004 | `go test ./device -count=1` passes. |
-| In progress | TSK-005 | — |
+| Completed | TSK-005 | `go build ./...`, baseline verification, commit `a59657bf6`, and push to `origin/fix/s4-padding-bounds` passed. |
 
 ## Dependency graph
 
@@ -36,6 +36,7 @@
   - Run focused `go test` cases, then the device package tests; diagnose any failure before continuing.
   - Requirement: all acceptance criteria.
 
-- [ ] **TSK-005 — Build and publish**
+- [x] **TSK-005 — Build and publish**
+  - Факт: `go build ./...` и `bash release/verify_upstream_baseline.sh` прошли; ветка опубликована в `origin/fix/s4-padding-bounds`.
   - Build HydraCore's supported Go target, inspect the exact diff, commit only task files, then push branch `fix/s4-padding-bounds`.
   - Requirement: delivery.

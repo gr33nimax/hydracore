@@ -109,7 +109,7 @@ func startTestDevice(t *testing.T, name string, privateHex string, peerPublicHex
 		events:  make(chan tun.Event, 1),
 		done:    make(chan struct{}),
 	}
-	wgDevice := device.NewDevice(context.Background(), tunDevice, conn.NewStdNetBind(nil), device.NewLogger(device.LogLevelError, name+": "), 0)
+	wgDevice := device.NewDevice(context.Background(), tunDevice, conn.NewStdNetBind(nil), device.NewLogger(device.LogLevelError, name+": "), 0, 0, false)
 	err := wgDevice.IpcSet("private_key=" + privateHex +
 		"\npublic_key=" + peerPublicHex +
 		"\nallowed_ip=" + peerAllowedIP)

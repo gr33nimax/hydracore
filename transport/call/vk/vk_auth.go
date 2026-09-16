@@ -249,15 +249,31 @@ func solveVKCaptcha(ctx context.Context, captchaErr *vkCaptchaError, dialer N.Di
 	defer HC.ClearRuntimeChallenge(challengeID)
 	HC.PublishRuntimeChallenge(HC.RuntimeChallenge{
 		ID: challengeID, Kind: "vk_captcha", URL: fmt.Sprintf("http://127.0.0.1:%d/", proxyPort),
-		CreatedAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(120 * time.Second).UnixMilli(),
+		CreatedAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(captchaWindow).UnixMilli(),
 	}, cancelChallenge)
 	logger.Notice(fmt.Sprintf("vk-auth: challenge ready: %s", challengeID))
-	if successToken := GetCaptchaResultContext(challengeContext, 120*time.Second); successToken != "" {
-		return successToken, nil
+	result := GetCaptchaResultContext(challengeContext, captchaWindow)
+	if result.Outcome == CaptchaSolved {
+		return result.Token, nil
 	}
+	// Only a question the person actually closed ends the attempt. A window that ran out, a proxy
+	// that died underneath the question and a wait that was torn down differ in exactly that: they
+	// may be asked again, and saying "cancelled" for them told the caller to give up.
+	code := "vk.captcha.cancelled"
+	terminal := ctx.Err() == nil
+	switch result.Outcome {
+	case CaptchaTimedOut:
+		code, terminal = "vk.captcha.timeout", false
+	case CaptchaProxyFailed:
+		code, terminal = "vk.captcha.proxy_failed", false
+	case CaptchaCancelled:
+		// The proxy went away rather than the person answering: another window is worth trying.
+		code, terminal = "vk.captcha.proxy_gone", false
+	}
+	logger.Warn(fmt.Sprintf("vk-auth: captcha %s ended as %s (terminal=%t)", challengeID, code, terminal))
 	return "", &ControlPlaneError{
-		Stage: "vk_legacy", Kind: "captcha", Code: "vk.captcha.cancelled", ChallengeID: challengeID,
-		Terminal: ctx.Err() == nil, Cause: ErrVKCaptchaRequired,
+		Stage: "vk_legacy", Kind: "captcha", Code: code, ChallengeID: challengeID,
+		Terminal: terminal, Cause: ErrVKCaptchaRequired,
 	}
 }
 

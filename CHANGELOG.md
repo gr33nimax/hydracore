@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.6
+
+- The VK captcha tells a timeout from a closed question: the wait returns a typed outcome, only a
+  question the person actually closed is terminal, and a timeout or a dead proxy stays retryable.
+  The proxy bounds an upstream body and serves through a managed server whose death ends the wait.
+- A URL test that nobody ran reports `not measured` instead of leaving a previous figure on screen;
+  the fixed fifteen-second client ceiling is gone, and a sub-millisecond success floors at one
+  millisecond instead of reading as missing data.
+
+## v1.14.0-extended-2.7.1-hydracore.12-debug.5
+
+- Random trailers no longer break an AmneziaWG handshake: the WireGuard fork's send path gives each
+  handshake message its own slice, so the marshallers and the MAC writer stop working on a buffer
+  that includes the trailer.
+- The WireGuard fork is vendored into `forks/wireguard-go`, with `FORK.md` recording its origin, the
+  patch and the one known platform gap (the Windows ring-I/O receive path).
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.4
 
 - A switchable log factory answers the whole observable interface. `New` returns that

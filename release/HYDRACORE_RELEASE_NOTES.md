@@ -116,6 +116,30 @@ interface conversion — the refusal a live server met when it switched kernels.
 Platform writers attached while logging is off are handed to the factory built
 when it is turned on.
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.6
+
+The captcha now tells a timeout from a closed question. Its wait returned an empty token for four
+different endings — solved, closed by the person, window expired, proxy gone — and the caller
+reported every one of them as `vk.captcha.cancelled` with the attempt marked terminal, so a window
+that simply ran out refused a retry. The endings are typed now (`CaptchaSolved`, `CaptchaCancelled`,
+`CaptchaTimedOut`, `CaptchaContextCancelled`, `CaptchaProxyFailed`): only a question the person
+actually closed ends the attempt, while a timeout and a dead proxy are retryable and each says its
+name in the journal. The proxy also bounds an upstream body at 8 MiB and serves through a managed
+`http.Server` whose death ends the wait instead of leaving the core to sit out its window.
+
+A URL test nobody ran no longer looks like a test that passed. When a sweep ends early — a session
+deadline, a cancelled measurement — every target the workers never reached reports
+`not measured: the session deadline expired before this probe started`, so the screen stops showing
+a figure from a previous run as if it were current. The fixed fifteen-second client timeout is gone:
+the probe context already carries the deadline its caller chose, and the second (unified-delay)
+request is bound to that context, where before it had none and could hang forever. A sub-millisecond
+success is floored at one millisecond, because the history layer reads a zero delay as no measurement.
+
+The Snell implementation is unchanged in this build; a loopback probe against the build in the field
+answered 204 for the classic pair over `none`, `http` and `tls` and for all three generation-6 modes,
+so the pairing itself — server 5 with client 4, server 6 with client 6 — carries traffic in every
+mode this core offers.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.5
 
 Random trailers no longer break an AmneziaWG handshake. With the trailer switched on, the send buffer is

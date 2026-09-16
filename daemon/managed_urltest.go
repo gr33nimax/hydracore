@@ -73,6 +73,12 @@ type urlTestProbe func(ctx context.Context, link string, outbound adapter.Outbou
 
 type urlTestResultHandler func(target urlTestTarget, delay uint16, err error)
 
+// errURLTestNotMeasured is what a target that was never probed reports.
+//
+// Silence about a target used to leave its previous figure on the screen as if it were current:
+// a person who pressed "measure" saw half the list still fast, though nothing had checked it.
+var errURLTestNotMeasured = E.New("not measured: the session deadline expired before this probe started")
+
 func (s *StartedService) startURLTest(request *StartURLTestRequest) (*URLTestSession, error) {
 	if request == nil {
 		return nil, E.New("missing URL test request")
@@ -432,6 +438,9 @@ func runURLTestTargets(ctx context.Context, targets []urlTestTarget, options url
 	}
 	close(jobs)
 
+	handled := make(map[string]bool, len(targets))
+	var handledAccess sync.Mutex
+
 	var workers sync.WaitGroup
 	workers.Add(workerCount)
 	for range workerCount {
@@ -459,11 +468,26 @@ func runURLTestTargets(ctx context.Context, targets []urlTestTarget, options url
 						err = contextErr
 					}
 					handleResult(target, delay, err)
+					handledAccess.Lock()
+					handled[target.tag] = true
+					handledAccess.Unlock()
 				}
 			}
 		}()
 	}
 	workers.Wait()
+
+	handledAccess.Lock()
+	unmeasured := make([]urlTestTarget, 0, len(targets))
+	for _, target := range targets {
+		if !handled[target.tag] {
+			unmeasured = append(unmeasured, target)
+		}
+	}
+	handledAccess.Unlock()
+	for _, target := range unmeasured {
+		handleResult(target, 0, errURLTestNotMeasured)
+	}
 }
 
 func (s *StartedService) isCurrentURLTestSession(groupTag string, session *managedURLTestSession) bool {

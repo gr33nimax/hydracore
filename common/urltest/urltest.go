@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -144,7 +143,8 @@ func urlTest(ctx context.Context, link string, detour N.Dialer) (t uint16, err e
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: C.TCPTimeout,
+		// No fixed client timeout: the probe context already carries the deadline this caller chose,
+		// and a ceiling here silently replaced a longer setting with fifteen seconds.
 	}
 	defer client.CloseIdleConnections()
 	resp, err := client.Do(req.WithContext(ctx))
@@ -154,13 +154,19 @@ func urlTest(ctx context.Context, link string, detour N.Dialer) (t uint16, err e
 	resp.Body.Close()
 	if IsUnifiedDelayFromContext(ctx) {
 		second := time.Now()
-		resp, err = client.Do(req)
+		resp, err = client.Do(req.WithContext(ctx))
 		if err != nil {
 			return
 		}
 		resp.Body.Close()
 		start = second
 	}
-	t = uint16(time.Since(start) / time.Millisecond)
+	elapsed := uint16(time.Since(start) / time.Millisecond)
+	if elapsed == 0 {
+		// A sub-millisecond round trip is a success, not missing data: the history layer reads a
+		// zero delay as "no measurement", so the floor is one millisecond.
+		elapsed = 1
+	}
+	t = elapsed
 	return
 }

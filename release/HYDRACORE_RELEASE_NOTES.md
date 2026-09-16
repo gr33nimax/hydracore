@@ -116,6 +116,14 @@ interface conversion — the refusal a live server met when it switched kernels.
 Platform writers attached while logging is off are handed to the factory built
 when it is turned on.
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.7
+
+A server whose probe failed is asked again sooner than the general interval grants. The automatic
+group takes a new `unavailable_interval`: a target whose last measurement failed is retried after
+that shorter wait instead of staying reported unreachable for the whole `interval`, which is what a
+single hiccup used to cost. Zero leaves the field out and the group keeps its previous behaviour, so
+a configuration written before this release is read exactly as it was.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.6
 
 The captcha now tells a timeout from a closed question. Its wait returned an empty token for four

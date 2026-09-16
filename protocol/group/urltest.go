@@ -42,13 +42,16 @@ var (
 
 type URLTest struct {
 	outbound.Adapter
-	ctx                          context.Context
-	outbound                     adapter.OutboundManager
-	connection                   adapter.ConnectionManager
-	logger                       log.ContextLogger
-	tags                         []string
-	link                         string
-	interval                     time.Duration
+	ctx        context.Context
+	outbound   adapter.OutboundManager
+	connection adapter.ConnectionManager
+	logger     log.ContextLogger
+	tags       []string
+	link       string
+	interval   time.Duration
+	// unavailableInterval is how soon a target whose last probe failed is asked again: a shorter
+	// wait than the general interval, taken from the option and defaulting to the interval itself.
+	unavailableInterval          time.Duration
 	tolerance                    uint16
 	idleTimeout                  time.Duration
 	probeTimeout                 time.Duration
@@ -78,6 +81,7 @@ func NewURLTest(ctx context.Context, router adapter.Router, logger log.ContextLo
 		tags:                         options.Outbounds,
 		link:                         options.URL,
 		interval:                     time.Duration(options.Interval),
+		unavailableInterval:          time.Duration(options.UnavailableInterval),
 		tolerance:                    options.Tolerance,
 		idleTimeout:                  time.Duration(options.IdleTimeout),
 		probeTimeout:                 time.Duration(options.ProbeTimeout),
@@ -135,6 +139,11 @@ func (s *URLTest) Start() error {
 	group, err := NewURLTestGroup(s.ctx, s.outbound, s.logger, outbounds, s.link, s.interval, s.tolerance, s.idleTimeout, s.probeTimeout, s.probeConcurrency, s.interruptExternalConnections)
 	if err != nil {
 		return err
+	}
+	// The group defaults its unavailable interval to the general one, which keeps every existing
+	// caller unchanged; a positive value replaces it before the first probe reads it.
+	if unavailable := s.unavailableInterval; unavailable > 0 {
+		group.unavailableInterval = unavailable
 	}
 	s.group = group
 	return nil
@@ -320,14 +329,17 @@ func (s *URLTest) onProviderUpdated(tag string) error {
 }
 
 type URLTestGroup struct {
-	ctx                          context.Context
-	outbound                     adapter.OutboundManager
-	pause                        pause.Manager
-	pauseCallback                *list.Element[pause.Callback]
-	logger                       log.Logger
-	outbounds                    []adapter.Outbound
-	link                         string
-	interval                     time.Duration
+	ctx           context.Context
+	outbound      adapter.OutboundManager
+	pause         pause.Manager
+	pauseCallback *list.Element[pause.Callback]
+	logger        log.Logger
+	outbounds     []adapter.Outbound
+	link          string
+	interval      time.Duration
+	// unavailableInterval applies to a target whose last probe failed: a shorter wait than the
+	// general interval, defaulting to it so a group built without the option behaves as before.
+	unavailableInterval          time.Duration
 	tolerance                    uint16
 	idleTimeout                  time.Duration
 	probeTimeout                 time.Duration
@@ -387,6 +399,7 @@ func NewURLTestGroup(ctx context.Context, outboundManager adapter.OutboundManage
 		outbounds:                    outbounds,
 		link:                         link,
 		interval:                     interval,
+		unavailableInterval:          interval,
 		tolerance:                    tolerance,
 		idleTimeout:                  idleTimeout,
 		probeTimeout:                 probeTimeout,
@@ -552,8 +565,16 @@ func (g *URLTestGroup) urlTest(ctx context.Context, force bool) (map[string]uint
 			continue
 		}
 		history := g.history.LoadURLTestHistory(realTag)
-		if !force && history != nil && time.Since(history.Time) < g.interval {
-			continue
+		if !force && history != nil {
+			interval := g.interval
+			if !adapter.URLTestHistoryIsAvailable(history) {
+				// A failed probe is worth asking again sooner than the general interval grants: one bad
+				// minute otherwise keeps the server reported unreachable for the whole of it.
+				interval = g.unavailableInterval
+			}
+			if time.Since(history.Time) < interval {
+				continue
+			}
 		}
 		checked[realTag] = true
 		p, loaded := g.outbound.Outbound(realTag)

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.14.0-extended-2.7.1-hydracore.12-debug.7
+
+- The automatic group honours `unavailable_interval`: a server whose probe failed is retried after
+  the shorter wait instead of the whole `interval`, and leaving the field out keeps the previous
+  behaviour.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.6
 
 - The VK captcha tells a timeout from a closed question: the wait returns a typed outcome, only a

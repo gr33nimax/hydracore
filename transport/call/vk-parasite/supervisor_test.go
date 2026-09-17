@@ -54,6 +54,23 @@ func TestHealthSnapshotWaitsForAllInitialPathsBeforeFailing(t *testing.T) {
 	require.Equal(t, HC.TransportStateFailed, health.State)
 }
 
+func TestHealthSnapshotKeepsRecoveringAfterLanesWereUp(t *testing.T) {
+	client := &Client{options: ClientOptions{Workers: DefaultWorkerCount}}
+	client.sawPath.Store(true)
+	client.recordPathFailure(errors.New("worker failed"))
+
+	health := client.healthSnapshot(time.Now())
+	require.Equal(t, HC.TransportStateRecovering, health.State,
+		"a retryable failure after lanes were up is a rebuild, not a refusal")
+	require.NotNil(t, health.Failure)
+
+	client.lastFailure.Store(&HC.TransportFailure{
+		Stage: "vk_auth", Kind: "credentials", Code: "4", Domain: "CREDENTIALS", Terminal: true,
+	})
+	health = client.healthSnapshot(time.Now())
+	require.Equal(t, HC.TransportStateFailed, health.State, "a terminal failure stays a failure")
+}
+
 func TestHealthSnapshotOmitsFailureWithActiveLanes(t *testing.T) {
 	client := &Client{
 		options: ClientOptions{Workers: DefaultWorkerCount},

@@ -184,6 +184,8 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 		c.lastFailure.Store(nil)
 		c.sawChallenge.Store(false)
 	}
+	// Read once, before the switch: two loads could disagree with each other.
+	failure := c.lastFailure.Load()
 	switch {
 	case challenge != nil:
 		c.sawChallenge.Store(true)
@@ -197,7 +199,11 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 		// A fast first failure must not finish startup while sibling workers are
 		// still making their initial attempts.
 		health.State = HC.TransportStateStarting
-	case c.lastFailure.Load() != nil:
+	case failure != nil && (!c.sawPath.Load() || failure.Terminal):
+		// A failure before any lane was ever up is a refusal, and the platform wants it at once
+		// rather than at the end of the start deadline. Once lanes have been up, the same
+		// retryable failure means the pool is rebuilding its paths: reporting Failed there is
+		// what escalated an internal retry into a stopped tunnel.
 		health.State = HC.TransportStateFailed
 	case !c.sawPath.Load():
 		// Первичный дозвон линий: это ещё старт, а не потеря транспорта.
@@ -206,7 +212,7 @@ func (c *Client) healthSnapshot(now time.Time) HC.TransportHealthSnapshot {
 		health.State = HC.TransportStateRecovering
 	}
 	if health.Failure == nil && activePaths == 0 && health.State != HC.TransportStateHealthy {
-		health.Failure = c.lastFailure.Load()
+		health.Failure = failure
 	}
 	return health
 }

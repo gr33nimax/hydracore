@@ -62,3 +62,14 @@ release is `v1.14.0-extended-2.7.1-hydracore.12-debug.11`, which stays published
 the same runtime code as the release candidate this stable release was frozen from.
 
 History for earlier builds lives in `CHANGELOG.md`; this file describes the current release only.
+
+## Fixes since the previous build
+
+- **WireGuard no longer takes the core down with it.** An element the encryption routine
+  dropped — the buffer it asked for was larger than the pool could hand out, and the
+  random trailer decides when that happens — kept its place in the batch with no packet
+  left. The sender then sliced it for a transport header and panicked with
+  `slice bounds out of range [8:0]`, which ended the whole core process: a tunnel that
+  starts and immediately dies, once in a while, more often on the first attempt after the
+  service is created. The sender now asks a single helper whether there is a body to send,
+  and that decision has its own test.

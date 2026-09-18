@@ -69,6 +69,8 @@ jobs:
         run: bash release/verify_upstream_baseline.sh
       - name: Test release tag contract
         run: bash release/verify_release_version_test.sh
+      - name: Test release notes discipline
+        run: bash release/verify_release_notes.sh
       - name: Resolve test link flags
         shell: bash
         run: |

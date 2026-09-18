@@ -1,5 +1,16 @@
 # Changelog
 
+## hydracore-sbe-1.14.0
+
+- First stable release under the readable tag contract
+  `hydracore-sbe-<sbe-version>` (prereleases add `-<channel>-<n>`): the version file, the version the
+  core prints, the release tag and the bundle manifest all carry `hydracore-sbe-1.14.0`.
+- This build carries the code already validated as `hydracore-sbe-1.14.0-rc-1`, which froze the code
+  the debug channel published as `hydracore-sbe-1.14.0-debug-1`; only the release identity changed,
+  no behaviour change.
+- An operator rolling back from this release returns to its named rollback target
+  `v1.14.0-extended-2.7.1-hydracore.12-debug.11`, which is published and installable today.
+
 ## hydracore-sbe-1.14.0-rc-1
 
 - Release candidate for `hydracore-sbe-1.14.0`, frozen from the code the debug channel already

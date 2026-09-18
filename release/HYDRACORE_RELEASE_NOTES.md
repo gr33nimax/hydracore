@@ -20,13 +20,15 @@ that contract reset the debug counter to `1` and is `hydracore-sbe-1.14.0-debug-
 this release candidate freezes that candidate as `hydracore-sbe-1.14.0-rc-1`, with
 no code change between the two. The legacy
 `v1.14.0-extended-2.7.1-hydracore.<cycle>-debug.<n>` tags stay published and are
-neither renumbered nor deleted.
+neither renumbered nor renamed, but they are not kept forever: the debug channel
+is a rolling window of the ten most recent prereleases, so its oldest entries
+are trimmed as new prereleases arrive.
 
 This build carries the code published as
 `v1.14.0-extended-2.7.1-hydracore.12-debug.11`; the version file — and therefore
 the version the core prints, the release tag and the bundle manifest — is the
-only difference. That legacy release is the rollback target for an operator
-moving onto this one, and it stays installable.
+only difference. That legacy release is published today and is this release's
+named rollback target for an operator moving onto this one.
 
 debug.3 answers the capability document HYDRA read before the product contract
 replaced it. A HYDRA older than the contract validates a core with

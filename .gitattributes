@@ -5,3 +5,8 @@
 Makefile text eol=lf
 *.sh text eol=lf
 *.go text eol=lf
+# shellcheck reads this file to apply its own disable directives. A CRLF
+# checkout breaks that parsing: the value becomes `SC1017\r`, so the directive
+# is ignored and the carriage returns are reported against whichever script is
+# being checked.
+.shellcheckrc text eol=lf

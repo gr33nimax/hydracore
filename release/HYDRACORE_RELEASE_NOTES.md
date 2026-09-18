@@ -1,200 +1,75 @@
-# HydraCore debug release notes
+# HydraCore 1.14.1 release notes
 
-This release moves the core to `sing-box-extended v1.14.0-extended-2.7.1`. The
-Hydra layer is unchanged in behaviour: the merge keeps the Calls runtime, the
-runtime event stream, the TURN edge store and the release tooling, and drops the
-upstream documentation and CI the distribution does not ship. The vendored
-`pion/dtls` fork is resynced to v3.1.5 with its allocation patch re-applied;
-`pion/turn` stays on the upstream v4.1.4.
+HydraCore is the network runtime behind Hydra: the `vk_parasite` transport that carries
+QUIC inside VK call datagrams, plus the Android runtime the client application loads. The
+VPS side is a single `sing-box` binary; the client side is a libbox AAR. This release moves
+the core onto sing-box-extended `v1.14.0-extended-2.7.1` and is the first stable release
+published under the readable tag contract.
 
-The client ABI is now 2. The core accepts the complete AmneziaWG 3.1
-configuration, including `random_trailers` and `disable_cookies`, which the
-pinned `wireguard-go` fork already understands at the UAPI level; an application
-built against ABI 1 refuses to run with this core instead of failing to parse a
-3.1 profile at tunnel start.
+## Compatibility — read before upgrading
 
-Release names now follow the readable channel contract
-`hydracore-sbe-<sbe-version>-<channel>-<n>`: the tag names the sing-box-extended
-baseline and a counter from `1` inside that channel. The first release under
-that contract reset the debug counter to `1` and is `hydracore-sbe-1.14.0-debug-1`;
-this release candidate freezes that candidate as `hydracore-sbe-1.14.0-rc-1`, with
-no code change between the two. The legacy
-`v1.14.0-extended-2.7.1-hydracore.<cycle>-debug.<n>` tags stay published and are
-neither renumbered nor renamed, but they are not kept forever: the debug channel
-is a rolling window of the ten most recent prereleases, so its oldest entries
-are trimmed as new prereleases arrive.
+- **Transport is wire v10.** The DTLS layer that sat under the RTP-shaped wrapper is gone:
+  every byte of it travelled inside an already-sealed payload, while costing 37 bytes and
+  an AES-GCM pass per packet in each direction. Worker authentication is now the first
+  stream of each QUIC connection, and the VPS serves every worker from one QUIC listener
+  on the shared UDP socket, telling connections apart by QUIC connection ID.
+  A client older than protocol 10 cannot talk to a protocol 10 VPS at all.
+- **Client and VPS come from one release.** Take both sides from the same release manifest
+  and the same source commit; mixed wire versions are refused during worker authentication.
+- **Client ABI is 2.** The core accepts the complete AmneziaWG 3.1 configuration, including
+  `random_trailers` and `disable_cookies`. An application built against ABI 1 refuses to run
+  with this core instead of failing to parse a 3.1 profile at tunnel start.
+- **Runtime identity is unchanged:** `io.hydrabox.hydracore`, contract version 1, `vps` role,
+  `vk_parasite` mode. The core answers both the product contract and the capability document
+  an older HYDRA reads before switching kernels, so a server whose core and updater sit a
+  release apart can move in either direction.
 
-This build carries the code published as
-`v1.14.0-extended-2.7.1-hydracore.12-debug.11`; the version file — and therefore
-the version the core prints, the release tag and the bundle manifest — is the
-only difference. That legacy release is published today and is this release's
-named rollback target for an operator moving onto this one.
+## What this release carries
 
-debug.3 answers the capability document HYDRA read before the product contract
-replaced it. A HYDRA older than the contract validates a core with
-`hydra capabilities --json` and refuses to install one that does not answer, while
-its successor requires this core — so without the answer a server in the field
-cannot move at all, which is what an update on a running machine did. Nothing else
-about the core's identity changed: the document is derived from the same build tags
-the contract reads, and CI now checks both readers against the published VPS
-runtime.
+- `vk_parasite` over four required VK/TURN paths, four workers per path by default and up to
+  twenty in multiples of four, with generation-scoped recovery across network changes.
+- Transport health as part of the typed runtime stream: reports carry the outbound tag and
+  runtime generation, and the TURN edge a transport last reached is readable as an
+  attribution instead of whichever server was announced last.
+- Client-facing behaviour behind capability flags, so an older client paired with this core
+  keeps its own defaults: a DoH resolver keeps its query string, the automatic `urltest`
+  group honours the client's probe timeout and concurrency, and a failed probe is retried
+  sooner than the general interval instead of being reported unreachable for the whole wait.
+- A switchable log factory: the active level can be turned off and built again at runtime.
 
-debug.3 also carries two fixes found by running the stack: a failed URL test is
-recorded as an unavailable observation instead of deleting the history that
-clients render, and the VK captcha proxy has deadlines and a readable failure
-instead of an answer that never comes.
+## Tag contract
 
-debug.2 restores the memory-limit entry point the Android application calls. The
-function was dropped in the merge because no Go code used it, but the client
-reaches it through gomobile as `Libbox.setMemoryLimit`; without it a client does
-not compile against the published AAR. Its behaviour is unchanged: GOGC stays at
-its default and the limit is a soft heap ceiling, while the upstream OOM service
-keeps its own path.
+Release names now name the sing-box-extended baseline and a counter inside a channel:
+`hydracore-sbe-<sbe-version>` for a stable release, `-debug-<n>` for an ordinary debug
+prerelease, and `-rc-<n>` for a frozen release candidate. The counters start at `1` in this
+contract. Older `v1.14.0-extended-2.7.1-hydracore.<cycle>-debug.<n>` tags are neither
+renumbered nor renamed, and only ordinary `-debug-<n>` prereleases take part in the debug
+channel's ten-release rolling window, so a release candidate or a legacy tag is never
+trimmed as new debug builds arrive.
 
-This prerelease ships the protocol-v10 `vk_parasite` transport: QUIC over four
-required VK/TURN paths, with four paths by default and up to twenty workers in
-multiples of four.
+## Assets
 
-Protocol 10 removed the DTLS layer. It ran underneath the RTP-shaped wrapper, so
-every byte of it travelled inside the sealed payload and was never visible to an
-observer on the path, while costing 37 bytes and one AES-GCM pass per packet in
-each direction. Worker authentication is now the first stream of each QUIC
-connection, and the VPS serves every worker from one QUIC listener on the shared
-UDP socket, telling connections apart by their QUIC connection ID.
+CI verifies every release before publication. Each release carries the Android AAR and its
+sources, three Android shared libraries, the Linux `amd64` and `arm64` archives, and a signed
+bundle manifest. Install artifacts from GitHub Releases only: a VPS takes the `sing-box`
+binary, a client takes the AAR and the shared libraries.
 
-A client older than protocol 10 cannot talk to a protocol 10 VPS at all. Client
-and VPS must come from the same release manifest and source commit.
+## Upgrade and rollback
 
-Transport health is part of the typed runtime stream. Reports carry the outbound
-tag and runtime generation; material state, challenge, lane, and failure changes
-wake the existing stream without JSON polling across JNI.
+Upgrading means replacing the core binary or the client artifacts; no configuration change is
+required for a deployment that already runs `vk_parasite`. The named rollback target for this
+release is `v1.14.0-extended-2.7.1-hydracore.12-debug.11`, which stays published and carries
+the same runtime code as the release candidate this stable release was frozen from.
 
-debug.61 carries one fix on top of debug.60: the TURN edge record's
-generation check and its write are one step inside the store, so a
-transport callback suspended across a runtime switch can no longer land
-after the new runtime's record and overwrite it. The current transport's
-edge no longer goes stale until its next allocation.
+History for earlier builds lives in `CHANGELOG.md`; this file describes the current release only.
 
-debug.60 carries the second September hardening round. The runtime event
-stream follows every non-zero traffic reading with exactly one closing
-reading, so a speed that was measured no longer stays on screen for as
-long as nothing else happens; quiet traffic costs no wake-ups at all.
-The logger's delegate cache is one atomic value - an OFF-ON transition
-could previously pair an old logger with a new revision and use a
-factory after its close - and the active level is stored atomically and
-applied before a new factory is published. A leftover transport client
-that finishes an allocation or a health publish after the runtime
-switched can no longer publish or record under the generation that
-replaced it.
+## Fixes since the previous build
 
-The TURN edge record is an attribution now: it carries the transport tag
-and the runtime generation the allocation happened under, readable
-through `HydraCoreTurnEdgeAttribution` and reported as the
-`turn_edge_attribution` capability. A client can file the edge under the
-server that actually reached it instead of whichever one was announced
-last; a record from an older core belongs to nobody in particular.
-
-debug.59 carries the runtime hardening from the September audit round. Workers
-survive a network rebind that lands while their reconnect sits in backoff, a
-dial completed for an old network generation is rejected instead of used, and
-the first path failure no longer ends startup while other initial attempts are
-still in flight. Cached TURN credentials are refreshed only after a confirmed
-authentication rejection, and join credentials never reach the ordinary log.
-
-Three client-facing abilities are new behind capability flags, so an older
-client paired with this core keeps its own behaviour: a DoH resolver keeps its
-query string (`dns_query`), the automatic `urltest` group honours the client's
-probe timeout and concurrency (`urltest_probe_budget`), and the TURN edge a
-transport last reached is readable across processes for a workerless
-reachability probe (`turn_edge_endpoint`). `SetLogLevel` understands `off` as
-its own instruction — every factory, including one that started at DEBUG, can
-be released at runtime and built again.
-
-The release contains separate Android client and Linux VPS runtimes. The VPS
-advertises `call_vk_parasite_server`; the client advertises
-`call_vk_parasite_client`; both advertise `call_vk_parasite_quic`.
-
-CI verifies every release before publication. Assets are the Android AAR and
-sources, three Android shared libraries, two Linux archives, and a signed bundle
-manifest.
-
-Both sides of an update are readable in this release. The core answers the
-capability document the previous HYDRA reads and the product contract it prints
-itself, so a server whose core and its updater sit a release apart can move in
-either direction. A switchable log factory also answers the whole observable
-interface: `New` returns that wrapper for every configuration and the core
-asserts it while building Clash, the daemon's attached service and the log
-subscription, so any configuration with Clash in it used to end at startup in an
-interface conversion — the refusal a live server met when it switched kernels.
-Platform writers attached while logging is off are handed to the factory built
-when it is turned on.
-
-## v1.14.0-extended-2.7.1-hydracore.12-debug.8
-
-An AmneziaWG profile with a large transport padding no longer ends the core in a panic. The
-encryption worker derived its slice bounds from `S4` before proving that the element's buffer could
-hold them, so a padding of 278 bytes over a 256-byte buffer died in `RoutineEncryption` with
-`slice bounds out of range [:278] with capacity 256` — the crash an Android client met while
-starting a 3.1 profile. The worker sizes the buffer from the layout it is about to write, carries
-the plaintext into a replacement when the element's own buffer is too small, and drops a packet
-that cannot fit the transport message rather than letting it through or panicking.
-
-The same padding is no longer sliced before the core knows it needs it: `HeaderProtectionCipher`
-receives the whole padding and returns without a key, so an `S1`-`S4` below the twelve-byte nonce
-stays legal while header protection is off — which is what the configuration gate always allowed.
-
-Random trailers no longer swallow established traffic. With the trailer switched on, a transport
-datagram is longer than the handshake message it is compared against, and the receive path tested
-the handshake headers `H1`-`H3` first: a padding byte or a transport header landing inside one of
-those ranges classified the packet as a handshake, which then failed its MAC1 and was discarded
-without a word. A handshake-looking packet is confirmed by MAC1 before it wins, and a cookie reply
-that could be either yields to transport, because a handshake can be retried and a dropped data
-packet cannot be recovered.
-
-## v1.14.0-extended-2.7.1-hydracore.12-debug.7
-
-A server whose probe failed is asked again sooner than the general interval grants. The automatic
-group takes a new `unavailable_interval`: a target whose last measurement failed is retried after
-that shorter wait instead of staying reported unreachable for the whole `interval`, which is what a
-single hiccup used to cost. Zero leaves the field out and the group keeps its previous behaviour, so
-a configuration written before this release is read exactly as it was.
-
-## v1.14.0-extended-2.7.1-hydracore.12-debug.6
-
-The captcha now tells a timeout from a closed question. Its wait returned an empty token for four
-different endings — solved, closed by the person, window expired, proxy gone — and the caller
-reported every one of them as `vk.captcha.cancelled` with the attempt marked terminal, so a window
-that simply ran out refused a retry. The endings are typed now (`CaptchaSolved`, `CaptchaCancelled`,
-`CaptchaTimedOut`, `CaptchaContextCancelled`, `CaptchaProxyFailed`): only a question the person
-actually closed ends the attempt, while a timeout and a dead proxy are retryable and each says its
-name in the journal. The proxy also bounds an upstream body at 8 MiB and serves through a managed
-`http.Server` whose death ends the wait instead of leaving the core to sit out its window.
-
-A URL test nobody ran no longer looks like a test that passed. When a sweep ends early — a session
-deadline, a cancelled measurement — every target the workers never reached reports
-`not measured: the session deadline expired before this probe started`, so the screen stops showing
-a figure from a previous run as if it were current. The fixed fifteen-second client timeout is gone:
-the probe context already carries the deadline its caller chose, and the second (unified-delay)
-request is bound to that context, where before it had none and could hang forever. A sub-millisecond
-success is floored at one millisecond, because the history layer reads a zero delay as no measurement.
-
-The Snell implementation is unchanged in this build; a loopback probe against the build in the field
-answered 204 for the classic pair over `none`, `http` and `tls` and for all three generation-6 modes,
-so the pairing itself — server 5 with client 4, server 6 with client 6 — carries traffic in every
-mode this core offers.
-
-## v1.14.0-extended-2.7.1-hydracore.12-debug.5
-
-Random trailers no longer break an AmneziaWG handshake. With the trailer switched on, the send buffer is
-longer than the handshake message, and three call sites in the WireGuard fork assumed the two were the
-same length: the marshallers refuse a longer buffer and that error was ignored, so the initiation went out
-with an all-zero message, and the MAC writer placed its MACs at the end of the buffer — inside the trailer
-— and computed them over the wrong range. A peer could therefore only answer `received message with
-unknown type` or `received packet with invalid mac1`. Each call now receives exactly its message, the way
-the receive side already trims a packet to its message size.
-
-The WireGuard fork is vendored into `forks/wireguard-go`: HydraCore builds from its own tree instead of a
-third-party module tag. `forks/wireguard-go/FORK.md` records the origin, the patch, and the one known
-platform gap (the Windows ring-I/O receive path). The vendored copy also carries test files that do not
-compile as published; fixing or replacing them is a separate task.
-
+- **WireGuard no longer takes the core down with it.** An element the encryption routine
+  dropped — the buffer it asked for was larger than the pool could hand out, and the
+  random trailer decides when that happens — kept its place in the batch with no packet
+  left. The sender then sliced it for a transport header and panicked with
+  `slice bounds out of range [8:0]`, which ended the whole core process: a tunnel that
+  starts and immediately dies, once in a while, more often on the first attempt after the
+  service is created. The sender now asks a single helper whether there is a body to send,
+  and that decision has its own test.

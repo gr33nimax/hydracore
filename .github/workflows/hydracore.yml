@@ -69,6 +69,8 @@ jobs:
         run: bash release/verify_upstream_baseline.sh
       - name: Test release tag contract
         run: bash release/verify_release_version_test.sh
+      - name: Test release notes discipline
+        run: bash release/verify_release_notes.sh
       - name: Resolve test link flags
         shell: bash
         run: |
@@ -416,11 +418,15 @@ jobs:
         run: |
           set -euo pipefail
           # The debug channel is a rolling window, not an archive: keep the ten
-          # most recent prereleases and drop the rest together with their tags.
+          # most recent current-contract debug prereleases and drop the rest
+          # together with their tags. Release candidates and the retired legacy
+          # naming are never pruned, so a promotion artifact or a rollback target
+          # cannot be evicted by later debug publications. The tag contract
+          # refuses new legacy names, so that exempt set never grows.
           keep=10
           gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
             --json tagName,createdAt,isPrerelease \
-            --jq 'sort_by(.createdAt) | reverse | map(select(.isPrerelease)) | .[].tagName' \
+            --jq 'sort_by(.createdAt) | reverse | map(select(.isPrerelease and (.tagName | test("^hydracore-sbe-[0-9]+\\.[0-9]+\\.[0-9]+-debug-[1-9][0-9]*$")))) | .[].tagName' \
             > prereleases.txt
           tail -n +$((keep + 1)) prereleases.txt | while read -r tag; do
             [ -n "$tag" ] || continue

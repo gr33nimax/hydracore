@@ -16,8 +16,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/call"
-	"github.com/sagernet/sing-box/transport/call/multiuser"
-	calltunnel "github.com/sagernet/sing-box/transport/call/tunnel"
+	vkparasite "github.com/sagernet/sing-box/transport/call/vk-parasite"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/bufio/deadline"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -40,7 +39,7 @@ type Inbound struct {
 	dialer   N.Dialer
 	bridge   *call.Bridge
 	listener *listener.Listener
-	server   *multiuser.Server
+	server   *vkparasite.Server
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallInboundOptions) (adapter.Inbound, error) {
@@ -66,9 +65,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		options: options,
 		dialer:  outboundDialer,
 	}
-	if options.Mode == "multi_user" {
+	if options.Mode == "vk_parasite" {
 		if options.Platform != "vk" {
-			return nil, E.New("call multi_user is only supported for vk")
+			return nil, E.New("call vk_parasite is only supported for vk")
 		}
 		if options.Listen == nil || options.ListenPort == 0 {
 			return nil, E.New("missing listen or listen_port")
@@ -87,19 +86,21 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 				Detour:        options.Detour,
 			},
 		})
-		users := make([]multiuser.ServerUser, 0, len(options.Users))
+		users := make([]vkparasite.ServerUser, 0, len(options.Users))
 		for _, user := range options.Users {
-			users = append(users, multiuser.ServerUser{Name: user.Name, Password: user.Password, MaxSessions: user.MaxSessions})
+			users = append(users, vkparasite.ServerUser{Name: user.Name, Password: user.Password, MaxSessions: user.MaxSessions})
 		}
-		h.server, err = multiuser.NewServer(ctx, multiuser.ServerOptions{
-			ObfsPassword:         options.ObfsPassword,
-			Users:                users,
-			MaxSessions:          options.MaxSessions,
-			MaxWorkersPerSession: options.MaxWorkersPerSession,
-			MaxPendingHandshakes: options.MaxPendingHandshakes,
-			HandshakeTimeout:     time.Duration(options.HandshakeTimeout),
-			SessionIdleTimeout:   time.Duration(options.SessionIdleTimeout),
-			SessionHandler:       h.handleMultiUserSession,
+		h.server, err = vkparasite.NewServer(ctx, vkparasite.ServerOptions{
+			ObfsPassword:          options.ObfsPassword,
+			Users:                 users,
+			MaxSessions:           options.MaxSessions,
+			MaxWorkersPerSession:  options.MaxWorkersPerSession,
+			MaxPendingHandshakes:  options.MaxPendingHandshakes,
+			HandshakeTimeout:      time.Duration(options.HandshakeTimeout),
+			SessionIdleTimeout:    time.Duration(options.SessionIdleTimeout),
+			UDPReceiveBufferBytes: options.UDPReceiveBufferBytes,
+			UDPSendBufferBytes:    options.UDPSendBufferBytes,
+			SessionHandler:        h.handleParasiteSession,
 		}, logger)
 		if err != nil {
 			return nil, err
@@ -169,16 +170,14 @@ func (h *Inbound) run() {
 	})
 }
 
-func (h *Inbound) handleMultiUserSession(info multiuser.SessionInfo, dataTunnel *multiuser.PooledTunnel) error {
-	bridge := calltunnel.NewRelayBridge(dataTunnel, "creator", normalizedReadBuffer(h.options.ReadBuffer), h.dialer, h.logger)
-	bridge.SetAcceptHandler(func(conn net.Conn, destination string) {
+func (h *Inbound) handleParasiteSession(info vkparasite.SessionInfo, relay *vkparasite.QUICRelay) error {
+	relay.SetAcceptHandler(func(conn net.Conn, destination string) {
 		h.handleConnection(conn, M.ParseSocksaddr(destination), info.User)
 	})
-	bridge.SetUDPAcceptHandler(func(conn net.Conn, destination string) {
+	relay.SetUDPAcceptHandler(func(conn net.Conn, destination string) {
 		parsed := M.ParseSocksaddr(destination)
 		h.handlePacketConnection(bufio.NewUnbindPacketConnWithAddr(conn, parsed), parsed, info.User)
 	})
-	bridge.MarkReady()
 	return nil
 }
 

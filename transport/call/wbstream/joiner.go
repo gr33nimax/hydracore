@@ -13,6 +13,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/common"
+	rtc "github.com/sagernet/sing-box/transport/call/common/rtc"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -29,7 +30,7 @@ type WBStreamJoiner struct {
 	OnConnected func(tunnel.DataTunnel)
 	dialer      N.Dialer
 	dnsRouter   adapter.DNSRouter
-	PCConfig    common.PeerConnectionConfigurer
+	PCConfig    rtc.PeerConnectionConfigurer
 
 	mu       sync.Mutex
 	session  *Session
@@ -38,7 +39,7 @@ type WBStreamJoiner struct {
 	stopOnce sync.Once
 }
 
-func NewWBStreamJoiner(logger logger.ContextLogger, dialer N.Dialer, dnsRouter adapter.DNSRouter, pcConfig common.PeerConnectionConfigurer) *WBStreamJoiner {
+func NewWBStreamJoiner(logger logger.ContextLogger, dialer N.Dialer, dnsRouter adapter.DNSRouter, pcConfig rtc.PeerConnectionConfigurer) *WBStreamJoiner {
 	return &WBStreamJoiner{
 		logger:    logger,
 		dialer:    dialer,

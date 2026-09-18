@@ -44,10 +44,10 @@ func TestHydraSubscriptionV2AcceptsCallInboundAndOutbound(t *testing.T) {
 	require.NotContains(t, inspection, "call.example.invalid")
 }
 
-func TestHydraSubscriptionV2AcceptsVKMultiUserCall(t *testing.T) {
+func TestHydraSubscriptionV2AcceptsVKParasiteCall(t *testing.T) {
 	content := strings.Replace(validHydraSubscriptionJSON(),
 		`"features":["rmux"]`,
-		`"features":["rmux","call","call_vk_multi_user"]`,
+		`"features":["rmux","call","call_vk_parasite"]`,
 		1,
 	)
 	content = strings.Replace(content,
@@ -56,18 +56,18 @@ func TestHydraSubscriptionV2AcceptsVKMultiUserCall(t *testing.T) {
 		`"requested_permissions":["network.outbound","network.inbound.call"],
         "document":{
           "inbounds":[{
-            "type":"call","tag":"call-vk-server","platform":"vk","mode":"multi_user",
+            "type":"call","tag":"call-vk-server","platform":"vk","mode":"vk_parasite",
             "listen":"0.0.0.0","listen_port":2443,"obfs_password":"shared-obfs-secret",
             "users":[{"name":"alice","password":"user-secret","max_sessions":1}],
-            "max_sessions":32,"max_workers_per_session":4,"max_pending_handshakes":128,
+			"max_sessions":32,"max_workers_per_session":12,"max_pending_handshakes":128,
             "handshake_timeout":"15s","session_idle_timeout":"5m"
           }],
           "outbounds":[{
-            "type":"call","tag":"proxy-main","platform":"vk","mode":"multi_user",
+            "type":"call","tag":"proxy-main","platform":"vk","mode":"vk_parasite",
             "server":"vpn.example.invalid","server_port":2443,
             "join_links":["https://vk.com/call/join/room-a","https://vk.com/call/join/room-b"],
             "user":"alice","password":"user-secret","obfs_password":"shared-obfs-secret",
-            "workers":2,"worker_connect_timeout":"30s"
+			"workers":12,"worker_connect_timeout":"30s"
           }]
         }`,
 		1,

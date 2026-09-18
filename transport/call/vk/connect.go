@@ -1,3 +1,5 @@
+//go:build with_call_legacy
+
 package vk
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/common"
+	rtc "github.com/sagernet/sing-box/transport/call/common/rtc"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
@@ -102,8 +105,8 @@ func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf in
 	joiner := NewVKJoiner(
 		logger,
 		nil,
-		common.AddTunnelTracks,
-		common.ReadTrack,
+		rtc.AddTunnelTracks,
+		rtc.ReadTrack,
 		dialer,
 		dnsRouter,
 	)

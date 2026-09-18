@@ -2,16 +2,11 @@ package call
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/transport/call/dion"
-	"github.com/sagernet/sing-box/transport/call/telemost"
-	"github.com/sagernet/sing-box/transport/call/tunnel"
-	"github.com/sagernet/sing-box/transport/call/vk"
-	"github.com/sagernet/sing-box/transport/call/wbstream"
+	vkparasite "github.com/sagernet/sing-box/transport/call/vk-parasite"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -26,6 +21,7 @@ const (
 )
 
 type Config struct {
+	TransportTag         string
 	Platform             string
 	Mode                 string
 	JoinLink             string
@@ -60,102 +56,56 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 	if cookieStr == "" {
 		cookieStr = cfg.Cookies
 	}
-	if cfg.Mode == "multi_user" {
+	if cfg.Mode == "vk_parasite" {
 		if cfg.Platform != "vk" {
-			return nil, E.New("call: multi_user mode is only supported for vk")
+			return nil, E.New("call: vk_parasite mode is only supported for vk")
 		}
 		if cfg.Role != RoleJoiner {
-			return nil, E.New("call: multi_user creator role is hosted by the native inbound")
+			return nil, E.New("call: vk_parasite creator role is hosted by the native inbound")
 		}
-		return connectMultiUserBridge(ctx, cfg, readBuf, log)
+		relay, closer, err := vkparasite.ConnectBridge(ctx, vkparasite.BridgeOptions{
+			TransportTag:         cfg.TransportTag,
+			Server:               cfg.Server,
+			JoinLinks:            cfg.JoinLinks,
+			User:                 cfg.User,
+			Password:             cfg.UserPassword,
+			ObfsPassword:         cfg.ObfsPassword,
+			Workers:              cfg.Workers,
+			WorkerConnectTimeout: cfg.WorkerConnectTimeout,
+			ReadBuffer:           readBuf,
+			Dialer:               cfg.Dialer,
+			DNSRouter:            cfg.DNSRouter,
+		}, log)
+		if err != nil {
+			return nil, err
+		}
+		return &Bridge{relay: relay, closer: closer}, nil
 	}
-	switch cfg.Platform {
-	case "telemost":
-		switch cfg.Role {
-		case RoleCreator:
-			relay, joinLink, err := telemost.ConnectCreator(ctx, cookieStr, cfg.JoinLink, readBuf, cfg.Dialer, log)
-			if err != nil {
-				return nil, err
-			}
-			log.Notice(fmt.Sprintf("call[telemost]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
-		case RoleJoiner:
-			tun, err := telemost.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
-			if err != nil {
-				return nil, err
-			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
-			return &Bridge{relay: relay}, nil
-		}
-	case "wbstream":
-		switch cfg.Role {
-		case RoleCreator:
-			relay, joinLink, err := wbstream.ConnectCreator(ctx, cookieStr, cfg.JoinLink, cfg.Mode, readBuf, cfg.Dialer, log)
-			if err != nil {
-				return nil, err
-			}
-			log.Notice(fmt.Sprintf("call[wbstream]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
-		case RoleJoiner:
-			tun, err := wbstream.ConnectJoiner(ctx, cfg.JoinLink, "", cfg.Mode, readBuf, cfg.Dialer, cfg.DNSRouter, log)
-			if err != nil {
-				return nil, err
-			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
-			return &Bridge{relay: relay}, nil
-		}
-	case "vk":
-		switch cfg.Role {
-		case RoleCreator:
-			relay, joinLink, err := vk.ConnectCreator(ctx, cookieStr, cfg.JoinLink, readBuf, cfg.Dialer, log)
-			if err != nil {
-				return nil, err
-			}
-			log.Notice(fmt.Sprintf("call[vk]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
-		case RoleJoiner:
-			tun, err := vk.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
-			if err != nil {
-				return nil, err
-			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
-			return &Bridge{relay: relay}, nil
-		}
-	case "dion":
-		switch cfg.Role {
-		case RoleCreator:
-			relay, joinLink, err := dion.ConnectCreator(ctx, cookieStr, cfg.JoinLink, cfg.Email, cfg.Password, readBuf, cfg.Dialer, log)
-			if err != nil {
-				return nil, err
-			}
-			log.Notice(fmt.Sprintf("call[dion]: join_link=%s", joinLink))
-			return &Bridge{relay: relay}, nil
-		case RoleJoiner:
-			tun, err := dion.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, log)
-			if err != nil {
-				return nil, err
-			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
-			return &Bridge{relay: relay}, nil
-		}
-	}
-	return nil, E.New("call: unsupported platform ", cfg.Platform)
+	return connectLegacyPlatform(ctx, cfg, readBuf, cookieStr, log)
+}
+
+// ai-generated: RelayTransport interface extraction for decoupling proxy logic and underlying transport
+// RelayTransport - seam between call proxy logic and underlying transport.
+// Implementations: tunnel.RelayBridge (for telemost/dion/vk-p2p/wbstream),
+// vkparasite.QUICRelay (step 6).
+type RelayTransport interface {
+	DialContext(ctx context.Context, destination string) (net.Conn, error)
+	ListenPacket(ctx context.Context, destination string) (net.Conn, error)
+	SetAcceptHandler(fn func(conn net.Conn, destination string))
+	SetUDPAcceptHandler(fn func(conn net.Conn, destination string))
+	Close()
 }
 
 type Bridge struct {
-	relay  *tunnel.RelayBridge
+	relay  RelayTransport
 	closer interface{ Close() error }
 }
 
 type networkRebinder interface {
-	RebindNetwork()
+	RebindNetwork(...uint64)
 }
 
-func NewBridge(relay *tunnel.RelayBridge) *Bridge {
+func NewBridge(relay RelayTransport) *Bridge {
 	return &Bridge{relay: relay}
 }
 
@@ -168,9 +118,9 @@ func (b *Bridge) Close() error {
 	return closeErr
 }
 
-func (b *Bridge) RebindNetwork() {
+func (b *Bridge) RebindNetwork(generation ...uint64) {
 	if rebinder, loaded := b.closer.(networkRebinder); loaded {
-		rebinder.RebindNetwork()
+		rebinder.RebindNetwork(generation...)
 	}
 }
 

@@ -1,0 +1,7 @@
+# A GNU makefile is line-oriented text, not a Windows artifact: keep it LF in
+# the working tree so analysers see the same bytes the index holds. The shell
+# scripts are checked with shellcheck, which reads a carriage return as part of
+# the command, and the Go toolchain is happier without CRLF either.
+Makefile text eol=lf
+*.sh text eol=lf
+*.go text eol=lf

@@ -1,3 +1,5 @@
+//go:build with_call_legacy
+
 package vk
 
 import (

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
@@ -35,8 +37,15 @@ func runVKLegacyAuth(dialer N.Dialer, joinLink, displayName string, logger logge
 	return runVKLegacyAuthContext(context.Background(), dialer, joinLink, displayName, logger)
 }
 
+var captchaFlowGate = make(chan struct{}, 1)
+
+func init() {
+	captchaFlowGate <- struct{}{}
+}
+
 func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
 	client := common.HttpClient(dialer)
+	client.Jar = vkSharedCookieJar
 	httpPost := func(targetURL string, form url.Values, extraHeaders map[string]string) (map[string]interface{}, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(form.Encode()))
 		if err != nil {
@@ -128,21 +137,17 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 		}
 		if errObj, hasErr := callResp["error"].(map[string]interface{}); hasErr {
 			errCode, _ := errObj["error_code"].(float64)
+			if int(errCode) == 9 {
+				return "", &ControlPlaneError{Stage: "vk_legacy", Kind: "rate_limit", Code: "9", Cause: ErrVKFloodControl}
+			}
 			if int(errCode) == 14 {
 				captchaErr := parseVKCaptchaError(errObj)
 				if captchaErr == nil {
 					return "", fmt.Errorf("captcha error missing fields: %v", errObj)
 				}
-				logger.Info("vk-auth: captcha required")
-				proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer)
-				if proxyPort == 0 {
-					return "", fmt.Errorf("failed to start captcha proxy")
-				}
-				logger.Notice(fmt.Sprintf("vk-auth: solve the captcha to continue: http://127.0.0.1:%d/", proxyPort))
-				successToken := GetCaptchaResult()
-				StopCaptchaProxy()
-				if successToken == "" {
-					return "", fmt.Errorf("captcha timed out")
+				successToken, solveErr := solveVKCaptcha(ctx, captchaErr, dialer, logger)
+				if solveErr != nil {
+					return "", solveErr
 				}
 				logger.Info("vk-auth: captcha solved, retrying")
 				captchaAttempt := captchaErr.captchaAttempt
@@ -181,7 +186,7 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 	if !strings.HasSuffix(baseURL, "/fb.do") {
 		baseURL += "/fb.do"
 	}
-	deviceID := fmt.Sprintf("%d", rand.Int63n(9e18))
+	deviceID := vkStableDeviceID
 	sessionData, _ := json.Marshal(map[string]interface{}{
 		"version":        2,
 		"device_id":      deviceID,
@@ -223,6 +228,55 @@ func runVKLegacyAuthContext(ctx context.Context, dialer N.Dialer, joinLink, disp
 	return string(jsonBytes), nil
 }
 
+func solveVKCaptcha(ctx context.Context, captchaErr *vkCaptchaError, dialer N.Dialer, logger logger.ContextLogger) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-captchaFlowGate:
+	}
+	defer func() { captchaFlowGate <- struct{}{} }()
+
+	logger.Info("vk-auth: captcha challenge requires user interaction")
+	proxyPort := StartCaptchaProxy(captchaErr.redirectURI, dialer, logger)
+	if proxyPort == 0 {
+		return "", newControlPlaneError("vk_legacy", "captcha_proxy", "start_failed", ErrVKCaptchaRequired)
+	}
+	defer StopCaptchaProxy()
+
+	challengeID := uuid.NewString()
+	challengeContext, cancelChallenge := context.WithCancel(ctx)
+	defer cancelChallenge()
+	defer HC.ClearRuntimeChallenge(challengeID)
+	HC.PublishRuntimeChallenge(HC.RuntimeChallenge{
+		ID: challengeID, Kind: "vk_captcha", URL: fmt.Sprintf("http://127.0.0.1:%d/", proxyPort),
+		CreatedAt: time.Now().UnixMilli(), ExpiresAt: time.Now().Add(captchaWindow).UnixMilli(),
+	}, cancelChallenge)
+	logger.Notice(fmt.Sprintf("vk-auth: challenge ready: %s", challengeID))
+	result := GetCaptchaResultContext(challengeContext, captchaWindow)
+	if result.Outcome == CaptchaSolved {
+		return result.Token, nil
+	}
+	// Only a question the person actually closed ends the attempt. A window that ran out, a proxy
+	// that died underneath the question and a wait that was torn down differ in exactly that: they
+	// may be asked again, and saying "cancelled" for them told the caller to give up.
+	code := "vk.captcha.cancelled"
+	terminal := ctx.Err() == nil
+	switch result.Outcome {
+	case CaptchaTimedOut:
+		code, terminal = "vk.captcha.timeout", false
+	case CaptchaProxyFailed:
+		code, terminal = "vk.captcha.proxy_failed", false
+	case CaptchaCancelled:
+		// The proxy went away rather than the person answering: another window is worth trying.
+		code, terminal = "vk.captcha.proxy_gone", false
+	}
+	logger.Warn(fmt.Sprintf("vk-auth: captcha %s ended as %s (terminal=%t)", challengeID, code, terminal))
+	return "", &ControlPlaneError{
+		Stage: "vk_legacy", Kind: "captcha", Code: code, ChallengeID: challengeID,
+		Terminal: terminal, Cause: ErrVKCaptchaRequired,
+	}
+}
+
 func parseVKCaptchaError(errObj map[string]interface{}) *vkCaptchaError {
 	redirectURI, _ := errObj["redirect_uri"].(string)
 	if redirectURI == "" {
@@ -234,13 +288,24 @@ func parseVKCaptchaError(errObj map[string]interface{}) *vkCaptchaError {
 	} else if sidNum, ok := errObj["captcha_sid"].(float64); ok {
 		captchaSid = fmt.Sprintf("%.0f", sidNum)
 	}
-	captchaTs, _ := errObj["captcha_ts"].(string)
-	captchaAttempt, _ := errObj["captcha_attempt"].(string)
+	captchaTs := captchaFieldString(errObj["captcha_ts"])
+	captchaAttempt := captchaFieldString(errObj["captcha_attempt"])
 	return &vkCaptchaError{
 		captchaSid:     captchaSid,
 		redirectURI:    redirectURI,
 		captchaTs:      captchaTs,
 		captchaAttempt: captchaAttempt,
+	}
+}
+
+func captchaFieldString(value interface{}) string {
+	switch value := value.(type) {
+	case string:
+		return value
+	case float64:
+		return fmt.Sprintf("%.0f", value)
+	default:
+		return ""
 	}
 }
 

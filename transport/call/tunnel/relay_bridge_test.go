@@ -17,6 +17,16 @@ type discardDataTunnel struct {
 	onClose func()
 }
 
+type flowControlDataTunnel struct {
+	discardDataTunnel
+	frames chan []byte
+}
+
+func (*flowControlDataTunnel) FlowControlEnabled() bool { return true }
+func (t *flowControlDataTunnel) SendData(frame []byte) {
+	t.frames <- append([]byte(nil), frame...)
+}
+
 func (*discardDataTunnel) SendData([]byte)             {}
 func (t *discardDataTunnel) SetOnData(fn func([]byte)) { t.onData = fn }
 func (t *discardDataTunnel) SetOnClose(fn func())      { t.onClose = fn }
@@ -33,7 +43,7 @@ func (t *readyThenCloseDataTunnel) SendData(frame []byte) {
 	}
 	connectionID := binary.BigEndian.Uint32(frame[4:8])
 	t.relay.handleTunnelData(EncodeFrame(connectionID, MsgConnectOK, nil))
-	t.relay.closeAll()
+	t.relay.closeAll(false)
 }
 
 func (*readyThenCloseDataTunnel) SetOnData(func([]byte)) {}
@@ -46,7 +56,7 @@ func TestRelayBridgeCloseUnblocksPendingTunnelConnection(t *testing.T) {
 	connection := newTunnelConn(1, relay)
 	relay.conns.Store(uint32(1), connection)
 
-	relay.closeAll()
+	relay.closeAll(false)
 	select {
 	case err := <-connection.rdy:
 		require.ErrorIs(t, err, io.ErrClosedPipe)
@@ -79,6 +89,25 @@ func TestRelayBridgeRejectsQueuedReadyConnectionClosedBeforeDialReturns(t *testi
 	require.Nil(t, connection)
 }
 
+func TestRelayBridgeIgnoresCallbacksFromSupersededTunnel(t *testing.T) {
+	t.Parallel()
+	oldTunnel := &discardDataTunnel{}
+	newTunnel := &discardDataTunnel{}
+	relay := NewRelayBridge(oldTunnel, "joiner", 32768, nil, logger.NOP())
+	oldOnData := oldTunnel.onData
+	oldOnClose := oldTunnel.onClose
+	relay.SwapTunnel(newTunnel)
+
+	connection := newTunnelConn(77, relay)
+	relay.conns.Store(uint32(77), connection)
+	oldOnData(EncodeFrame(77, MsgClose, nil))
+	oldOnClose()
+	require.False(t, connection.closed.Load(), "stale callbacks closed replacement relay state")
+
+	newTunnel.onData(EncodeFrame(77, MsgClose, nil))
+	require.True(t, connection.closed.Load(), "current tunnel callback was not delivered")
+}
+
 func TestUDPClientCloseAndDeliverAreConcurrentSafe(t *testing.T) {
 	t.Parallel()
 	for attempt := 0; attempt < 100; attempt++ {
@@ -104,9 +133,74 @@ func TestUDPClientCloseAndDeliverAreConcurrentSafe(t *testing.T) {
 		close(start)
 		workers.Wait()
 		require.True(t, client.closed.Load())
-		require.False(t, client.closePending())
+		closed, discarded := client.closePending()
+		require.False(t, closed)
+		require.Zero(t, discarded)
 		require.False(t, client.deliver([]byte("closed")))
 		for range client.pending {
 		}
 	}
+}
+
+func TestTunnelConnectionFlowCreditBoundsOutstandingData(t *testing.T) {
+	t.Parallel()
+	dataTunnel := &flowControlDataTunnel{frames: make(chan []byte, 32)}
+	relay := NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+	connection := newTunnelConn(1, relay)
+	relay.conns.Store(uint32(1), connection)
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := connection.Write(make([]byte, relayFlowWindowBytes+1))
+		result <- err
+	}()
+	for sent := 0; sent < relayFlowWindowBytes; {
+		frame := <-dataTunnel.frames
+		DecodeFrames(frame, func(connID uint32, msgType byte, payload []byte) {
+			require.Equal(t, uint32(1), connID)
+			require.Equal(t, MsgData, msgType)
+			sent += len(payload)
+		})
+	}
+	select {
+	case <-result:
+		t.Fatal("write exceeded its remote flow credit")
+	default:
+	}
+
+	var credit [4]byte
+	binary.BigEndian.PutUint32(credit[:], 1)
+	relay.handleTunnelData(EncodeFrame(1, MsgFlowCredit, credit[:]))
+	require.NoError(t, <-result)
+}
+
+func TestTunnelConnectionReadReturnsFlowCredit(t *testing.T) {
+	t.Parallel()
+	dataTunnel := &flowControlDataTunnel{frames: make(chan []byte, 1)}
+	relay := NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+	connection := newTunnelConn(7, relay)
+	connection.deliver([]byte("hello"))
+
+	buffer := make([]byte, 8)
+	n, err := connection.Read(buffer)
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(buffer[:n]))
+	frame := <-dataTunnel.frames
+	DecodeFrames(frame, func(connID uint32, msgType byte, payload []byte) {
+		require.Equal(t, uint32(7), connID)
+		require.Equal(t, MsgFlowCredit, msgType)
+		require.Equal(t, uint32(5), binary.BigEndian.Uint32(payload))
+	})
+}
+
+func TestTunnelConnectionRejectsFlowWindowOverflow(t *testing.T) {
+	t.Parallel()
+	dataTunnel := &flowControlDataTunnel{frames: make(chan []byte, 1)}
+	relay := NewRelayBridge(dataTunnel, "joiner", 32768, nil, logger.NOP())
+	connection := newTunnelConn(9, relay)
+	relay.conns.Store(uint32(9), connection)
+
+	connection.deliver(make([]byte, relayFlowWindowBytes+1))
+	require.True(t, connection.closed.Load())
+	require.Zero(t, connection.readBuf.Len())
 }

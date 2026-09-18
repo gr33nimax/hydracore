@@ -2,7 +2,9 @@ package vk
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -70,9 +72,14 @@ func JoinExistingCall(dialer N.Dialer, cookieStr, vkLink string, cfg VKConfig, l
 	}
 	token := extractJoinToken(vkLink)
 	if token == "" {
-		return nil, fmt.Errorf("could not extract join token from %q", vkLink)
+		// The link is not echoed either: it is the same credential with a scheme in front of it.
+		return nil, errors.New("could not extract join token from the VK link")
 	}
-	logger.Info(fmt.Sprintf("[auth] Joining existing call token=%s", token))
+	// The token is the credential for joining the call: whoever has it can join it. This line
+	// travels to the platform, into the client journal and out through an exported diagnostics
+	// report, so it carries a short fingerprint instead — enough to tell two links apart in a
+	// support conversation, and not enough to join anything.
+	logger.Info(fmt.Sprintf("[auth] Joining existing call token#%s", joinTokenFingerprint(token)))
 	resp, err := authAndJoin(dialer, cookieStr, token, cfg)
 	if err != nil {
 		return nil, err
@@ -241,6 +248,17 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 		return nil, fmt.Errorf("empty WS endpoint, response: %s", string(r))
 	}
 	return &jr, nil
+}
+
+// joinTokenFingerprint is a stable short name for a join token that is not the token.
+//
+// It exists so a journal line can say which of four links a worker used without writing the
+// credential itself into a log the platform reads, shows on a diagnostics screen and exports as
+// plain text through a share sheet.
+func joinTokenFingerprint(token string) string {
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(token))
+	return fmt.Sprintf("%08x", hasher.Sum32())
 }
 
 func extractJoinToken(link string) string {

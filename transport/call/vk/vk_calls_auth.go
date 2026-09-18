@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
@@ -19,16 +21,19 @@ import (
 )
 
 const (
-	vkCallsClientID      = "8093730"
-	vkCallsAPIVersion    = "5.276"
-	vkCallsApplicationKey = "CGMMEJLGDIHBABABA"
-	vkCallsAppVersion    = "1.0.1"
+	vkCallsClientID        = "8093730"
+	vkCallsAPIVersion      = "5.276"
+	vkCallsApplicationKey  = "CGMMEJLGDIHBABABA"
+	vkCallsAppVersion      = "1.0.1"
 	vkCallsProtocolVersion = "5"
 )
 
 var (
-	vkCallsAPIBaseURL = "https://api.vk.me/method"
-	vkCallsOKBaseURL  = "https://calls.okcdn.ru/fb.do"
+	vkCallsAPIBaseURL    = "https://api.vk.me/method"
+	vkCallsOKBaseURL     = "https://calls.okcdn.ru/fb.do"
+	ErrVKFloodControl    = errors.New("VK API flood control")
+	vkStableDeviceID     = uuid.NewString()
+	vkSharedCookieJar, _ = cookiejar.New(nil)
 )
 
 // RunVKAuth first uses the anonymous VK Calls flow used by current VK clients.
@@ -45,6 +50,14 @@ func RunVKAuthContext(ctx context.Context, dialer N.Dialer, joinLink, displayNam
 		log.Info("vk-auth: authenticated via VK Calls path")
 		return authJSON, nil
 	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	// Legacy auth cannot bypass an account-wide VK rate limit and would add
+	// another control-plane request to an already throttled credential set.
+	if errors.Is(err, ErrVKFloodControl) {
+		return "", err
+	}
 	log.Warn(fmt.Sprintf("vk-auth: VK Calls path failed, falling back to legacy: %v", err))
 	return runVKLegacyAuthContext(ctx, dialer, joinLink, displayName, log)
 }
@@ -60,17 +73,18 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 
 	client := common.HttpClient(dialer)
 	client.Timeout = 20 * time.Second
-	deviceID := uuid.NewString()
+	client.Jar = vkSharedCookieJar
+	deviceID := vkStableDeviceID
 	canonicalJoinLink := "https://vk.com/call/join/" + joinToken
 
 	log.Info("vk-auth: trying VK Calls anonymous path")
 	step1, err := vkCallsPost(ctx, client, vkCallsAPIBaseURL+"/auth.getAnonymToken", url.Values{
-		"v":         {vkCallsAPIVersion},
-		"client_id": {vkCallsClientID},
-		"link":      {canonicalJoinLink},
-		"device_id": {deviceID},
+		"v":          {vkCallsAPIVersion},
+		"client_id":  {vkCallsClientID},
+		"link":       {canonicalJoinLink},
+		"device_id":  {deviceID},
 		"anonymName": {displayName},
-		"lang":      {"en"},
+		"lang":       {"en"},
 	})
 	if err != nil {
 		return "", fmt.Errorf("auth.getAnonymToken: %w", err)
@@ -130,7 +144,7 @@ func runVKCallsAuth(ctx context.Context, dialer N.Dialer, joinLink, displayName 
 
 	sessionData, err := json.Marshal(map[string]interface{}{
 		"version":        2,
-		"device_id":      uuid.NewString(),
+		"device_id":      deviceID,
 		"client_version": vkCallsAppVersion,
 	})
 	if err != nil {
@@ -210,7 +224,10 @@ func vkCallsResponseError(response map[string]interface{}) error {
 	code, _ := vkCallsNumberString(errorObject["error_code"])
 	message, _ := errorObject["error_msg"].(string)
 	if code == "14" {
-		return fmt.Errorf("captcha required (error_code=14)")
+		return &ControlPlaneError{Stage: "vk_calls", Kind: "captcha", Code: "14", Cause: ErrVKCaptchaRequired}
+	}
+	if code == "9" {
+		return &ControlPlaneError{Stage: "vk_calls", Kind: "rate_limit", Code: "9", Cause: fmt.Errorf("%w: %s", ErrVKFloodControl, message)}
 	}
 	if code == "" && message == "" {
 		return nil

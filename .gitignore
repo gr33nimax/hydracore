@@ -1,4 +1,5 @@
 /.idea/
+/.kiro/
 /vendor/
 /*.json
 /*.srs
@@ -33,5 +34,5 @@ logs
 /test_download.bin
 /wget-log
 /.codebase-memory/
-/graphify-out/
+graphify-out/
 /.tools/

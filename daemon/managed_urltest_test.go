@@ -15,7 +15,7 @@ import (
 
 func TestNormalizeURLTestOptions(t *testing.T) {
 	t.Parallel()
-	options := normalizeURLTestOptions(&URLTestRequest{
+	options := normalizeURLTestOptions(&StartURLTestRequest{
 		TimeoutMillis:  15_000,
 		Concurrency:    100,
 		DeadlineMillis: 60_000,
@@ -78,7 +78,7 @@ func TestStandaloneURLTestProbeSuccess(t *testing.T) {
 	result := runStandaloneURLTestProbe(
 		context.Background(),
 		target,
-		normalizeURLTestOptions(&URLTestRequest{TimeoutMillis: 1_000}),
+		normalizeURLTestOptions(&StartURLTestRequest{TimeoutMillis: 1_000}),
 		func(context.Context, string, adapter.Outbound) (uint16, error) { return 42, nil },
 	)
 	if result.Tag != "selected" || result.DelayMillis != 42 || result.Status != "available" {
@@ -94,7 +94,7 @@ func TestStandaloneURLTestProbeCancellation(t *testing.T) {
 	result := runStandaloneURLTestProbe(
 		ctx,
 		target,
-		normalizeURLTestOptions(&URLTestRequest{TimeoutMillis: 1_000}),
+		normalizeURLTestOptions(&StartURLTestRequest{TimeoutMillis: 1_000}),
 		func(ctx context.Context, _ string, _ adapter.Outbound) (uint16, error) {
 			<-ctx.Done()
 			return 0, ctx.Err()

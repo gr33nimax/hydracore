@@ -20,11 +20,24 @@ type Options struct {
 }
 
 func New(options Options) (Factory, error) {
-	logOptions := options.Options
-
-	if logOptions.Disabled {
-		return NewNOPFactory(), nil
+	// Every factory is the switchable one. A core that started with logging on is not a
+	// different kind of core from one that started with it off: OFF at runtime has to
+	// reach it just as ON reaches a disabled start, or the app can only offer half the
+	// switch and OFF is a threshold on a factory nobody stopped.
+	wrapped := newDisabledFactory(options)
+	if options.Options.Disabled {
+		return wrapped, nil
 	}
+	active, err := newActiveFactory(options)
+	if err != nil {
+		return nil, err
+	}
+	wrapped.install(active)
+	return wrapped, nil
+}
+
+func newActiveFactory(options Options) (Factory, error) {
+	logOptions := options.Options
 
 	var logWriter io.Writer
 	var logFilePath string

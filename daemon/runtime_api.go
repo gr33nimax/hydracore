@@ -5,13 +5,14 @@ import (
 	"os"
 	"time"
 
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 const (
-	runtimeSnapshotSchemaVersion = 1
+	runtimeSnapshotSchemaVersion = 2
 	defaultRuntimeEventInterval  = time.Second
 	minimumRuntimeEventInterval  = 250 * time.Millisecond
 	maximumRuntimeEventInterval  = 30 * time.Second
@@ -36,6 +37,17 @@ func (s *StartedService) GetRuntimeSnapshot(context.Context, *emptypb.Empty) (*R
 }
 
 func (s *StartedService) readRuntimeSnapshot() *RuntimeSnapshot {
+	return s.readRuntimeSnapshotWithGroups(nil)
+}
+
+// readRuntimeSnapshotWithGroups собирает снимок, переиспользуя список групп.
+//
+// Группы — самая дорогая часть снимка: обход всех outbound'ов, поиск истории
+// url-теста на каждый элемент и чтение cache file на каждую группу. Меняются они
+// только по событию (выбор сервера или завершившийся url-тест), поэтому
+// подписчик, у которого это событие есть, передаёт сюда уже собранное значение,
+// а nil означает «собрать заново».
+func (s *StartedService) readRuntimeSnapshotWithGroups(groups *Groups) *RuntimeSnapshot {
 	s.serviceAccess.RLock()
 	serviceStatus := proto.Clone(s.serviceStatus).(*ServiceStatus)
 	if serviceStatus.Status == ServiceStatus_FATAL && serviceStatus.ErrorMessage != "" {
@@ -54,6 +66,7 @@ func (s *StartedService) readRuntimeSnapshot() *RuntimeSnapshot {
 		Groups:          &Groups{},
 		ClashMode:       &ClashModeStatus{},
 		UrlTestSessions: s.readURLTestSessions(),
+		TransportHealth: runtimeTransportHealth(HC.CurrentTransportHealth()),
 	}
 	if !startedAt.IsZero() {
 		snapshot.StartedAt = startedAt.UnixMilli()
@@ -61,10 +74,15 @@ func (s *StartedService) readRuntimeSnapshot() *RuntimeSnapshot {
 	if !isStarted {
 		return snapshot
 	}
+	if groups != nil {
+		snapshot.Groups = groups
+	}
 
 	s.serviceAccess.RLock()
 	if s.serviceStatus.Status == ServiceStatus_STARTED && s.instance != nil {
-		snapshot.Groups = s.readGroups()
+		if groups == nil {
+			snapshot.Groups = s.readGroups()
+		}
 		if s.instance.clashServer != nil {
 			snapshot.ClashMode = &ClashModeStatus{
 				ModeList:    s.instance.clashServer.ModeList(),
@@ -90,20 +108,107 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 	}); err != nil {
 		return err
 	}
+	cachedGroups := previous.Groups
+	startedBefore := previous.Service.GetStatus() == ServiceStatus_STARTED
 
-	ticker := time.NewTicker(normalizeRuntimeEventInterval(request.IntervalMillis))
-	defer ticker.Stop()
+	serviceSubscription, serviceDone, err := s.serviceStatusObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.serviceStatusObserver.UnSubscribe(serviceSubscription)
+	urlTestSubscription, urlTestDone, err := s.urlTestObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.urlTestObserver.UnSubscribe(urlTestSubscription)
+	urlTestSessionSubscription, urlTestSessionDone, err := s.urlTestSessionObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.urlTestSessionObserver.UnSubscribe(urlTestSessionSubscription)
+	clashModeSubscription, clashModeDone, err := s.clashModeObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.clashModeObserver.UnSubscribe(clashModeSubscription)
+	trafficSubscription, trafficDone, err := s.trafficObserver.Subscribe()
+	if err != nil {
+		return err
+	}
+	defer s.trafficObserver.UnSubscribe(trafficSubscription)
+
+	interval := normalizeRuntimeEventInterval(request.IntervalMillis)
+	var trafficTimer *time.Timer
+	var trafficTimerC <-chan time.Time
+	armTrafficTimer := func() {
+		if trafficTimer == nil {
+			trafficTimer = time.NewTimer(interval)
+		} else {
+			trafficTimer.Stop()
+			trafficTimer.Reset(interval)
+		}
+		trafficTimerC = trafficTimer.C
+	}
+	defer func() {
+		if trafficTimer != nil {
+			trafficTimer.Stop()
+		}
+	}()
+	healthChanged := HC.TransportHealthChanged()
 	for {
 		select {
 		case <-s.ctx.Done():
 			return s.ctx.Err()
 		case <-server.Context().Done():
 			return server.Context().Err()
-		case <-ticker.C:
+		case <-serviceDone:
+			return os.ErrClosed
+		case <-urlTestDone:
+			return os.ErrClosed
+		case <-urlTestSessionDone:
+			return os.ErrClosed
+		case <-clashModeDone:
+			return os.ErrClosed
+		case <-trafficDone:
+			return os.ErrClosed
+		case <-serviceSubscription:
+		case <-urlTestSubscription:
+			// Только это событие меняет состав групп: выбор сервера и
+			// завершившийся url-тест. На остальных пробуждениях группы берутся
+			// из кеша, иначе цикл обходил бы все outbound'ы, искал историю на
+			// каждый элемент и читал cache file на каждую группу впустую.
+			cachedGroups = nil
+		case <-urlTestSessionSubscription:
+		case <-clashModeSubscription:
+		case <-healthChanged:
+		case <-trafficSubscription:
+			if trafficTimerC != nil {
+				continue
+			}
+			armTrafficTimer()
+			continue
+		case <-trafficTimerC:
+			trafficTimerC = nil
 		}
 
-		current := s.readRuntimeSnapshot()
+		healthChanged = HC.TransportHealthChanged()
+		current := s.readRuntimeSnapshotWithGroups(cachedGroups)
+		// Переход в STARTED поднимает группы, которых до него не было.
+		startedNow := current.Service.GetStatus() == ServiceStatus_STARTED
+		if startedNow != startedBefore {
+			startedBefore = startedNow
+			current = s.readRuntimeSnapshotWithGroups(nil)
+		}
+		cachedGroups = current.Groups
 		populateRuntimeTrafficRates(previous, current)
+		// A reading that saw traffic is not the last word about it: without one more
+		// reading after it, the last non-zero rate stays published until some
+		// unrelated event happens along, long after the traffic itself stopped. One
+		// more reading follows every non-zero one; a zero one with no events behind it
+		// leaves the timer stopped entirely, so quiet traffic costs no wake-ups.
+		if trafficTimerC == nil && (current.Status.GetUplink() != 0 || current.Status.GetDownlink() != 0) {
+			armTrafficTimer()
+		}
 		var events []*RuntimeEvent
 		if !proto.Equal(previous.Service, current.Service) || previous.StartedAt != current.StartedAt {
 			events = append(events, &RuntimeEvent{
@@ -115,7 +220,7 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 		if !proto.Equal(previous.Status, current.Status) {
 			events = append(events, &RuntimeEvent{Type: RuntimeEventType_RUNTIME_EVENT_STATUS, Status: current.Status})
 		}
-		if !proto.Equal(previous.Groups, current.Groups) {
+		if current.Groups != previous.Groups && !proto.Equal(previous.Groups, current.Groups) {
 			events = append(events, &RuntimeEvent{Type: RuntimeEventType_RUNTIME_EVENT_GROUPS, Groups: current.Groups})
 		}
 		if !proto.Equal(previous.ClashMode, current.ClashMode) {
@@ -127,6 +232,12 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 				UrlTestSessions: current.UrlTestSessions,
 			})
 		}
+		if !proto.Equal(previous.TransportHealth, current.TransportHealth) {
+			events = append(events, &RuntimeEvent{
+				Type:            RuntimeEventType_RUNTIME_EVENT_TRANSPORT_HEALTH,
+				TransportHealth: current.TransportHealth,
+			})
+		}
 		previous = current
 		if len(events) == 0 {
 			continue
@@ -136,6 +247,36 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 			return err
 		}
 	}
+}
+
+func runtimeTransportHealth(health HC.TransportHealthSnapshot) *TransportHealth {
+	result := &TransportHealth{
+		TransportTag:            health.TransportTag,
+		State:                   health.State,
+		ActiveLanes:             health.ActiveLanes,
+		TotalLanes:              health.TotalLanes,
+		Demand:                  health.Demand,
+		LastProgressAt:          health.LastProgressAt,
+		LastAggregateProgressAt: health.LastAggregateProgressAt,
+		LastInboundAt:           health.LastInboundAt,
+		ObservedAt:              health.ObservedAt,
+		Applicable:              health.Applicable,
+		RuntimeGeneration:       health.RuntimeGeneration,
+		NetworkGeneration:       health.NetworkGeneration,
+		QuicRttMillis:           health.QuicRttMillis,
+	}
+	if health.Failure != nil {
+		result.Failure = &TransportFailure{
+			Stage:            health.Failure.Stage,
+			Kind:             health.Failure.Kind,
+			Code:             health.Failure.Code,
+			RetryAfterMillis: health.Failure.RetryAfterMS,
+			ChallengeId:      health.Failure.ChallengeID,
+			Domain:           health.Failure.Domain,
+			Terminal:         health.Failure.Terminal,
+		}
+	}
+	return result
 }
 
 func populateRuntimeTrafficRates(previous *RuntimeSnapshot, current *RuntimeSnapshot) {
@@ -177,7 +318,7 @@ func equalURLTestSessions(left []*URLTestSession, right []*URLTestSession) bool 
 	return true
 }
 
-func (s *StartedService) StartURLTest(_ context.Context, request *URLTestRequest) (*URLTestSession, error) {
+func (s *StartedService) StartURLTest(_ context.Context, request *StartURLTestRequest) (*URLTestSession, error) {
 	return s.startURLTest(request)
 }
 

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 
+	mDNS "github.com/miekg/dns"
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/sing-box/adapter"
@@ -22,14 +23,10 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
-	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	sHTTP "github.com/sagernet/sing/protocol/http"
-
-	mDNS "github.com/miekg/dns"
 )
 
 var _ adapter.DNSTransport = (*HTTP3Transport)(nil)
@@ -86,11 +83,7 @@ func NewHTTP3(ctx context.Context, logger log.ContextLogger, tag string, options
 	if options.ServerPort != 0 && options.ServerPort != 443 {
 		destinationURL.Host = net.JoinHostPort(destinationURL.Host, strconv.Itoa(int(options.ServerPort)))
 	}
-	path := options.Path
-	if path == "" {
-		path = "/dns-query"
-	}
-	err = sHTTP.URLSetPath(&destinationURL, path)
+	err = transport.SetHTTPSDestinationPathAndQuery(&destinationURL, options.Path, options.Query, options.ForceQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +114,7 @@ func (t *HTTP3Transport) newTransport() *http3.Transport {
 			if dialErr != nil {
 				return nil, dialErr
 			}
-			quicConn, dialErr := quic.DialEarly(ctx, bufio.NewUnbindPacketConn(conn), conn.RemoteAddr(), tlsCfg, cfg)
+			quicConn, dialErr := quic.DialEarlyConn(ctx, conn, tlsCfg, cfg)
 			if dialErr != nil {
 				conn.Close()
 				return nil, dialErr
@@ -208,4 +201,10 @@ func (t *HTTP3Transport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS
 		return nil, err
 	}
 	return &responseMessage, nil
+}
+
+func (t *HTTP3Transport) ExchangeAsync(ctx context.Context, message *mDNS.Msg, callback func(response *mDNS.Msg, err error)) {
+	go func() {
+		callback(t.Exchange(ctx, message))
+	}()
 }

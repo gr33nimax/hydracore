@@ -43,7 +43,7 @@ func (c *splitConn) Write(b []byte) (int, error) {
 	if err != nil && c.writeExpired.Load() {
 		return written, os.ErrDeadlineExceeded
 	}
-	return written, err
+	return written, wrapH2Error(err)
 }
 
 func (c *splitConn) Read(b []byte) (int, error) {
@@ -51,7 +51,7 @@ func (c *splitConn) Read(b []byte) (int, error) {
 	if err != nil && c.readExpired.Load() {
 		return read, os.ErrDeadlineExceeded
 	}
-	return read, err
+	return read, wrapH2Error(err)
 }
 
 func (c *splitConn) Close() error {

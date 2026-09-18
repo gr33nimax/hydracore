@@ -7,11 +7,9 @@ const (
 	callClientEnabled = true
 	callServerEnabled = true
 	distributionRole  = "combined"
-	callWireMin       = 1
-	callWireMax       = 2
 )
 
 var (
 	callPlatforms = []string{"dion", "telemost", "vk", "wbstream"}
-	callModes     = []string{"p2p", "multi_user"}
+	callModes     = []string{"p2p", "vk_parasite"}
 )

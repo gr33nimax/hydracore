@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	HC "github.com/sagernet/sing-box/common/hydracore"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -23,16 +24,22 @@ func TestNormalizeRuntimeEventInterval(t *testing.T) {
 }
 
 func TestRuntimeSnapshotIsCompleteWhileIdleAndRedactsFatalError(t *testing.T) {
-	t.Parallel()
+	HC.ResetRuntimeTransportState()
+	t.Cleanup(HC.ResetRuntimeTransportState)
 	service := NewStartedService(ServiceOptions{Context: context.Background()})
 	defer service.Close()
 
 	snapshot := service.readRuntimeSnapshot()
-	if snapshot.SchemaVersion != runtimeSnapshotSchemaVersion || snapshot.Service == nil || snapshot.Status == nil || snapshot.Groups == nil || snapshot.ClashMode == nil {
+	if snapshot.SchemaVersion != runtimeSnapshotSchemaVersion || snapshot.Service == nil || snapshot.Status == nil || snapshot.Groups == nil || snapshot.ClashMode == nil || snapshot.TransportHealth == nil {
 		t.Fatalf("idle runtime snapshot is incomplete: %+v", snapshot)
 	}
 	if snapshot.Service.Status != ServiceStatus_IDLE || snapshot.StartedAt != 0 {
 		t.Fatalf("unexpected idle state: %+v", snapshot)
+	}
+	HC.PublishTransportHealth(7, HC.TransportHealthSnapshot{TransportTag: "call-vk", State: HC.TransportStateHealthy, ActiveLanes: 3})
+	snapshot = service.readRuntimeSnapshot()
+	if snapshot.TransportHealth.TransportTag != "call-vk" || snapshot.TransportHealth.RuntimeGeneration != 7 || snapshot.TransportHealth.ActiveLanes != 3 {
+		t.Fatalf("transport health was not included: %+v", snapshot.TransportHealth)
 	}
 
 	service.serviceAccess.Lock()
@@ -184,3 +191,37 @@ func (s *runtimeEventsTestStream) SetTrailer(metadata.MD)       {}
 func (s *runtimeEventsTestStream) Context() context.Context     { return s.ctx }
 func (s *runtimeEventsTestStream) SendMsg(any) error            { return nil }
 func (s *runtimeEventsTestStream) RecvMsg(any) error            { return nil }
+
+// Группы — самая дорогая часть снимка, поэтому подписчик передаёт уже собранное
+// значение. Пока сервис не запущен, групп нет вообще, и переданное значение
+// обязано быть проигнорировано: иначе снимок соврал бы про остановленный сервис.
+func TestRuntimeSnapshotGroupsWhileNotStarted(t *testing.T) {
+	HC.ResetRuntimeTransportState()
+	t.Cleanup(HC.ResetRuntimeTransportState)
+	service := NewStartedService(ServiceOptions{Context: context.Background()})
+	defer service.Close()
+
+	supplied := &Groups{Group: []*Group{{Tag: "select", Type: "selector"}}}
+	snapshot := service.readRuntimeSnapshotWithGroups(supplied)
+	if snapshot.Groups == supplied {
+		t.Fatal("groups of a service that is not started must not be reused")
+	}
+	if snapshot.Groups == nil || len(snapshot.Groups.Group) != 0 {
+		t.Fatalf("snapshot must carry an empty groups message: %+v", snapshot.Groups)
+	}
+	if service.readRuntimeSnapshotWithGroups(nil).Groups == nil {
+		t.Fatal("snapshot must always carry a groups message")
+	}
+}
+
+// processMemoryInUse обязан отдавать что-то осмысленное и не зависеть от
+// runtime.ReadMemStats, который останавливает мир.
+func TestProcessMemoryInUseIsPositiveAndRepeatable(t *testing.T) {
+	first := processMemoryInUse()
+	if first == 0 {
+		t.Fatal("process memory reported zero")
+	}
+	if second := processMemoryInUse(); second == 0 {
+		t.Fatal("second read reported zero")
+	}
+}

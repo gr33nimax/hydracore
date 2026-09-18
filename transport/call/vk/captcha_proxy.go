@@ -15,19 +15,61 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 )
 
+// A page that cannot be fetched inside these bounds is reported as a failure rather than waited
+// on: the core gives the whole question 120 seconds, and a WebView with nothing to show is not a
+// state a person can act on.
+const (
+	captchaDialTimeout     = 45 * time.Second
+	captchaUpstreamTimeout = 60 * time.Second
+	// The window a person has to answer, and what one request is allowed to cost: the first bounds
+	// the wait, the second keeps an upstream page from becoming a memory ceiling nobody set.
+	captchaWindow            = 120 * time.Second
+	captchaMaxBodyBytes      = 8 << 20
+	captchaServerReadTimeout = 60 * time.Second
+)
+
+// CaptchaOutcome says why a wait for the answer ended.
+//
+// An empty token alone cannot: a question whose window ran out, a question the person closed and a
+// proxy that died underneath them mean different things to the caller — one ends the attempt, the
+// others may be asked again.
+type CaptchaOutcome int
+
+const (
+	CaptchaSolved CaptchaOutcome = iota
+	// CaptchaCancelled: the proxy was stopped while the question was open.
+	CaptchaCancelled
+	// CaptchaTimedOut: the window ran out with nobody answering.
+	CaptchaTimedOut
+	// CaptchaContextCancelled: the wait was cancelled — a closed question or a torn-down attempt.
+	CaptchaContextCancelled
+	// CaptchaProxyFailed: the local server stopped serving, so the question cannot be answered.
+	CaptchaProxyFailed
+)
+
+// CaptchaResult is the answer to one wait: the token, if it was solved, and why the wait ended.
+type CaptchaResult struct {
+	Token   string
+	Outcome CaptchaOutcome
+}
+
 var activeCaptchaProxy struct {
 	sync.Mutex
 	listener net.Listener
+	server   *http.Server
 	port     int
 	keyCh    chan string
 	doneCh   chan struct{}
+	stopOnce *sync.Once
+	failed   bool
 }
 
-func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
+func StartCaptchaProxy(redirectURI string, dialer N.Dialer, logger logger.ContextLogger) int {
 	StopCaptchaProxy()
 	targetURL, err := url.Parse(redirectURI)
 	if err != nil {
@@ -42,19 +84,32 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 	upstreamOrigin := targetURL.Scheme + "://" + targetURL.Host
 	keyCh := make(chan string, 1)
 	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-		ForceAttemptHTTP2:   false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ForceAttemptHTTP2:     false,
+		ResponseHeaderTimeout: captchaUpstreamTimeout,
 	}
 	if dialer != nil {
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
+			dialCtx, cancel := context.WithTimeout(ctx, captchaDialTimeout)
+			defer cancel()
+			return dialer.DialContext(dialCtx, network, M.ParseSocksaddr(addr))
 		}
+	} else {
+		transport.DialContext = (&net.Dialer{Timeout: captchaDialTimeout}).DialContext
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// A white page with no explanation is the one outcome a person cannot act on: say what
+			// failed, so the overlay can show it and the journal keeps it.
+			if logger != nil {
+				logger.Warn("vk-auth: captcha page fetch failed: ", err)
+			}
+			http.Error(w, "captcha page unavailable: "+err.Error(), http.StatusBadGateway)
+		},
 		Rewrite: func(req *httputil.ProxyRequest) {
 			req.Out.URL.Scheme = targetURL.Scheme
 			req.Out.URL.Host = targetURL.Host
@@ -93,9 +148,14 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 					defer gzReader.Close()
 				}
 			}
-			bodyBytes, err := io.ReadAll(reader)
+			// Bounded on purpose: the page is rewritten in memory, so an unbounded read is a ceiling
+			// nobody chose.
+			bodyBytes, err := io.ReadAll(io.LimitReader(reader, captchaMaxBodyBytes))
 			if err != nil {
 				return err
+			}
+			if len(bodyBytes) >= captchaMaxBodyBytes {
+				return fmt.Errorf("captcha page is larger than %d bytes", captchaMaxBodyBytes)
 			}
 			res.Body.Close()
 			if strings.Contains(res.Request.URL.Path, "captchaNotRobot.check") {
@@ -137,7 +197,9 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 			default:
 			}
 		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// Only the page this proxy serves posts a token here: it is same-origin, so the header
+		// names that origin instead of leaving every site on the device free to call it.
+		w.Header().Set("Access-Control-Allow-Origin", localOrigin)
 		fmt.Fprint(w, "ok")
 	})
 	mux.HandleFunc("/generic_proxy", func(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +210,8 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 			return
 		}
 		genericProxy := &httputil.ReverseProxy{
-			Transport: transport,
+			Transport:    transport,
+			ErrorHandler: proxy.ErrorHandler,
 			Rewrite: func(req *httputil.ProxyRequest) {
 				req.Out.URL.Scheme = parsed.Scheme
 				req.Out.URL.Host = parsed.Host
@@ -171,45 +234,98 @@ func StartCaptchaProxy(redirectURI string, dialer N.Dialer) int {
 		}
 		proxy.ServeHTTP(w, r)
 	})
+	server := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       captchaServerReadTimeout,
+		WriteTimeout:      captchaUpstreamTimeout + 30*time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	activeCaptchaProxy.Lock()
 	activeCaptchaProxy.listener = listener
+	activeCaptchaProxy.server = server
 	activeCaptchaProxy.port = port
 	activeCaptchaProxy.keyCh = keyCh
 	activeCaptchaProxy.doneCh = make(chan struct{})
+	activeCaptchaProxy.stopOnce = &sync.Once{}
+	activeCaptchaProxy.failed = false
 	activeCaptchaProxy.Unlock()
-	go http.Serve(listener, mux)
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			if logger != nil {
+				logger.Warn("vk-auth: captcha proxy stopped serving: ", err)
+			}
+			// Nobody can answer through a server that is gone: end the wait instead of letting the
+			// core sit out its window with no way to say why.
+			captchaProxyFailed()
+		}
+	}()
 	return port
 }
 
-func GetCaptchaResult() string {
+func GetCaptchaResultContext(ctx context.Context, timeout time.Duration) CaptchaResult {
 	activeCaptchaProxy.Lock()
 	ch := activeCaptchaProxy.keyCh
 	done := activeCaptchaProxy.doneCh
 	activeCaptchaProxy.Unlock()
 	if ch == nil || done == nil {
-		return ""
+		return CaptchaResult{Outcome: CaptchaCancelled}
 	}
 	select {
 	case token := <-ch:
-		return token
+		return CaptchaResult{Token: token, Outcome: CaptchaSolved}
 	case <-done:
-		return ""
-	case <-time.After(300 * time.Second):
-		return ""
+		activeCaptchaProxy.Lock()
+		failed := activeCaptchaProxy.failed
+		activeCaptchaProxy.Unlock()
+		if failed {
+			return CaptchaResult{Outcome: CaptchaProxyFailed}
+		}
+		return CaptchaResult{Outcome: CaptchaCancelled}
+	case <-ctx.Done():
+		return CaptchaResult{Outcome: CaptchaContextCancelled}
+	case <-time.After(timeout):
+		return CaptchaResult{Outcome: CaptchaTimedOut}
+	}
+}
+
+// captchaProxyFailed ends the wait when the proxy itself is gone.
+//
+// Closing the channel twice would panic, so the stop path and this one share one `Once`.
+func captchaProxyFailed() {
+	activeCaptchaProxy.Lock()
+	if activeCaptchaProxy.doneCh == nil {
+		activeCaptchaProxy.Unlock()
+		return
+	}
+	activeCaptchaProxy.failed = true
+	once := activeCaptchaProxy.stopOnce
+	done := activeCaptchaProxy.doneCh
+	activeCaptchaProxy.Unlock()
+	if once != nil {
+		once.Do(func() { close(done) })
 	}
 }
 
 func StopCaptchaProxy() {
 	activeCaptchaProxy.Lock()
 	ln := activeCaptchaProxy.listener
+	server := activeCaptchaProxy.server
 	done := activeCaptchaProxy.doneCh
+	once := activeCaptchaProxy.stopOnce
 	activeCaptchaProxy.listener = nil
+	activeCaptchaProxy.server = nil
 	activeCaptchaProxy.port = 0
 	activeCaptchaProxy.keyCh = nil
 	activeCaptchaProxy.doneCh = nil
+	activeCaptchaProxy.stopOnce = nil
+	activeCaptchaProxy.failed = false
 	activeCaptchaProxy.Unlock()
-	if done != nil {
-		close(done)
+	if done != nil && once != nil {
+		once.Do(func() { close(done) })
+	}
+	if server != nil {
+		server.Close()
 	}
 	if ln != nil {
 		ln.Close()

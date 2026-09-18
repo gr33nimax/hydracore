@@ -32,18 +32,17 @@ func RegisterOutbound(registry *outbound.Registry) {
 
 type Outbound struct {
 	outbound.Adapter
-	ctx           context.Context
-	logger        logger.ContextLogger
-	options       option.CallOutboundOptions
-	dialer        N.Dialer
-	bridge        *call.Bridge
-	startHandler  func()
-	await         chan struct{}
-	awaitOnce     sync.Once
-	started       atomic.Bool
-	closed        atomic.Bool
-	rebindPending atomic.Bool
-	cancel        context.CancelFunc
+	ctx          context.Context
+	logger       logger.ContextLogger
+	options      option.CallOutboundOptions
+	dialer       N.Dialer
+	bridge       *call.Bridge
+	startHandler func()
+	await        chan struct{}
+	awaitOnce    sync.Once
+	started      atomic.Bool
+	closed       atomic.Bool
+	cancel       context.CancelFunc
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.CallOutboundOptions) (adapter.Outbound, error) {
@@ -57,9 +56,9 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if options.Platform == "" {
 		return nil, E.New("missing platform")
 	}
-	if options.Mode == "multi_user" {
+	if options.Mode == "vk_parasite" {
 		if options.Platform != "vk" {
-			return nil, E.New("call multi_user is only supported for vk")
+			return nil, E.New("call vk_parasite is only supported for vk")
 		}
 		if !options.ServerOptions.Build().IsValid() || options.ServerPort == 0 {
 			return nil, E.New("missing server or server_port")
@@ -88,6 +87,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	ob.startHandler = func() {
 		defer ob.finishStart()
 		bridge, err := call.Connect(runCtx, call.Config{
+			TransportTag:         tag,
 			Platform:             options.Platform,
 			Mode:                 options.Mode,
 			JoinLink:             options.JoinLink,
@@ -116,27 +116,28 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			return
 		}
 		ob.bridge = bridge
-		if ob.rebindPending.Swap(false) {
-			bridge.RebindNetwork()
-		}
 	}
 	return ob, nil
 }
 
 // InterfaceUpdated participates in sing-box's standard ResetNetwork lifecycle.
-// Multi-user Calls preserves its logical bridge and replaces only TURN/DTLS
-// workers, so existing proxied flows can survive a mobile handover.
+// VK parasite Calls preserves its logical bridge and replaces only TURN/DTLS
+// lanes, so existing proxied flows can survive a mobile handover.
 func (o *Outbound) InterfaceUpdated() {
-	if o.options.Mode != "multi_user" || o.closed.Load() {
+	if o.options.Mode != "vk_parasite" || o.closed.Load() {
 		return
 	}
 	select {
 	case <-o.await:
 		if o.bridge != nil {
-			o.bridge.RebindNetwork()
+			o.bridge.RebindNetwork(H.CurrentNetworkGeneration())
 		}
 	default:
-		o.rebindPending.Store(true)
+		// A reset received before the initial bridge is ready is already
+		// reflected by the dialer used by call.Connect. Replaying it after the
+		// four fresh TURN/DTLS lanes attach would immediately destroy a healthy
+		// startup and was the source of the observed connect/rebind cycle.
+		return
 	}
 }
 

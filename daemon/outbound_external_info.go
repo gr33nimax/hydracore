@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -20,7 +19,6 @@ import (
 	C "github.com/sagernet/sing-box/constant"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/common/ntp"
-	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -28,8 +26,6 @@ const (
 	externalInfoFallbackEndpoint = "https://api64.ipify.org"
 	externalInfoAttemptTimeout   = 2 * time.Second
 	externalInfoTimeout          = 4500 * time.Millisecond
-	externalInfoCacheTTL         = 30 * time.Second
-	externalInfoStaleTTL         = 2 * time.Minute
 	externalInfoMaxBytes         = 64 * 1024
 )
 
@@ -37,21 +33,6 @@ type outboundExternalInfo struct {
 	ip          string
 	countryCode string
 }
-
-type outboundExternalInfoCacheEntry struct {
-	info      outboundExternalInfo
-	refreshAt time.Time
-	discardAt time.Time
-}
-
-type outboundExternalInfoResolver struct {
-	access   sync.Mutex
-	cache    map[string]outboundExternalInfoCacheEntry
-	requests singleflight.Group
-	fetch    outboundExternalInfoFetcher
-}
-
-type outboundExternalInfoFetcher func(ctx context.Context, instanceContext context.Context, outbound adapter.Outbound) (outboundExternalInfo, error)
 
 type outboundExternalInfoSource struct {
 	name     string
@@ -62,13 +43,6 @@ type outboundExternalInfoSource struct {
 var outboundExternalInfoSources = []outboundExternalInfoSource{
 	{name: "cloudflare", endpoint: externalInfoPrimaryEndpoint, parse: parseOutboundExternalInfo},
 	{name: "ipify", endpoint: externalInfoFallbackEndpoint, parse: parsePlainExternalIP},
-}
-
-func newOutboundExternalInfoResolver() *outboundExternalInfoResolver {
-	return &outboundExternalInfoResolver{
-		cache: make(map[string]outboundExternalInfoCacheEntry),
-		fetch: fetchOutboundExternalInfo,
-	}
 }
 
 func (s *StartedService) LookupOutboundExternalInfo(ctx context.Context, request *OutboundExternalInfoRequest) (*OutboundExternalInfoResponse, error) {
@@ -91,77 +65,11 @@ func (s *StartedService) LookupOutboundExternalInfo(ctx context.Context, request
 	stopInstanceCancellation := context.AfterFunc(boxService.ctx, cancel)
 	defer stopInstanceCancellation()
 	defer cancel()
-	info, err := boxService.externalInfoResolver.lookup(lookupContext, boxService.ctx, outbound)
+	info, err := fetchOutboundExternalInfo(lookupContext, boxService.ctx, outbound)
 	if err != nil {
 		return nil, err
 	}
 	return &OutboundExternalInfoResponse{Ip: info.ip, CountryCode: info.countryCode}, nil
-}
-
-func (r *outboundExternalInfoResolver) lookup(ctx context.Context, instanceContext context.Context, outbound adapter.Outbound) (outboundExternalInfo, error) {
-	cacheKey := outbound.Tag()
-	if cached, loaded := r.load(cacheKey, time.Now(), false); loaded {
-		return cached, nil
-	}
-	resultChannel := r.requests.DoChan(cacheKey, func() (any, error) {
-		if cached, loaded := r.load(cacheKey, time.Now(), false); loaded {
-			return cached, nil
-		}
-		requestContext, cancel := context.WithTimeout(instanceContext, externalInfoTimeout)
-		defer cancel()
-		info, lookupErr := r.fetch(requestContext, instanceContext, outbound)
-		if lookupErr != nil {
-			if instanceErr := instanceContext.Err(); instanceErr != nil {
-				return outboundExternalInfo{}, instanceErr
-			}
-			if stale, loaded := r.load(cacheKey, time.Now(), true); loaded {
-				return stale, nil
-			}
-			return outboundExternalInfo{}, lookupErr
-		}
-		if stale, loaded := r.load(cacheKey, time.Now(), true); loaded &&
-			info.countryCode == "" && stale.ip == info.ip {
-			info.countryCode = stale.countryCode
-		}
-		r.store(cacheKey, info, time.Now())
-		return info, nil
-	})
-	select {
-	case <-ctx.Done():
-		return outboundExternalInfo{}, ctx.Err()
-	case result := <-resultChannel:
-		if result.Err != nil {
-			return outboundExternalInfo{}, result.Err
-		}
-		return result.Val.(outboundExternalInfo), nil
-	}
-}
-
-func (r *outboundExternalInfoResolver) load(key string, now time.Time, acceptStale bool) (outboundExternalInfo, bool) {
-	r.access.Lock()
-	defer r.access.Unlock()
-	entry, loaded := r.cache[key]
-	if !loaded {
-		return outboundExternalInfo{}, false
-	}
-	if !now.Before(entry.discardAt) {
-		delete(r.cache, key)
-		return outboundExternalInfo{}, false
-	}
-	if !acceptStale && !now.Before(entry.refreshAt) {
-		return outboundExternalInfo{}, false
-	}
-	return entry.info, true
-}
-
-func (r *outboundExternalInfoResolver) store(key string, info outboundExternalInfo, now time.Time) {
-	r.access.Lock()
-	r.cache[key] = outboundExternalInfoCacheEntry{
-		info:      info,
-		refreshAt: now.Add(externalInfoCacheTTL),
-		discardAt: now.Add(externalInfoStaleTTL),
-	}
-	r.access.Unlock()
 }
 
 func fetchOutboundExternalInfo(ctx context.Context, instanceContext context.Context, outbound adapter.Outbound) (outboundExternalInfo, error) {

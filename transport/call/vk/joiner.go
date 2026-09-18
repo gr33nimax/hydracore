@@ -1,3 +1,5 @@
+//go:build with_call_legacy
+
 package vk
 
 import (
@@ -19,6 +21,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/transport/call/common"
+	rtc "github.com/sagernet/sing-box/transport/call/common/rtc"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing-box/transport/call/wtsignal"
 	"github.com/sagernet/sing/common/logger"
@@ -46,41 +49,13 @@ func (e *vkAuthRottenError) Error() string {
 	return fmt.Sprintf("auth rotten: %s", e.Code)
 }
 
-type VKAuthParams struct {
-	SessionKey      string `json:"sessionKey"`
-	ApplicationKey  string `json:"applicationKey"`
-	APIBaseURL      string `json:"apiBaseURL"`
-	JoinLink        string `json:"joinLink"`
-	AnonymToken     string `json:"anonymToken"`
-	AppVersion      string `json:"appVersion"`
-	ProtocolVersion string `json:"protocolVersion"`
-	TunnelMode      string `json:"tunnelMode"`
-	VP8FPS          int    `json:"vp8Fps"`
-	VP8Batch        int    `json:"vp8Batch"`
-	DualTrack       bool   `json:"dualTrack"`
-}
-
-type VKJoinResponse struct {
-	Endpoint   string `json:"endpoint"`
-	WtEndpoint string `json:"wt_endpoint"`
-	Token      string `json:"token"`
-	TurnServer struct {
-		URLs       []string `json:"urls"`
-		Username   string   `json:"username"`
-		Credential string   `json:"credential"`
-	} `json:"turn_server"`
-	StunServer struct {
-		URLs []string `json:"urls"`
-	} `json:"stun_server"`
-}
-
 type VKJoiner struct {
 	logger            logger.ContextLogger
 	OnConnected       func(tunnel.DataTunnel)
 	OnRemoteCandidate func(target int, candidateOrSDP string)
-	PCConfig          common.PeerConnectionConfigurer
-	AddTracks         common.AddTunnelTracksFunc
-	ReadTrackFn       common.ReadTrackFunc
+	PCConfig          rtc.PeerConnectionConfigurer
+	AddTracks         rtc.AddTunnelTracksFunc
+	ReadTrackFn       rtc.ReadTrackFunc
 	Dialer            N.Dialer
 	DNSRouter         adapter.DNSRouter
 
@@ -110,7 +85,7 @@ type VKJoiner struct {
 	stopOnce         sync.Once
 }
 
-func NewVKJoiner(logger logger.ContextLogger, pcConfig common.PeerConnectionConfigurer, addTracks common.AddTunnelTracksFunc, readTrackFn common.ReadTrackFunc, dialer N.Dialer, dnsRouter adapter.DNSRouter) *VKJoiner {
+func NewVKJoiner(logger logger.ContextLogger, pcConfig rtc.PeerConnectionConfigurer, addTracks rtc.AddTunnelTracksFunc, readTrackFn rtc.ReadTrackFunc, dialer N.Dialer, dnsRouter adapter.DNSRouter) *VKJoiner {
 	return &VKJoiner{
 		logger:      logger,
 		PCConfig:    pcConfig,

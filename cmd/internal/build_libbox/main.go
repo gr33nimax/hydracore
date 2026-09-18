@@ -56,10 +56,10 @@ var (
 func init() {
 	sharedFlags = append(sharedFlags, "-trimpath")
 	sharedFlags = append(sharedFlags, "-buildvcs=false")
-	currentTag, err := build_shared.ReadTag()
-	if err != nil {
-		currentTag = "unknown"
-	}
+	currentTag := resolveBuildVersion(
+		os.Getenv("HYDRACORE_BUILD_VERSION"),
+		build_shared.ReadTag,
+	)
 	sourceCommit := "unknown"
 	if output, commandErr := exec.Command("git", "rev-parse", "HEAD").Output(); commandErr == nil {
 		sourceCommit = strings.TrimSpace(string(output))
@@ -86,24 +86,24 @@ func init() {
 	debugTags = append(debugTags, "debug")
 }
 
+func resolveBuildVersion(
+	explicit string,
+	readTag func() (string, error),
+) string {
+	if version := strings.TrimSpace(explicit); version != "" {
+		return version
+	}
+	version, err := readTag()
+	if err != nil {
+		return "unknown"
+	}
+	return version
+}
+
 type AndroidBuildConfig struct {
 	AndroidAPI int
 	OutputName string
 	Tags       []string
-}
-
-func filterTags(tags []string, exclude ...string) []string {
-	excludeMap := make(map[string]bool)
-	for _, tag := range exclude {
-		excludeMap[tag] = true
-	}
-	var result []string
-	for _, tag := range tags {
-		if !excludeMap[tag] {
-			result = append(result, tag)
-		}
-	}
-	return result
 }
 
 func checkJavaVersion() {
@@ -160,6 +160,9 @@ func buildAndroidVariant(config AndroidBuildConfig, bindTarget string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err = patchAndroidLoader(config.OutputName); err != nil {
+		log.Fatal(err)
+	}
 
 	copyPath := filepath.Join("..", "sing-box-for-android", "app", "libs")
 	if rw.IsDir(copyPath) {
@@ -188,18 +191,6 @@ func buildAndroid() {
 		AndroidAPI: 23,
 		OutputName: "libbox.aar",
 		Tags:       mainTags,
-	}, bindTarget)
-
-	// Build legacy variant (SDK 21, no naive outbound)
-	legacyTags := filterTags(sharedTags, "with_naive_outbound")
-	// legacyTags = append(legacyTags, memcTags...)
-	if debugEnabled {
-		legacyTags = append(legacyTags, debugTags...)
-	}
-	buildAndroidVariant(AndroidBuildConfig{
-		AndroidAPI: 21,
-		OutputName: "libbox-legacy.aar",
-		Tags:       legacyTags,
 	}, bindTarget)
 }
 

@@ -15,6 +15,9 @@ type WireGuardEndpointOptions struct {
 	ListenPort                 uint16                           `json:"listen_port,omitempty"`
 	Peers                      []WireGuardPeer                  `json:"peers,omitempty"`
 	UDPTimeout                 badoption.Duration               `json:"udp_timeout,omitempty"`
+	UDPMapping                 UDPNATBehavior                   `json:"udp_mapping,omitempty"`
+	UDPFiltering               UDPNATBehavior                   `json:"udp_filtering,omitempty"`
+	UDPNATMax                  uint32                           `json:"udp_nat_max,omitempty"`
 	Workers                    int                              `json:"workers,omitempty"`
 	PreallocatedBuffersPerPool uint32                           `json:"preallocated_buffers_per_pool,omitempty"`
 	DisablePauses              bool                             `json:"disable_pauses,omitempty"`
@@ -55,4 +58,6 @@ type WireGuardAmnezia struct {
 	RejectAfterTime        *badoption.Range[uint32] `json:"reject_after_time,omitempty"`
 	KeepaliveTimeout       *badoption.Range[uint32] `json:"keepalive_timeout,omitempty"`
 	MaxHandshakeAttempts   *badoption.Range[uint32] `json:"max_handshake_attempts,omitempty"`
+	RandomTrailers         *bool                    `json:"random_trailers,omitempty"`
+	DisableCookies         *bool                    `json:"disable_cookies,omitempty"`
 }

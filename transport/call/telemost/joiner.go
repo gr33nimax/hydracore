@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/transport/call/common"
+	rtc "github.com/sagernet/sing-box/transport/call/common/rtc"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -41,9 +42,9 @@ type TelemostJoiner struct {
 	OnRemoteCandidate func(target int, candidateOrSDP string)
 	dialer            N.Dialer
 	dnsRouter         adapter.DNSRouter
-	PCConfig          common.PeerConnectionConfigurer
-	AddTracks         common.AddTunnelTracksFunc
-	ReadTrackFn       common.ReadTrackFunc
+	PCConfig          rtc.PeerConnectionConfigurer
+	AddTracks         rtc.AddTunnelTracksFunc
+	ReadTrackFn       rtc.ReadTrackFunc
 
 	joinLink    string
 	displayName string
@@ -93,7 +94,7 @@ type TelemostJoiner struct {
 	boundMu        sync.Mutex
 }
 
-func NewTelemostJoiner(logger logger.ContextLogger, dialer N.Dialer, dnsRouter adapter.DNSRouter, pcConfig common.PeerConnectionConfigurer, addTracks common.AddTunnelTracksFunc, readTrackFn common.ReadTrackFunc) *TelemostJoiner {
+func NewTelemostJoiner(logger logger.ContextLogger, dialer N.Dialer, dnsRouter adapter.DNSRouter, pcConfig rtc.PeerConnectionConfigurer, addTracks rtc.AddTunnelTracksFunc, readTrackFn rtc.ReadTrackFunc) *TelemostJoiner {
 	return &TelemostJoiner{
 		logger:      logger,
 		dialer:      dialer,

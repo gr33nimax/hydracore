@@ -87,7 +87,14 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 			}
 		}
 		peer := config.Peers[0]
-		hostParts := strings.Split(peer.Endpoint.Host, ":")
+		peerAddress := strings.Split(peer.Endpoint.Host, ":")[0]
+		peerPort := uint16(peer.Endpoint.Ports[rand.Intn(len(peer.Endpoint.Ports))])
+		if options.Address != "" {
+			peerAddress = options.Address
+			if options.Port != 0 {
+				peerPort = options.Port
+			}
+		}
 		var amnezia *option.WireGuardAmnezia
 		if options.Amnezia != nil {
 			amnezia = &option.WireGuardAmnezia{
@@ -130,8 +137,8 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 				PrivateKey: config.PrivateKey,
 				Peers: []option.WireGuardPeer{
 					{
-						Address:   hostParts[0],
-						Port:      uint16(peer.Endpoint.Ports[rand.Intn(len(peer.Endpoint.Ports))]),
+						Address:   peerAddress,
+						Port:      peerPort,
 						PublicKey: peer.PublicKey,
 						AllowedIPs: badoption.Listable[netip.Prefix]{
 							netip.MustParsePrefix("0.0.0.0/0"),
@@ -235,6 +242,11 @@ func (w *Endpoint) createConfig() (*Config, error) {
 		profile, err = api.CreateProfile(w.ctx, privateKey.PublicKey().String())
 		if err != nil {
 			return nil, err
+		}
+	}
+	if w.options.Profile.LicenseKey != "" && profile.Account.License != w.options.Profile.LicenseKey {
+		if _, err = api.UpdateAccount(w.ctx, profile.Token, profile.ID, w.options.Profile.LicenseKey); err != nil {
+			return nil, E.New("failed to apply license key: ", err)
 		}
 	}
 	return &Config{

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -18,12 +17,10 @@ import (
 	"github.com/sagernet/sing/common/observable"
 )
 
-var _ adapter.URLTestHistoryStorage = (*HistoryStorage)(nil)
-
 type HistoryStorage struct {
 	access       sync.RWMutex
 	delayHistory map[string]*adapter.URLTestHistory
-	updateHook   *observable.Subscriber[struct{}]
+	updateHooks  []*observable.Subscriber[struct{}]
 }
 
 func NewHistoryStorage() *HistoryStorage {
@@ -32,10 +29,16 @@ func NewHistoryStorage() *HistoryStorage {
 	}
 }
 
-func (s *HistoryStorage) SetHook(hook *observable.Subscriber[struct{}]) {
+func (s *HistoryStorage) AddUpdateHook(hook *observable.Subscriber[struct{}]) {
 	s.access.Lock()
 	defer s.access.Unlock()
-	s.updateHook = hook
+	s.updateHooks = append(s.updateHooks, hook)
+}
+
+func (s *HistoryStorage) NotifyUpdated() {
+	s.access.RLock()
+	defer s.access.RUnlock()
+	s.notifyUpdated()
 }
 
 func (s *HistoryStorage) LoadURLTestHistory(tag string) *adapter.URLTestHistory {
@@ -55,9 +58,8 @@ func (s *HistoryStorage) LoadURLTestHistory(tag string) *adapter.URLTestHistory 
 func (s *HistoryStorage) DeleteURLTestHistory(tag string) {
 	s.access.Lock()
 	delete(s.delayHistory, tag)
-	updateHook := s.updateHook
 	s.access.Unlock()
-	notifyUpdated(updateHook)
+	s.notifyUpdated()
 }
 
 func (s *HistoryStorage) StoreURLTestHistory(tag string, history *adapter.URLTestHistory) {
@@ -68,13 +70,12 @@ func (s *HistoryStorage) StoreURLTestHistory(tag string, history *adapter.URLTes
 	historyCopy := *history
 	s.access.Lock()
 	s.delayHistory[tag] = &historyCopy
-	updateHook := s.updateHook
 	s.access.Unlock()
-	notifyUpdated(updateHook)
+	s.notifyUpdated()
 }
 
-func notifyUpdated(updateHook *observable.Subscriber[struct{}]) {
-	if updateHook != nil {
+func (s *HistoryStorage) notifyUpdated() {
+	for _, updateHook := range s.updateHooks {
 		updateHook.Emit(struct{}{})
 	}
 }
@@ -82,7 +83,7 @@ func notifyUpdated(updateHook *observable.Subscriber[struct{}]) {
 func (s *HistoryStorage) Close() error {
 	s.access.Lock()
 	defer s.access.Unlock()
-	s.updateHook = nil
+	s.updateHooks = nil
 	return nil
 }
 
@@ -142,7 +143,8 @@ func urlTest(ctx context.Context, link string, detour N.Dialer) (t uint16, err e
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Timeout: C.TCPTimeout,
+		// No fixed client timeout: the probe context already carries the deadline this caller chose,
+		// and a ceiling here silently replaced a longer setting with fifteen seconds.
 	}
 	defer client.CloseIdleConnections()
 	resp, err := client.Do(req.WithContext(ctx))
@@ -152,13 +154,19 @@ func urlTest(ctx context.Context, link string, detour N.Dialer) (t uint16, err e
 	resp.Body.Close()
 	if IsUnifiedDelayFromContext(ctx) {
 		second := time.Now()
-		resp, err = client.Do(req)
+		resp, err = client.Do(req.WithContext(ctx))
 		if err != nil {
 			return
 		}
 		resp.Body.Close()
 		start = second
 	}
-	t = uint16(time.Since(start) / time.Millisecond)
+	elapsed := uint16(time.Since(start) / time.Millisecond)
+	if elapsed == 0 {
+		// A sub-millisecond round trip is a success, not missing data: the history layer reads a
+		// zero delay as "no measurement", so the floor is one millisecond.
+		elapsed = 1
+	}
+	t = elapsed
 	return
 }

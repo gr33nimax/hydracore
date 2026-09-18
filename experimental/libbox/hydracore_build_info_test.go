@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	H "github.com/sagernet/sing-box/common/hydracore"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/stretchr/testify/require"
 )
@@ -18,6 +19,7 @@ func TestHydraCoreBuildInfo(t *testing.T) {
 	var info hydraCoreBuildInformation
 	require.NoError(t, json.Unmarshal([]byte(content), &info))
 	require.Equal(t, 1, info.SchemaVersion)
+	require.Equal(t, H.ClientABI, info.ClientABI)
 	require.Equal(t, "io.hydrabox.hydracore", info.Distribution.ID)
 	require.Equal(t, C.Version, info.Distribution.Version)
 	require.Equal(t, hydraCoreSourceRepository, info.Source.Repository)

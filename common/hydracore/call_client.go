@@ -7,11 +7,9 @@ const (
 	callClientEnabled = true
 	callServerEnabled = false
 	distributionRole  = "client"
-	callWireMin       = 2
-	callWireMax       = 2
 )
 
 var (
 	callPlatforms = []string{"vk"}
-	callModes     = []string{"multi_user"}
+	callModes     = []string{"vk_parasite"}
 )

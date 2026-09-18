@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/sagernet/quic-go/http3"
@@ -115,9 +116,15 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 	req, _ := http.NewRequestWithContext(reqCtx, method, url, body)
 	FillStreamRequest(req, sessionId, "", c.options)
 	wrc = &WaitReadCloser{Wait: make(chan struct{}), Cancel: cancel}
+	// The request runs in its own goroutine while this call returns as soon as the
+	// connection is up, so the error must not travel through the named result: the
+	// reader below would race with the writer here. It is handed over atomically.
+	var streamErr atomic.Pointer[error]
 	go func() {
+		var resp *http.Response
 		resp, err := c.client.Do(req)
 		if err != nil {
+			streamErr.Store(&err)
 			if !uploadOnly && !errors.Is(err, context.Canceled) { // stream-down is enough
 				c.Close()
 			}
@@ -138,6 +145,9 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 		wrc.(*WaitReadCloser).Set(resp.Body)
 	}()
 	<-gotConn.Wait()
+	if stored := streamErr.Load(); stored != nil {
+		err = *stored
+	}
 	return
 }
 
@@ -251,7 +261,8 @@ func (w *WaitReadCloser) Read(b []byte) (int, error) {
 	if closed || rc == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return rc.Read(b)
+	read, err := rc.Read(b)
+	return read, wrapH2Error(err)
 }
 
 func (w *WaitReadCloser) Close() error {

@@ -6,14 +6,14 @@ repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 validator="${repository_root}/release/verify_release_version.sh"
 
 expect_ok() {
-  if ! "${validator}" "$@"; then
+  if ! bash "${validator}" "$@"; then
     printf 'expected success: %q\n' "$*" >&2
     exit 1
   fi
 }
 
 expect_fail() {
-  if "${validator}" "$@"; then
+  if bash "${validator}" "$@"; then
     printf 'expected failure: %q\n' "$*" >&2
     exit 1
   fi

@@ -67,6 +67,8 @@ jobs:
           cache: true
       - name: Verify baseline
         run: bash release/verify_upstream_baseline.sh
+      - name: Test release tag contract
+        run: bash release/verify_release_version_test.sh
       - name: Resolve test link flags
         shell: bash
         run: |
@@ -117,12 +119,12 @@ jobs:
           ndk-version: r28
       - name: Verify baseline
         run: bash release/verify_upstream_baseline.sh
-      - name: Set HydraCore build version
+      - name: Validate HydraCore build version
         shell: bash
         run: |
           set -euo pipefail
           version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
-          if ! [[ "$version" =~ ^v[0-9A-Za-z][0-9A-Za-z._+-]{0,126}$ ]]; then
+          if ! [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,126}$ ]]; then
             echo "::error title=Invalid HydraCore version::Found '${version}'" >&2
             exit 1
           fi
@@ -271,6 +273,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Verify release version for source ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
+          bash release/verify_release_version.sh "$version" "$GITHUB_REF"
       - name: Download verified libbox artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -379,20 +387,12 @@ jobs:
           )
 
           if [[ "$GITHUB_REF" == "refs/heads/debug" ]]; then
-            if [[ "$version" != *-debug.* ]]; then
-              echo "Debug branch version must contain -debug.: ${version}" >&2
-              exit 1
-            fi
             gh release create "$version" "${assets[@]}" \
               --prerelease \
               --target "$GITHUB_SHA" \
               --title "$title" \
               --notes-file release/HYDRACORE_RELEASE_NOTES.md
           else
-            if [[ "$version" == *-debug.* ]]; then
-              echo "Stable publication cannot use a debug version: ${version}" >&2
-              exit 1
-            fi
             gh release create "$version" "${assets[@]}" \
               --draft \
               --target "$GITHUB_SHA" \

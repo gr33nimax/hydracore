@@ -926,6 +926,20 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 	}
 }
 
+// packetBody returns the transport body of a queued element, and whether there is one at all.
+//
+// An element dropped during encryption keeps its place in the container but loses its packet: the
+// buffer it needed was larger than the pool could hand out, or the header cipher was not there.
+// Slicing such an element for its header used to panic and take the whole process down with it, so
+// the sender is told that there is nothing to send instead.
+func packetBody(elem *QueueOutboundElement) ([]byte, bool) {
+	offset := int(MessageEncapsulatingTransportSize) + int(elem.padding)
+	if len(elem.packet) <= offset {
+		return nil, false
+	}
+	return elem.packet[offset:], true
+}
+
 // processOutboundContainer waits for the encryption routine to finish
 // filling elemsContainer, then sends the batch (or drops it, if the peer
 // has been stopped) and returns the container to the pool.
@@ -968,7 +982,11 @@ func (peer *Peer) processOutboundContainer(elemsContainer *QueueOutboundElements
 
 	dataSent := false
 	for _, elem := range elemsContainer.elems {
-		if len(elem.packet[MessageEncapsulatingTransportSize+elem.padding:]) != MessageKeepaliveSize {
+		body, present := packetBody(elem)
+		if !present {
+			continue
+		}
+		if len(body) != MessageKeepaliveSize {
 			dataSent = true
 		}
 		scratch = append(scratch, elem.packet)

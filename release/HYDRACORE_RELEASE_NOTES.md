@@ -1,4 +1,4 @@
-# HydraCore debug release notes
+# HydraCore 1.14.0 release notes
 
 This release moves the core to `sing-box-extended v1.14.0-extended-2.7.1`. The
 Hydra layer is unchanged in behaviour: the merge keeps the Calls runtime, the
@@ -17,10 +17,12 @@ Release names now follow the readable channel contract
 `hydracore-sbe-<sbe-version>-<channel>-<n>`: the tag names the sing-box-extended
 baseline and a counter from `1` inside that channel. The first release under
 that contract reset the debug counter to `1` and is `hydracore-sbe-1.14.0-debug-1`;
-this release candidate freezes that candidate as `hydracore-sbe-1.14.0-rc-1`, with
-no code change between the two. The legacy
+`hydracore-sbe-1.14.0-rc-1` freezes that candidate, and this release carries the
+same code with no change between them. The legacy
 `v1.14.0-extended-2.7.1-hydracore.<cycle>-debug.<n>` tags stay published and are
-neither renumbered nor deleted.
+neither renumbered nor renamed nor pruned: the debug channel's ten-release window
+counts only `hydracore-sbe-<sbe-version>-debug-<n>` prereleases, so a release
+candidate or a legacy tag is never trimmed as new debug builds arrive.
 
 This build carries the code published as
 `v1.14.0-extended-2.7.1-hydracore.12-debug.11`; the version file — and therefore
@@ -49,7 +51,7 @@ not compile against the published AAR. Its behaviour is unchanged: GOGC stays at
 its default and the limit is a soft heap ceiling, while the upstream OOM service
 keeps its own path.
 
-This prerelease ships the protocol-v10 `vk_parasite` transport: QUIC over four
+This release ships the protocol-v10 `vk_parasite` transport: QUIC over four
 required VK/TURN paths, with four paths by default and up to twenty workers in
 multiples of four.
 

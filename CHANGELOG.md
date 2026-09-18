@@ -1,5 +1,14 @@
 # Changelog
 
+## hydracore-sbe-1.14.0-rc-1
+
+- Release candidate for `hydracore-sbe-1.14.0`, frozen from the code the debug channel already
+  published as `hydracore-sbe-1.14.0-debug-1`: only the version identity changed, no behaviour
+  change.
+- An operator rolling back from this candidate returns to the release installed in the field,
+  `v1.14.0-extended-2.7.1-hydracore.12-debug.11`, which this candidate carries and which stays
+  published and installable.
+
 ## hydracore-sbe-1.14.0-debug-1
 
 - Hydracore release identity moves to the readable tag contract

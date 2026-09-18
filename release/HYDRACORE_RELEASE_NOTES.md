@@ -14,9 +14,11 @@ built against ABI 1 refuses to run with this core instead of failing to parse a
 3.1 profile at tunnel start.
 
 Release names now follow the readable channel contract
-`hydracore-sbe-<sbe-version>-debug-<n>`: the tag names the sing-box-extended
-baseline and a counter from `1` inside that channel. This release resets that
-counter, so it is `hydracore-sbe-1.14.0-debug-1`. The legacy
+`hydracore-sbe-<sbe-version>-<channel>-<n>`: the tag names the sing-box-extended
+baseline and a counter from `1` inside that channel. The first release under
+that contract reset the debug counter to `1` and is `hydracore-sbe-1.14.0-debug-1`;
+this release candidate freezes that candidate as `hydracore-sbe-1.14.0-rc-1`, with
+no code change between the two. The legacy
 `v1.14.0-extended-2.7.1-hydracore.<cycle>-debug.<n>` tags stay published and are
 neither renumbered nor deleted.
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## hydracore-sbe-1.14.0-debug-1
+
+- Hydracore release identity moves to the readable tag contract
+  `hydracore-sbe-<sbe-version>-debug-<n>`: the version file, the version the core prints, the
+  release tag and the bundle manifest all carry it. The first release under the contract is
+  `hydracore-sbe-1.14.0-debug-1`, and the debug counter now starts at `1`.
+- This build carries the code of `v1.14.0-extended-2.7.1-hydracore.12-debug.11`; only the version
+  identity changed. Legacy `-hydracore.<cycle>-debug.<n>` releases stay published, are not
+  renumbered, and remain the rollback target.
+
 ## v1.14.0-extended-2.7.1-hydracore.12-debug.8
 
 - AmneziaWG transport padding no longer reaches a slice before the buffer is proven to hold it:

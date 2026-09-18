@@ -13,9 +13,18 @@ pinned `wireguard-go` fork already understands at the UAPI level; an application
 built against ABI 1 refuses to run with this core instead of failing to parse a
 3.1 profile at tunnel start.
 
-Release names now carry the upstream base and an integration cycle:
-`<upstream>-hydracore.<cycle>-debug.<iteration>`. The cycle increments when the
-upstream base changes, the iteration per build inside a cycle.
+Release names now follow the readable channel contract
+`hydracore-sbe-<sbe-version>-debug-<n>`: the tag names the sing-box-extended
+baseline and a counter from `1` inside that channel. This release resets that
+counter, so it is `hydracore-sbe-1.14.0-debug-1`. The legacy
+`v1.14.0-extended-2.7.1-hydracore.<cycle>-debug.<n>` tags stay published and are
+neither renumbered nor deleted.
+
+This build carries the code published as
+`v1.14.0-extended-2.7.1-hydracore.12-debug.11`; the version file — and therefore
+the version the core prints, the release tag and the bundle manifest — is the
+only difference. That legacy release is the rollback target for an operator
+moving onto this one, and it stays installable.
 
 debug.3 answers the capability document HYDRA read before the product contract
 replaced it. A HYDRA older than the contract validates a core with

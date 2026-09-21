@@ -250,8 +250,9 @@ type OutboundUTLSOptions struct {
 }
 
 type OutboundRealityOptions struct {
-	Enabled   bool   `json:"enabled,omitempty"`
-	PublicKey string `json:"public_key,omitempty"`
-	ShortID   string `json:"short_id,omitempty"`
-	SpiderX   string `json:"spider_x,omitempty"`
+	Enabled               bool   `json:"enabled,omitempty"`
+	PublicKey             string `json:"public_key,omitempty"`
+	ShortID               string `json:"short_id,omitempty"`
+	SpiderX               string `json:"spider_x,omitempty"`
+	SupportX25519MLKEM768 bool   `json:"support_x25519mlkem768,omitempty"`
 }

@@ -1,0 +1,92 @@
+name: HydraCore - watch sing-box-extended baseline
+
+# The fork is merge-based, and the owner still decides what a stable promotion is. So a new
+# upstream release is turned into a reviewable merge request, never a silent move of a release
+# branch: this workflow notices and prepares, and nothing here publishes a core.
+
+on:
+  schedule:
+    # Every six hours (owner's decision): fresh enough to notice a release the day it lands, quiet
+    # enough not to spend a runner on an unchanged upstream all day.
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: hydracore-sbe-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Look for a newer sing-box-extended baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the debug branch
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: debug
+          fetch-depth: 0
+      - name: Resolve the newest upstream tag
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          line="$(bash release/sbe_watch.sh)"
+          printf '%s\n' "$line"
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+      # The watcher rule is only as good as the day it runs: an untouched upstream must leave the
+      # repository alone, which the schedule relies on and this keeps honest.
+      - name: Test the watch rule
+        run: bash release/sbe_watch_test.sh
+      - name: Prepare the upgrade
+        id: upgrade
+        if: startsWith(steps.upstream.outputs.line, 'update ')
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r _ tag _commit <<< "${{ steps.upstream.outputs.line }}"
+          # The script merges, records the baseline and moves the debug counter; it never pushes or
+          # publishes, and it aborts on a conflict so the run fails loudly for the owner to resolve.
+          bash release/upgrade_sbe.sh "${tag}"
+          version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
+          sbe="${tag#v}"
+          sbe="${sbe%%-extended-*}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "branch=auto/sbe-${sbe}" >> "$GITHUB_OUTPUT"
+      - name: Open or refresh the merge request
+        if: startsWith(steps.upstream.outputs.line, 'update ')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.upgrade.outputs.branch }}
+          TAG: ${{ steps.upgrade.outputs.tag }}
+          VERSION: ${{ steps.upgrade.outputs.version }}
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin "HEAD:refs/heads/${BRANCH}"
+          if [[ "$(gh pr list --head "${BRANCH}" --state open --json number --jq 'length')" != "0" ]]; then
+            echo "a merge request for ${BRANCH} is already open"
+            exit 0
+          fi
+          body="$(mktemp)"
+          {
+            echo "A newer sing-box-extended baseline is available: \`${TAG}\`."
+            echo
+            echo "This branch was produced by \`release/upgrade_sbe.sh\`, which merged the upstream"
+            echo "tag into \`debug\`, recorded it in \`release/UPSTREAM_BASELINE\`, and moved the"
+            echo "debug version to \`${VERSION}\`. Its CI run builds the Android AAR and the Linux"
+            echo "runtimes; no release is published from here."
+            echo
+            echo "Publishing stays manual: merge this request, then publish the core through the"
+            echo "existing \`workflow_dispatch\` gate."
+          } > "${body}"
+          gh pr create \
+            --base debug \
+            --head "${BRANCH}" \
+            --title "chore(sbe): merge ${TAG} into the fork" \
+            --body-file "${body}"

@@ -115,8 +115,14 @@ CI (`.github/workflows/hydracore.yml`).
 кандидатов. Артефакты клиента и VPS бери из одного релиза. Публичная
 идентичность — `io.hydrabox.hydracore`.
 
+Новый upstream sing-box-extended подхватывается автоматически (cron):
+`.github/workflows/sbe-watch.yml` открывает merge-запрос в `debug`, а опубликованный
+релиз ядра триггерит сборку нужного канала HydraBox. Секрет `HYDRABOX_DISPATCH_PAT` и
+границы автоматизации — в [release/AUTOMATION.md](release/AUTOMATION.md).
+
 ## Документация
 
 - [Hydra Subscription v2](contract/subscription/HYDRA_SUBSCRIPTION_V2.md)
 - [Release notes](release/HYDRACORE_RELEASE_NOTES.md) · [CHANGELOG](CHANGELOG.md)
+- [Канал поставок: автоматизация](release/AUTOMATION.md)
 - [SECURITY](SECURITY.md) · [CONTRIBUTING](CONTRIBUTING.md)

@@ -13,11 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sagernet/sing-box/transport/call/common"
 	N "github.com/sagernet/sing/common/network"
-
-	"github.com/google/uuid"
-	headless "github.com/kulikov0/headless-client"
 )
 
 var ErrSessionExpired = errors.New("dion: session expired, re-login required")
@@ -96,7 +94,7 @@ type WSSConnectResponse struct {
 
 type Session struct {
 	HTTPClient     *http.Client
-	Device         common.DeviceProfile
+	Device         DeviceProfile
 	AccessToken    string
 	AccessTokenExp time.Time
 	UserID         string
@@ -121,7 +119,7 @@ func NewSession(dialer N.Dialer) (*Session, error) {
 	}
 	httpClient := common.HttpClient(dialer)
 	httpClient.Jar = jar
-	return &Session{HTTPClient: httpClient, Device: common.ChromeWindowsDeviceProfile(headless.ChromeWindows.UserAgent())}, nil
+	return &Session{HTTPClient: httpClient, Device: RandomDeviceProfile()}, nil
 }
 
 func (s *Session) RegisterGuest() (*GuestAuthResponse, error) {
@@ -556,13 +554,8 @@ func (s *Session) setBaseHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("Referer", Origin+"/")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en")
-	for name, values := range headless.ChromeWindows.Headers(headless.DestEmpty) {
-		if strings.HasPrefix(name, "Sec-Fetch-") {
-			req.Header[name] = values
-		}
-	}
 	req.Header.Set("X-Request-Id", uuid.New().String())
-	for name, value := range deviceHeaders(s.Device) {
+	for name, value := range s.Device.Headers() {
 		req.Header.Set(name, value)
 	}
 	if accessToken != "" {

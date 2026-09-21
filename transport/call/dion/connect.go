@@ -5,15 +5,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
-	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 )
 
-func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
+func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
 	auth, err := NewSession(dialer)
 	if err != nil {
 		return nil, "", fmt.Errorf("dion: new session: %w", err)
@@ -55,7 +53,6 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password stri
 		DisplayName: "Creator",
 		Logger:      logger,
 		Dialer:      dialer,
-		DNSRouter:   dnsRouter,
 		Role:        RoleCreator,
 	})
 	call.OnConnected = func(tun tunnel.DataTunnel) {
@@ -63,7 +60,7 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password stri
 			activeRelay.Reset()
 		}
 		bridgeReadBuf := common.VP8BufSize
-		if _, ok := tun.(*rtc.DCTunnel); ok {
+		if _, ok := tun.(*tunnel.DCTunnel); ok {
 			bridgeReadBuf = readBuf
 		}
 		activeRelay = tunnel.NewRelayBridge(tun, "creator", bridgeReadBuf, dialer, logger)
@@ -95,31 +92,48 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, email, password stri
 	}
 }
 
-func ConnectJoiner(ctx context.Context, roomID, displayName string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, error) {
+func ConnectJoiner(ctx context.Context, roomID, displayName string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) (tunnel.DataTunnel, error) {
 	if displayName == "" {
 		displayName = "Joiner"
 	}
-	if readBuf <= 0 {
-		readBuf = 32768
+	slug := ParseRoom(roomID)
+	if slug == "" {
+		return nil, fmt.Errorf("dion: missing room")
 	}
-	joiner := NewDionJoiner(logger, dialer, dnsRouter)
+	auth, event, err := JoinAsGuest(dialer, slug, displayName)
+	if err != nil {
+		return nil, fmt.Errorf("dion: join as guest: %w", err)
+	}
+	obf, err := tunnel.NewTunnelObfuscator(tunnel.DeriveSecretFromJoinLink(event.Slug))
+	if err != nil {
+		return nil, fmt.Errorf("dion: obfuscator init: %w", err)
+	}
+	call := NewCall(CallConfig{
+		Auth:        auth,
+		Event:       event,
+		Obfuscator:  obf,
+		DisplayName: displayName,
+		Logger:      logger,
+		Dialer:      dialer,
+		Role:        RoleJoiner,
+	})
 	tunCh := make(chan tunnel.DataTunnel, 1)
-	joiner.OnConnected = func(tun tunnel.DataTunnel) {
+	call.OnConnected = func(tun tunnel.DataTunnel) {
 		select {
 		case tunCh <- tun:
 		default:
 		}
 	}
-	params := fmt.Sprintf(`{"roomId":%q,"displayName":%q}`, roomID, displayName)
-	go joiner.RunWithParams(params)
+	go func() {
+		if err := call.Start(); err != nil {
+			logger.Error(fmt.Sprintf("dion: call start failed: %v", err))
+		}
+	}()
 	select {
 	case tun := <-tunCh:
-		rb := tunnel.NewRelayBridge(tun, "joiner", readBuf, dialer, logger)
-		rb.SetOnConfigAck(joiner.MarkConfigAcked)
-		rb.MarkReady()
-		return rb, nil
+		return tun, nil
 	case <-ctx.Done():
-		joiner.Close()
+		call.Close()
 		return nil, ctx.Err()
 	}
 }

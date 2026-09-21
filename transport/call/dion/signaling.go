@@ -12,13 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-
-	headless "github.com/kulikov0/headless-client"
-	"github.com/kulikov0/headless-client/websocket"
 )
 
 const (
@@ -322,7 +320,6 @@ type SignalingClient struct {
 	OnGetVideoFromUserResponse         func(resp GetVideoFromUserResponse, errCode int, errMessage string)
 	OnGetScreenSharingFromUserResponse func(resp GetScreenSharingFromUserResponse, errCode int, errMessage string)
 	OnHeartbeat                        func()
-	OnKicked                           func()
 	OnUnknown                          func(method string, params json.RawMessage)
 	OnDataChannelMessage               func(method string, params json.RawMessage)
 }
@@ -335,16 +332,11 @@ func DialSignaling(wssURL string, opts SignalingDialOptions) (*SignalingClient, 
 		}
 		wssURL = wssURL + joiner + "socket_version=2.0"
 	}
-	var netDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	if opts.Dialer != nil {
-		netDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialer.NetDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return opts.Dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 		}
-	}
-	dialer := headless.ChromeWindows.WebSocketDialer(headless.TLSOptions{DialContext: netDialContext})
-	dialer.HandshakeTimeout = 10 * time.Second
-	if netDialContext != nil {
-		dialer.NetDialContext = netDialContext
 	}
 	headers := http.Header{}
 	if opts.UserAgent != "" {
@@ -667,11 +659,6 @@ func (c *SignalingClient) dispatch(frame Frame) {
 	case MethodServerHeartbeat:
 		if c.OnHeartbeat != nil {
 			c.OnHeartbeat()
-		}
-	case MethodServerYouKicked:
-		c.logger.Debug("dion: server:you_kicked")
-		if c.OnKicked != nil {
-			c.OnKicked()
 		}
 	case MethodServerGetVideoFromUser:
 		var resp GetVideoFromUserResponse

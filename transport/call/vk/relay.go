@@ -11,16 +11,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
+	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
-	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-
-	"github.com/kulikov0/headless-client/webrtc"
-	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 )
 
 type Relay interface {
@@ -51,13 +49,13 @@ type TunnelRelay struct {
 	conns sync.Map
 
 	sampleTrack *webrtc.TrackLocalStaticSample
-	tun         *rtc.VP8DataTunnel
+	tun         *tunnel.VP8DataTunnel
 	obf         *tunnel.TunnelObfuscator
 	OnConnected func(tunnel.DataTunnel)
 
 	screenDC       *webrtc.DataChannel
 	producerScreen *webrtc.DataChannel
-	sym            *rtc.SymmetricScreenTunnel
+	sym            *tunnel.SymmetricScreenTunnel
 
 	dialer      N.Dialer
 	readBufSize int
@@ -106,7 +104,17 @@ func (u *TunnelRelay) Init(iceServers []webrtc.ICEServer) error {
 			u.handleDCMessage(msg.Data)
 		})
 	}
-	u.sampleTrack = common.AddTunnelTracks(pc, u.logger, "vk")
+	sampleTrack, _ := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
+		"video", "tunnel-video",
+	)
+	u.sampleTrack = sampleTrack
+	audioTrack, _ := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+		"audio", "tunnel-audio",
+	)
+	pc.AddTrack(audioTrack)
+	pc.AddTrack(sampleTrack)
 	ordered := true
 	dcNotif, err := pc.CreateDataChannel("producerNotification", &webrtc.DataChannelInit{Ordered: &ordered})
 	if err == nil {
@@ -156,14 +164,14 @@ func (u *TunnelRelay) Init(iceServers []webrtc.ICEServer) error {
 		u.modeOnce.Do(func() {
 			u.mode = "video"
 			u.logger.Info("[relay] === MODE: VIDEO ===")
-			u.tun = rtc.NewVP8DataTunnel(u.sampleTrack, u.obf, u.logger)
+			u.tun = tunnel.NewVP8DataTunnel(sampleTrack, u.obf, u.logger)
 			u.tun.Start(0, 0)
 			var downlink tunnel.DataTunnel = u.tun
 			if u.screenDC != nil {
-				writer := rtc.NewScreenWriter(u.obf, "screen-down", u.logger)
+				writer := tunnel.NewScreenWriter(u.obf, "screen-down", u.logger)
 				dc := u.screenDC
 				writer.SetSend(dc.Send)
-				u.sym = rtc.NewSymmetricScreenTunnel(u.tun, writer, u.obf, func() bool {
+				u.sym = tunnel.NewSymmetricScreenTunnel(u.tun, writer, u.obf, func() bool {
 					return dc.ReadyState() == webrtc.DataChannelStateOpen
 				}, u.logger)
 				downlink = u.sym

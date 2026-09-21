@@ -89,9 +89,6 @@ type RelayBridge struct {
 
 	onPeerConfigMu sync.Mutex
 	onPeerConfig   func(fps, batch, trackCount int)
-
-	onConfigAckMu sync.Mutex
-	onConfigAck   func()
 }
 
 func NewRelayBridge(tunnel DataTunnel, mode string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) *RelayBridge {
@@ -151,12 +148,6 @@ func (rb *RelayBridge) SetOnPeerConfig(fn func(fps, batch, trackCount int)) {
 	rb.onPeerConfigMu.Lock()
 	rb.onPeerConfig = fn
 	rb.onPeerConfigMu.Unlock()
-}
-
-func (rb *RelayBridge) SetOnConfigAck(fn func()) {
-	rb.onConfigAckMu.Lock()
-	rb.onConfigAck = fn
-	rb.onConfigAckMu.Unlock()
 }
 
 func (rb *RelayBridge) DialContext(ctx context.Context, destination string) (net.Conn, error) {
@@ -332,14 +323,6 @@ func (rb *RelayBridge) handleTunnelData(data []byte) {
 			return
 		}
 		if connID == ControlConnID && msgType == MsgConfigAck {
-			if rb.mode == "joiner" {
-				rb.onConfigAckMu.Lock()
-				cb := rb.onConfigAck
-				rb.onConfigAckMu.Unlock()
-				if cb != nil {
-					cb()
-				}
-			}
 			return
 		}
 		switch rb.mode {

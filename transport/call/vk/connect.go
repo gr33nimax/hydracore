@@ -12,12 +12,11 @@ import (
 	"github.com/sagernet/sing-box/transport/call/common"
 	rtc "github.com/sagernet/sing-box/transport/call/common/rtc"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
-	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 )
 
-func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
+func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int, dialer N.Dialer, logger logger.ContextLogger) (*tunnel.RelayBridge, string, error) {
 	cfg, err := FetchConfig(logger)
 	if err != nil {
 		return nil, "", err
@@ -39,10 +38,9 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 		return nil, "", fmt.Errorf("vk: obfuscator init: %w", err)
 	}
 	bridge := &Bridge{
-		dialer:    dialer,
-		dnsRouter: dnsRouter,
-		readBuf:   readBuf,
-		logger:    logger,
+		dialer:  dialer,
+		readBuf: readBuf,
+		logger:  logger,
 	}
 	bridge.newRelay = func() Relay {
 		ur := NewTunnelRelay(dialer, logger)
@@ -50,12 +48,12 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 		ur.SetObfuscator(obf)
 		ur.OnConnected = func(tun tunnel.DataTunnel) {
 			bridgeReadBuf := common.VP8BufSize
-			if _, ok := tun.(*rtc.DCTunnel); ok {
+			if _, ok := tun.(*tunnel.DCTunnel); ok {
 				bridgeReadBuf = readBuf
 			}
 			rb := tunnel.NewRelayBridge(tun, "creator", bridgeReadBuf, dialer, logger)
 			rb.MarkReady()
-			if st, ok := tun.(*rtc.SymmetricScreenTunnel); ok {
+			if st, ok := tun.(*tunnel.SymmetricScreenTunnel); ok {
 				rb.SetOnPeerConfig(func(fps, batch, trackCount int) {
 					st.SetTrackCount(trackCount)
 					bridge.setScreenSharing(trackCount > 1)
@@ -87,12 +85,9 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 	}
 }
 
-func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, error) {
+func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (tunnel.DataTunnel, error) {
 	if displayName == "" {
 		displayName = "Joiner"
-	}
-	if readBuf <= 0 {
-		readBuf = 32768
 	}
 	authJSON, err := RunVKAuth(dialer, joinLink, displayName, logger)
 	if err != nil {
@@ -125,10 +120,7 @@ func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf in
 	go joiner.RunWithParams(string(paramsJSON))
 	select {
 	case tun := <-tunCh:
-		rb := tunnel.NewRelayBridge(tun, "joiner", readBuf, dialer, logger)
-		rb.SetOnConfigAck(joiner.MarkConfigAcked)
-		rb.MarkReady()
-		return rb, nil
+		return tun, nil
 	case <-ctx.Done():
 		joiner.Close()
 		return nil, ctx.Err()

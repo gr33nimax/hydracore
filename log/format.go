@@ -95,6 +95,13 @@ func (f Formatter) FormatSimple(ctx context.Context, tag string, message string)
 	return builder.String()
 }
 
+// FormatWithSimple returns the full formatted line and the tag/id-prefixed simple line in one
+// pass. HydraCore's observable factory emits the simple form to subscribers while writing the
+// full form; this keeps that one-call contract on top of upstream's split Format/FormatSimple.
+func (f Formatter) FormatWithSimple(ctx context.Context, level Level, tag string, message string, timestamp time.Time) (string, string) {
+	return f.Format(ctx, level, tag, message, timestamp), f.FormatSimple(ctx, tag, message)
+}
+
 func (f Formatter) writePrefix(builder *strings.Builder, level Level, timestamp time.Time) {
 	var levelString string
 	if int(level) >= len(levelLabels) {

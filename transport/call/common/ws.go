@@ -3,7 +3,7 @@ package common
 import (
 	"time"
 
-	"github.com/kulikov0/headless-client/websocket"
+	"github.com/gorilla/websocket"
 )
 
 func CloseWS(ws *websocket.Conn) {

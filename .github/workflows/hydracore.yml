@@ -71,6 +71,8 @@ jobs:
         run: bash release/verify_release_version_test.sh
       - name: Test release notes discipline
         run: bash release/verify_release_notes.sh
+      - name: Test the sing-box-extended watch rule
+        run: bash release/sbe_watch_test.sh
       - name: Resolve test link flags
         shell: bash
         run: |
@@ -411,6 +413,33 @@ jobs:
               --prerelease=false \
               --latest
           fi
+      # The client is built on the core this run just published. The direction is one way and the
+      # channel is never chosen by the client: a debug publication drives canary, a main
+      # publication drives stable, and the dispatch only leaves after the release above succeeded,
+      # so a red run cannot pull a client build behind it.
+      - name: Notify HydraBox to build its channel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HYDRABOX_DISPATCH_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error title=Missing dispatch token::HYDRABOX_DISPATCH_PAT is not set, so the HydraBox channel cannot be triggered" >&2
+            exit 1
+          fi
+          version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            channel="stable"
+          else
+            channel="canary"
+          fi
+          gh api --method POST \
+            repos/gr33nimax/hydrabox/dispatches \
+            -f event_type=core-released \
+            -f "client_payload[core_tag]=${version}" \
+            -f "client_payload[channel]=${channel}" \
+            -f "client_payload[core_commit]=${GITHUB_SHA}"
+          echo "asked HydraBox to build the ${channel} channel from ${version}"
       - name: Prune old releases
         shell: bash
         env:

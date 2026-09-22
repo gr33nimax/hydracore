@@ -555,19 +555,9 @@ retry:
 }
 
 func (s *StdNetBind) send(conn *net.UDPConn, pc batchWriter, msgs []ipv6.Message) error {
-	var (
-		n     int
-		err   error
-		start int
-	)
+	var err error
 	if runtime.GOOS == "linux" || runtime.GOOS == "android" {
-		for {
-			n, err = pc.WriteBatch(msgs[start:], 0)
-			if err != nil || n == len(msgs[start:]) {
-				break
-			}
-			start += n
-		}
+		return writeBatches(pc, msgs)
 	} else {
 		if supportsMsgX {
 			handled, sendErr := s.sendMsgX(conn, msgs)
@@ -583,6 +573,32 @@ func (s *StdNetBind) send(conn *net.UDPConn, pc batchWriter, msgs []ipv6.Message
 		}
 	}
 	return err
+}
+
+// writeBatches hands the messages to the platform's own batch writer, which indexes the first
+// message of every batch it is given.
+//
+// An empty batch is not a failure and has to be refused here, before it reaches that writer: a
+// container whose every element was dropped during encryption leaves the sender with nothing to
+// send, and writing it aborted the whole core — which on a phone means the process dies and the
+// tunnel with it.
+func writeBatches(pc batchWriter, msgs []ipv6.Message) error {
+	var (
+		n     int
+		err   error
+		start int
+	)
+	for {
+		batch := msgs[start:]
+		if len(batch) == 0 {
+			return err
+		}
+		n, err = pc.WriteBatch(batch, 0)
+		if err != nil || n == len(batch) {
+			return err
+		}
+		start += n
+	}
 }
 
 const (

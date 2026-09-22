@@ -83,10 +83,10 @@ func (s *StartedService) readRuntimeSnapshotWithGroups(groups *Groups) *RuntimeS
 		if groups == nil {
 			snapshot.Groups = s.readGroups()
 		}
-		if s.instance.clashServer != nil {
+		if s.instance.clashMode != nil {
 			snapshot.ClashMode = &ClashModeStatus{
-				ModeList:    s.instance.clashServer.ModeList(),
-				CurrentMode: s.instance.clashServer.Mode(),
+				ModeList:    s.instance.clashMode.ModeList(),
+				CurrentMode: s.instance.clashMode.Mode(),
 			}
 		}
 	}

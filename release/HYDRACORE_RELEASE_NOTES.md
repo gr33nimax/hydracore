@@ -73,3 +73,9 @@ History for earlier builds lives in `CHANGELOG.md`; this file describes the curr
   starts and immediately dies, once in a while, more often on the first attempt after the
   service is created. The sender now asks a single helper whether there is a body to send,
   and that decision has its own test.
+- **An empty WireGuard batch no longer aborts the core.** A container whose *every* element was
+  dropped during encryption still reached the sender with nothing in it, and the platform batch
+  writers index the first message of whatever they are handed: `index out of range [0] with
+  length 0` ended the process, and the tunnel with it — a connection that comes up and dies a
+  moment later, which is what a person sees when it happens. The batch loop refuses an empty
+  batch before the writer is called, and that decision has its own test.

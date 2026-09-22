@@ -16,3 +16,8 @@
 # vk_parasite and the whole call transport: pion-based, diverged from upstream's
 # headless-client rewrite. Owned outright.
 transport/call/
+
+# HydraCore's own documentation set. The fork deleted upstream's sing-box docs; docs/ now
+# holds only HydraCore docs (architecture, configuration, ecosystem, build-and-release).
+# An SBE merge must neither resurrect upstream's docs here nor touch ours.
+docs/

@@ -45,11 +45,12 @@ import (
 var _ ConfigCompat = (*RealityClientConfig)(nil)
 
 type RealityClientConfig struct {
-	ctx       context.Context
-	uClient   *UTLSClientConfig
-	publicKey []byte
-	shortID   [8]byte
-	spiderX   string
+	ctx                   context.Context
+	uClient               *UTLSClientConfig
+	publicKey             []byte
+	shortID               [8]byte
+	spiderX               string
+	supportX25519MLKEM768 bool
 }
 
 func NewRealityClient(ctx context.Context, logger logger.ContextLogger, serverAddress string, options option.OutboundTLSOptions) (Config, error) {
@@ -86,11 +87,12 @@ func newRealityClient(ctx context.Context, logger logger.ContextLogger, serverAd
 	}
 
 	var config Config = &RealityClientConfig{
-		ctx:       ctx,
-		uClient:   uClient.(*UTLSClientConfig),
-		publicKey: publicKey,
-		shortID:   shortID,
-		spiderX:   options.Reality.SpiderX,
+		ctx:                   ctx,
+		uClient:               uClient.(*UTLSClientConfig),
+		publicKey:             publicKey,
+		shortID:               shortID,
+		spiderX:               options.Reality.SpiderX,
+		supportX25519MLKEM768: options.Reality.SupportX25519MLKEM768,
 	}
 	if options.KernelRx || options.KernelTx {
 		if !C.IsLinux {
@@ -152,21 +154,23 @@ func (e *RealityClientConfig) ClientHandshake(ctx context.Context, conn net.Conn
 	if err != nil {
 		return nil, err
 	}
-	for _, extension := range uConn.Extensions {
-		if ce, ok := extension.(*utls.SupportedCurvesExtension); ok {
-			ce.Curves = common.Filter(ce.Curves, func(curveID utls.CurveID) bool {
-				return curveID != utls.X25519MLKEM768
-			})
+	if !e.supportX25519MLKEM768 {
+		for _, extension := range uConn.Extensions {
+			if ce, ok := extension.(*utls.SupportedCurvesExtension); ok {
+				ce.Curves = common.Filter(ce.Curves, func(curveID utls.CurveID) bool {
+					return curveID != utls.X25519MLKEM768
+				})
+			}
+			if ks, ok := extension.(*utls.KeyShareExtension); ok {
+				ks.KeyShares = common.Filter(ks.KeyShares, func(share utls.KeyShare) bool {
+					return share.Group != utls.X25519MLKEM768
+				})
+			}
 		}
-		if ks, ok := extension.(*utls.KeyShareExtension); ok {
-			ks.KeyShares = common.Filter(ks.KeyShares, func(share utls.KeyShare) bool {
-				return share.Group != utls.X25519MLKEM768
-			})
+		err = uConn.BuildHandshakeState()
+		if err != nil {
+			return nil, err
 		}
-	}
-	err = uConn.BuildHandshakeState()
-	if err != nil {
-		return nil, err
 	}
 
 	if len(uConfig.NextProtos) > 0 {
@@ -285,11 +289,12 @@ func realityClientFallbackURL(serverName string, spiderX string) string {
 
 func (e *RealityClientConfig) Clone() Config {
 	return &RealityClientConfig{
-		ctx:       e.ctx,
-		uClient:   e.uClient.Clone().(*UTLSClientConfig),
-		publicKey: e.publicKey,
-		shortID:   e.shortID,
-		spiderX:   e.spiderX,
+		ctx:                   e.ctx,
+		uClient:               e.uClient.Clone().(*UTLSClientConfig),
+		publicKey:             e.publicKey,
+		shortID:               e.shortID,
+		spiderX:               e.spiderX,
+		supportX25519MLKEM768: e.supportX25519MLKEM768,
 	}
 }
 

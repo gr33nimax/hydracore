@@ -1,0 +1,18 @@
+# Paths HydraCore owns outright: an SBE upgrade must never change them.
+#
+# These are the fork's own layers, deliberately divergent from upstream and not meant to
+# track it. `upgrade_sbe.sh` restores each path to the fork's pre-merge state after an
+# upstream merge and drops any file upstream added underneath it, so a merge can neither
+# rewrite nor extend an owned layer. A conflict inside an owned path is therefore never
+# raised for review — the fork's version always wins.
+#
+# One path prefix per line. Blank lines and `#` comments are ignored. A trailing slash marks
+# a directory subtree; a bare path matches that file.
+#
+# Keep this list to genuine forked layers. A shared file that merely carries a HydraCore tweak
+# (box.go, log/format.go, option/tls.go) must NOT go here: it still needs a real merge so
+# upstream fixes to it are not silently dropped.
+
+# vk_parasite and the whole call transport: pion-based, diverged from upstream's
+# headless-client rewrite. Owned outright.
+transport/call/

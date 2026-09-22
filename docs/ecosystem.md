@@ -63,18 +63,8 @@ HydraCore publishes from two branches (`.github/workflows/hydracore.yml`):
 | `main` | `hydracore-sbe-<sbe>` | latest, non-prerelease |
 
 Publishing is manual (`workflow_dispatch` with `publish=true`); the tag contract and the
-Ed25519-signed bundle manifest gate it. A published core then drives the matching HydraBox
-channel automatically:
-
-- core `debug` (`-debug-<n>` / `-rc-<n>`) → HydraBox `canary`
-- core `main` (`hydracore-sbe-<sbe>`) → HydraBox `stable`
-
-New upstream sing-box-extended releases are picked up by cron and turned into a reviewable
-merge request into `debug`. The full mechanism, the one-time `HYDRABOX_DISPATCH_PAT`
-secret, and what stays manual are documented in
-[../release/AUTOMATION.md](../release/AUTOMATION.md). What upstream layers the fork owns
-outright (and an SBE merge never touches) is listed in
-[../release/FORK_OWNED_PATHS](../release/FORK_OWNED_PATHS).
+Ed25519-signed bundle manifest gate it. Client and VPS artifacts must come from one
+release.
 
 ## Where the truth lives
 

@@ -69,10 +69,9 @@ A red build never publishes and never advances the baseline.
 
 ## Automated SBE upgrades
 
-New upstream releases are detected by cron and prepared as a reviewable merge request into
-`debug`; a published core then triggers the matching HydraBox channel build. The mechanism,
-the `HYDRABOX_DISPATCH_PAT` secret, and what stays manual are in
-[../release/AUTOMATION.md](../release/AUTOMATION.md).
+New upstream releases are detected on a schedule and prepared as a reviewable merge request
+into `debug` (`.github/workflows/sbe-watch.yml`, `release/sbe_watch.sh`,
+`release/upgrade_sbe.sh`); publishing itself stays manual.
 
 The upgrade merge never rewrites fork-owned layers: `release/upgrade_sbe.sh` restores every
 path listed in [../release/FORK_OWNED_PATHS](../release/FORK_OWNED_PATHS) to the fork's

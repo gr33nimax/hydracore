@@ -13,6 +13,70 @@ Retrieve them at runtime via `HydraCoreSubscriptionSchema()` /
 `HydraCoreSubscriptionJWESchema()` (`experimental/libbox/hydracore_subscription.go`). The
 tables below describe those schemas field by field — the schema file wins on any conflict.
 
+## How an outbound reaches the client
+
+This is the part that matters in practice. An outbound is **a native sing-box object,
+delivered verbatim** — the subscription does not invent its own outbound format.
+
+- Each `resources[]` entry carries a `document`: one real sing-box config fragment. Its
+  proxies live in `document.outbounds[]` (or `document.endpoints[]` for WireGuard/AWG),
+  exactly as sing-box expects them — same `type`, `tag`, `server`, `password`, etc.
+- A `profiles[]` entry points at one of them by `entrypoint.{section, tag}`. That tag is
+  what the client activates as the route.
+- Tags resolve **only within their own resource**. An outbound whose `detour` names a tag
+  in another resource is rejected (`missing_reference`) — a resource is a closed graph.
+
+A minimal subscription that hands the client one SOCKS outbound:
+
+```json
+{
+  "resources": [{
+    "id": "res-main",
+    "format": "sing-box-json",
+    "requested_permissions": ["network.outbound"],
+    "document": {
+      "outbounds": [
+        {"type": "socks", "tag": "proxy-main", "server": "origin.example", "server_port": 1080, "password": "SECRET"}
+      ]
+    }
+  }],
+  "profiles": [{
+    "id": "prof-main",
+    "resource": "res-main",
+    "name": {"default": "Main"},
+    "entrypoint": {"section": "outbounds", "tag": "proxy-main"}
+  }]
+}
+```
+
+The client fetches the subscription, and for the chosen profile takes
+`resources[resource].document`, finds `entrypoint.tag` in `entrypoint.section`, and runs
+that document through sing-box. Any outbound type sing-box supports works — `socks`,
+`trojan`, `vless`, the HydraCore `call` (`vk_parasite`), etc. WireGuard/AmneziaWG comes as
+an **endpoint**:
+
+```json
+{
+  "resources": [{
+    "id": "res-wg", "format": "sing-box-json",
+    "requested_permissions": ["network.endpoint.wireguard"],
+    "document": { "endpoints": [ {"type": "wireguard", "tag": "proxy-main", "address": ["10.0.0.2/32"]} ] }
+  }],
+  "profiles": [{
+    "id": "prof-wg", "resource": "res-wg", "name": {"default": "WG"},
+    "entrypoint": {"section": "endpoints", "tag": "proxy-main"}
+  }]
+}
+```
+
+`requested_permissions` on the resource is derived from what its document actually contains
+(`outbounds` → `network.outbound`, `endpoints` → `network.endpoint.wireguard`,
+`inbounds` → `network.inbound.call`) and only **declares** authority the client must obtain
+from its own policy — it never grants it.
+
+The rest of this document is the full field reference for the wrapper around those
+documents.
+
 ## Media types and discriminator
 
 | | Value |

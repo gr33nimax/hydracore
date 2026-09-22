@@ -111,14 +111,9 @@ CI (`.github/workflows/hydracore.yml`).
 Устанавливать только артефакты из
 [GitHub Releases](https://github.com/gr33nimax/hydracore/releases): AAR с
 исходниками, три shared library для Android, архивы `amd64`/`arm64` и
-подписанный манифест. Ветка `debug` публикует пре-релизы, `main` — стабильных
-кандидатов. Артефакты клиента и VPS бери из одного релиза. Публичная
+подписанный манифест. Ветка `debug` публикует пре-релизы, `main` — стабильные
+кандидаты. Артефакты клиента и VPS бери из одного релиза. Публичная
 идентичность — `io.hydrabox.hydracore`.
-
-Новый upstream sing-box-extended подхватывается автоматически (cron):
-`.github/workflows/sbe-watch.yml` открывает merge-запрос в `debug`, а опубликованный
-релиз ядра триггерит сборку нужного канала HydraBox. Секрет `HYDRABOX_DISPATCH_PAT` и
-границы автоматизации — в [release/AUTOMATION.md](release/AUTOMATION.md).
 
 ## Документация
 
@@ -129,5 +124,5 @@ CI (`.github/workflows/hydracore.yml`).
 - [Экосистема](docs/ecosystem.md) — стыковка с HydraBox и HYDRA-ULTIMATE
 - [Сборка и релизы](docs/build-and-release.md) — тулчейн, тег-контракт, CI, авто-SBE
 - [Hydra Subscription v2](contract/subscription/HYDRA_SUBSCRIPTION_V2.md)
-- [Release notes](release/HYDRACORE_RELEASE_NOTES.md) · [CHANGELOG](CHANGELOG.md) · [Канал поставок](release/AUTOMATION.md)
+- [Release notes](release/HYDRACORE_RELEASE_NOTES.md) · [CHANGELOG](CHANGELOG.md)
 - [SECURITY](SECURITY.md) · [CONTRIBUTING](CONTRIBUTING.md) · [CREDITS](CREDITS.md)

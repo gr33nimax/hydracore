@@ -98,19 +98,6 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 	if request == nil {
 		request = &RuntimeEventRequest{}
 	}
-	previous := s.readRuntimeSnapshot()
-	sequence := uint64(1)
-	previous.Sequence = sequence
-	if err := server.Send(&RuntimeEvents{
-		Sequence: sequence,
-		Reset_:   true,
-		Snapshot: previous,
-	}); err != nil {
-		return err
-	}
-	cachedGroups := previous.Groups
-	startedBefore := previous.Service.GetStatus() == ServiceStatus_STARTED
-
 	serviceSubscription, serviceDone, err := s.serviceStatusObserver.Subscribe()
 	if err != nil {
 		return err
@@ -137,6 +124,22 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 	}
 	defer s.trafficObserver.UnSubscribe(trafficSubscription)
 
+	// Subscribe before reading or sending the reset snapshot. A selection made
+	// while Send is blocked must invalidate cachedGroups when the stream resumes.
+	healthChanged := HC.TransportHealthChanged()
+	previous := s.readRuntimeSnapshot()
+	sequence := uint64(1)
+	previous.Sequence = sequence
+	if err := server.Send(&RuntimeEvents{
+		Sequence: sequence,
+		Reset_:   true,
+		Snapshot: previous,
+	}); err != nil {
+		return err
+	}
+	cachedGroups := previous.Groups
+	startedBefore := previous.Service.GetStatus() == ServiceStatus_STARTED
+
 	interval := normalizeRuntimeEventInterval(request.IntervalMillis)
 	var trafficTimer *time.Timer
 	var trafficTimerC <-chan time.Time
@@ -154,7 +157,6 @@ func (s *StartedService) SubscribeRuntimeEvents(request *RuntimeEventRequest, se
 			trafficTimer.Stop()
 		}
 	}()
-	healthChanged := HC.TransportHealthChanged()
 	for {
 		select {
 		case <-s.ctx.Done():

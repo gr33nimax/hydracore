@@ -173,15 +173,76 @@ func TestRuntimeEventStreamStartsWithResetSnapshot(t *testing.T) {
 	}
 }
 
+func TestRuntimeEventStreamRetainsChangesDuringResetSend(t *testing.T) {
+	t.Parallel()
+	for connection := 0; connection < 2; connection++ {
+		service := NewStartedService(ServiceOptions{Context: context.Background()})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		stream := &runtimeEventsTestStream{ctx: ctx, cancel: cancel}
+		stream.onSend = func(message *RuntimeEvents) {
+			if !message.Reset_ {
+				cancel()
+				return
+			}
+			// The first snapshot is already captured. Commit a change while Send
+			// is still in progress and wait until its notification is delivered.
+			// Without subscriptions established before Send, the stream loses it.
+			probe, _, err := service.urlTestSessionObserver.Subscribe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer service.urlTestSessionObserver.UnSubscribe(probe)
+			service.urlTestSessionAccess.Lock()
+			service.urlTestSessions["during-reset"] = &managedURLTestSession{
+				id:       "during-reset",
+				groupTag: "auto",
+				state:    URLTestSessionState_URL_TEST_SESSION_RUNNING,
+			}
+			service.urlTestSessionAccess.Unlock()
+			service.urlTestSessionSubscriber.Emit(struct{}{})
+			select {
+			case <-probe:
+			case <-ctx.Done():
+				t.Fatal("notification was not delivered")
+			}
+		}
+		err := service.SubscribeRuntimeEvents(&RuntimeEventRequest{}, stream)
+		cancel()
+		service.Close()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("connection %d: unexpected stream termination: %v", connection+1, err)
+		}
+		if len(stream.messages) != 2 || len(stream.messages[0].Snapshot.UrlTestSessions) != 0 {
+			t.Fatalf("connection %d: initial snapshot/change sequence mismatch: %+v", connection+1, stream.messages)
+		}
+		update := stream.messages[1]
+		var sessionUpdate *RuntimeEvent
+		for _, event := range update.Events {
+			if event.Type == RuntimeEventType_RUNTIME_EVENT_URL_TEST_SESSIONS {
+				sessionUpdate = event
+			}
+		}
+		if update.Reset_ || update.Sequence != 2 || sessionUpdate == nil ||
+			len(sessionUpdate.UrlTestSessions) != 1 || sessionUpdate.UrlTestSessions[0].Id != "during-reset" {
+			t.Fatalf("connection %d: change during initial Send was not published: %+v", connection+1, update)
+		}
+	}
+}
+
 type runtimeEventsTestStream struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	messages []*RuntimeEvents
+	onSend   func(*RuntimeEvents)
 }
 
 func (s *runtimeEventsTestStream) Send(message *RuntimeEvents) error {
 	s.messages = append(s.messages, message)
-	s.cancel()
+	if s.onSend != nil {
+		s.onSend(message)
+	} else {
+		s.cancel()
+	}
 	return nil
 }
 

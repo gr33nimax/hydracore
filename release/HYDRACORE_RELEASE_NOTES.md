@@ -16,6 +16,9 @@ upstream SBE version.
 - Probe budgets, selection tolerance and interruption of existing connections are unchanged.
   Regression tests cover two successive connections without probe results, initial choice
   publication, selection changes and suppression of redundant selection notifications.
+- Runtime event subscriptions are established before the initial snapshot is read and sent.
+  Changes made while the first snapshot is being delivered remain queued for the stream;
+  a regression test covers this on two successive subscriptions.
 
 ## Compatibility and assets
 

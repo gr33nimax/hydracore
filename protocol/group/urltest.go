@@ -150,6 +150,9 @@ func (s *URLTest) Start() error {
 }
 
 func (s *URLTest) PostStart() error {
+	// Publish the same fallback that DialContext would use before any probe has
+	// finished. Every new instance needs a choice, including reconnects.
+	s.group.performUpdateCheck()
 	if urltest.BackgroundChecksDisabled(s.ctx) {
 		return nil
 	}
@@ -724,18 +727,25 @@ func (g *URLTestGroup) performUpdateCheck() {
 	defer g.updateAccess.Unlock()
 	nextTCP, tcpExists := g.Select(N.NetworkTCP)
 	nextUDP, udpExists := g.Select(N.NetworkUDP)
-	var updated bool
+	var updated, changed bool
 	g.selectionAccess.Lock()
 	if nextTCP != nil && (g.selectedOutboundTCP == nil || (tcpExists && nextTCP != g.selectedOutboundTCP)) {
 		updated = g.selectedOutboundTCP != nil
 		g.selectedOutboundTCP = nextTCP
+		changed = true
 	}
 	if nextUDP != nil && (g.selectedOutboundUDP == nil || (udpExists && nextUDP != g.selectedOutboundUDP)) {
 		updated = updated || g.selectedOutboundUDP != nil
 		g.selectedOutboundUDP = nextUDP
+		changed = true
 	}
 	g.selectionAccess.Unlock()
 	if updated {
 		g.interruptGroup.Interrupt(g.interruptExternalConnections)
+	}
+	if changed {
+		// Probe history is announced before the selection is committed. Announce
+		// the committed choice too, so runtime streams invalidate their group cache.
+		g.history.NotifyUpdated()
 	}
 }

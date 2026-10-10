@@ -15,6 +15,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/common/observable"
 	"github.com/sagernet/sing/service"
 	"github.com/stretchr/testify/require"
 )
@@ -355,4 +356,67 @@ func TestURLTestSelectionKeepsHealthyOutboundWithinTolerance(t *testing.T) {
 	outbound, hasHistory := group.Select(N.NetworkTCP)
 	require.True(t, hasHistory)
 	require.Same(t, selected, outbound)
+}
+
+func TestURLTestPostStartPublishesChoiceOnEveryConnectionWithoutProbes(t *testing.T) {
+	history := U.NewHistoryStorage()
+	ctx := U.ContextWithDisableBackgroundChecks(t.Context())
+	outbound := &urlTestSelectionOutbound{tag: "first-server"}
+	for connection := 0; connection < 2; connection++ {
+		group := &URLTestGroup{
+			outbounds:      []adapter.Outbound{outbound},
+			history:        history,
+			interruptGroup: interrupt.NewGroup(),
+		}
+		instance := &URLTest{ctx: ctx, group: group}
+		require.Empty(t, instance.Now())
+		require.NoError(t, instance.PostStart())
+		require.Equal(t, outbound.Tag(), instance.Now(), "connection %d", connection+1)
+		selected, hasHistory := group.Select(N.NetworkTCP)
+		require.False(t, hasHistory)
+		require.Equal(t, selected.Tag(), instance.Now())
+		require.Nil(t, history.LoadURLTestHistory(outbound.Tag()))
+	}
+}
+
+func TestURLTestSelectionChangeNotifiesAfterCommit(t *testing.T) {
+	history := U.NewHistoryStorage()
+	hook := observable.NewSubscriber[struct{}](4)
+	t.Cleanup(func() { _ = hook.Close() })
+	history.AddUpdateHook(hook)
+	events, _ := hook.Subscription()
+	first := &urlTestSelectionOutbound{tag: "first"}
+	faster := &urlTestSelectionOutbound{tag: "faster"}
+	group := &URLTestGroup{
+		outbounds:      []adapter.Outbound{first, faster},
+		history:        history,
+		tolerance:      50,
+		interruptGroup: interrupt.NewGroup(),
+	}
+	instance := &URLTest{group: group}
+	group.performUpdateCheck()
+	select {
+	case <-events:
+		require.Equal(t, "first", instance.Now())
+	default:
+		t.Fatal("the initial choice did not invalidate the runtime's group cache")
+	}
+	history.StoreURLTestHistory(faster.Tag(), &adapter.URLTestHistory{
+		Time: time.Now(), Delay: 10, Status: adapter.URLTestStatusAvailable,
+	})
+	<-events // The history event precedes the selection update.
+	require.Equal(t, "first", instance.Now())
+	group.performUpdateCheck()
+	select {
+	case <-events:
+		require.Equal(t, "faster", instance.Now())
+	default:
+		t.Fatal("the committed selection did not invalidate the runtime's group cache")
+	}
+	group.performUpdateCheck()
+	select {
+	case <-events:
+		t.Fatal("an unchanged choice emitted another update")
+	default:
+	}
 }

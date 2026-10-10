@@ -1,7 +1,9 @@
-# HydraCore 1.14.2 release notes
+# HydraCore 1.14.1 stable revision 1 release notes
 
 This patch fixes reporting of the automatic route to HydraBox. The sing-box-extended
-baseline remains `v1.14.0-extended-2.7.1`.
+baseline remains `v1.14.1-extended-2.7.2`. This release is
+`hydracore-sbe-1.14.1-stable-1`: the stable revision increases independently of the
+upstream SBE version.
 
 ## Automatic route
 

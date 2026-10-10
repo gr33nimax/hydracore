@@ -8,6 +8,11 @@ cd "${repository_root}"
 # shellcheck disable=SC1091
 source release/UPSTREAM_BASELINE
 
+sbe_version="${UPSTREAM_TAG#v}"
+sbe_version="${sbe_version%%-extended-*}"
+release_version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
+bash release/verify_release_version.sh "$release_version" "" "$sbe_version"
+
 git cat-file -e "${UPSTREAM_COMMIT}^{commit}"
 git merge-base --is-ancestor "${UPSTREAM_COMMIT}" HEAD
 # The full commit is authoritative. The descriptive upstream tag moved during

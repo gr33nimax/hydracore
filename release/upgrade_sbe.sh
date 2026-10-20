@@ -68,7 +68,7 @@ fi
 printf 'merging %s (%s) into %s\n' "${tag}" "${upstream_commit}" "${current_branch}"
 premerge_head="$(git rev-parse HEAD)"
 merge_status=0
-git merge --no-commit --no-ff "${tag}" >/dev/null 2>&1 || merge_status=$?
+git merge --no-commit --no-ff "${tag}" || merge_status=$?
 
 # Fork-owned layers never track upstream. Before any conflict is judged, restore each owned
 # path to the fork's pre-merge state and drop anything upstream added under it. This runs

@@ -45,16 +45,17 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	clientOpts := trusttunnel.ClientOptions{
-		Dialer:            outboundDialer,
-		TLSConfig:         tlsConfig,
-		Server:            serverAddr,
-		Username:          options.Username,
-		Password:          options.Password,
-		QUIC:              options.QUIC,
-		CongestionControl: options.CongestionController,
-		CWND:              options.CWND,
-		Logger:            logger,
-		HealthCheck:       options.HealthCheck,
+		Dialer:                  outboundDialer,
+		TLSConfig:               tlsConfig,
+		Server:                  serverAddr,
+		Username:                options.Username,
+		Password:                options.Password,
+		QUIC:                    options.QUIC,
+		DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
+		CongestionControl:       options.CongestionController,
+		CWND:                    options.CWND,
+		Logger:                  logger,
+		HealthCheck:             options.HealthCheck,
 	}
 	var client trusttunnel.Dialer
 	if options.Multiplex != nil && options.Multiplex.Enabled {
@@ -97,6 +98,10 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 	return h.client.ListenPacket(ctx)
 }
 
-func (h *Outbound) Close() error {
-	return h.client.Close()
+func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateInitialize {
+		return nil
+	}
+	scope.Add(h.client.Close)
+	return nil
 }

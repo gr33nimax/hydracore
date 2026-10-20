@@ -9,7 +9,20 @@ cd "${repository_root}"
 source release/UPSTREAM_BASELINE
 
 git cat-file -e "${UPSTREAM_COMMIT}^{commit}"
-git merge-base --is-ancestor "${UPSTREAM_COMMIT}" HEAD
+if [[ "${1:-}" == "--pending-merge" && $# -eq 1 ]]; then
+  # HEAD still points at the pre-merge fork until the merge commit is created.
+  git rev-parse -q --verify MERGE_HEAD >/dev/null
+  if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+    printf 'upstream merge still has unresolved conflicts\n' >&2
+    exit 1
+  fi
+  git merge-base --is-ancestor "${UPSTREAM_COMMIT}" MERGE_HEAD
+elif [[ $# -eq 0 ]]; then
+  git merge-base --is-ancestor "${UPSTREAM_COMMIT}" HEAD
+else
+  printf 'usage: %s [--pending-merge]\n' "$0" >&2
+  exit 2
+fi
 # The full commit is authoritative. The descriptive upstream tag moved during
 # the integration audit, so a later tag ref must never change this build.
 if git rev-parse -q --verify "refs/tags/${UPSTREAM_TAG}^{commit}" >/dev/null; then

@@ -73,6 +73,8 @@ jobs:
         run: bash release/verify_release_notes.sh
       - name: Test the sing-box-extended watch rule
         run: bash release/sbe_watch_test.sh
+      - name: Test the sing-box-extended upgrade
+        run: bash release/upgrade_sbe_test.sh
       - name: Resolve test link flags
         shell: bash
         run: |

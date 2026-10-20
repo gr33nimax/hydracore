@@ -1,5 +1,12 @@
 # Changelog
 
+## hydracore-sbe-1.14.3-debug-1
+
+- Merge sing-box-extended `v1.14.3-extended-2.7.3` and adapt HydraCore runtime events, managed URL tests and protocol adapters to the upstream scoped lifecycle.
+- Preserve the Call transport and local TURN/DTLS/WireGuard forks, including explicit AmneziaWG boolean values and endpoint resource limits.
+- Preserve bounded Sudoku backpressure and complete writes when integrating upstream half-close and keepalive changes.
+- Verify pending upstream merges before committing, update client build provenance with the baseline, and test unattended upgrades against a local upstream fixture.
+
 ## hydracore-sbe-1.14.0-rc-1
 
 - Release candidate for `hydracore-sbe-1.14.0`, frozen from the code the debug channel already

@@ -26,6 +26,8 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
+var _ adapter.InterfaceUpdateListener = (*Outbound)(nil)
+
 func RegisterOutbound(registry *outbound.Registry) {
 	outbound.Register[option.CallOutboundOptions](registry, C.TypeCall, NewOutbound)
 }
@@ -123,7 +125,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 // InterfaceUpdated participates in sing-box's standard ResetNetwork lifecycle.
 // VK parasite Calls preserves its logical bridge and replaces only TURN/DTLS
 // lanes, so existing proxied flows can survive a mobile handover.
-func (o *Outbound) InterfaceUpdated() {
+func (o *Outbound) InterfaceUpdated(ctx context.Context) {
 	if o.options.Mode != "vk_parasite" || o.closed.Load() {
 		return
 	}
@@ -141,7 +143,10 @@ func (o *Outbound) InterfaceUpdated() {
 	}
 }
 
-func (o *Outbound) Start(stage adapter.StartStage) error {
+func (o *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage == adapter.StartStateInitialize {
+		scope.Add(o.Close)
+	}
 	if stage != adapter.StartStatePostStart {
 		return nil
 	}

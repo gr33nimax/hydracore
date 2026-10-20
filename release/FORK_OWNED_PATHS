@@ -21,3 +21,8 @@ transport/call/
 # holds only HydraCore docs (architecture, configuration, ecosystem, build-and-release).
 # An SBE merge must neither resurrect upstream's docs here nor touch ours.
 docs/
+
+# Dependencies patched for the preserved Call and AmneziaWG transports.
+forks/pion-turn/
+forks/pion-dtls/
+forks/wireguard-go/

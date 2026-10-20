@@ -39,6 +39,33 @@ type urlTestOutboundManager struct {
 	outbound adapter.Outbound
 }
 
+func TestURLTestLifecyclePreservesManagedProbeOptions(t *testing.T) {
+	ctx := U.ContextWithDisableBackgroundChecks(t.Context())
+	ctx = service.ContextWithPtr(ctx, U.NewHistoryStorage())
+	proxy := &urlTestSelectionOutbound{tag: "proxy"}
+	logger := log.NewNOPFactory().Logger()
+	outbound := &URLTest{
+		ctx:                 ctx,
+		outbound:            &urlTestOutboundManager{outbound: proxy},
+		logger:              logger,
+		tags:                []string{"proxy"},
+		interval:            time.Minute,
+		unavailableInterval: 5 * time.Second,
+		probeTimeout:        2 * time.Second,
+		probeConcurrency:    3,
+	}
+	scope := adapter.NewScope(ctx, logger)
+	t.Cleanup(func() { require.NoError(t, scope.Close()) })
+	for _, stage := range adapter.ListStartStages {
+		require.NoError(t, outbound.Start(stage, scope))
+	}
+	require.NotNil(t, outbound.group)
+	require.Equal(t, 2*time.Second, outbound.group.probeTimeout)
+	require.Equal(t, 3, outbound.group.probeConcurrency)
+	require.Equal(t, 5*time.Second, outbound.group.unavailableInterval)
+	require.False(t, outbound.group.started, "managed probes must not start background checks")
+}
+
 func (m *urlTestOutboundManager) Outbound(string) (adapter.Outbound, bool) {
 	return m.outbound, true
 }

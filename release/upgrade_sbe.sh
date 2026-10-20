@@ -132,6 +132,9 @@ fi
 sed -i -E "s|^UPSTREAM_COMMIT=.*|UPSTREAM_COMMIT=${upstream_commit}|" release/UPSTREAM_BASELINE
 sed -i -E "s|^UPSTREAM_TAG=.*|UPSTREAM_TAG=${tag}|" release/UPSTREAM_BASELINE
 sed -i -E "s|^GO_VERSION=.*|GO_VERSION=${go_version}|" release/UPSTREAM_BASELINE
+# Keep the client-visible provenance in sync with the release baseline.
+sed -i -E "s|(hydraCoreUpstreamTag[[:space:]]*=[[:space:]]*)\"[^\"]*\"|\1\"${tag}\"|" experimental/libbox/hydracore_build_info.go
+sed -i -E "s|(hydraCoreUpstreamCommit[[:space:]]*=[[:space:]]*)\"[^\"]*\"|\1\"${upstream_commit}\"|" experimental/libbox/hydracore_build_info.go
 
 # The debug counter restarts at 1 on a new SBE baseline, per the tag contract. The version file is
 # compared byte for byte against the native artifact string, so it carries no trailing newline.
@@ -141,10 +144,11 @@ printf '%s' "${new_version}" >release/HYDRACORE_VERSION
 # Fail closed before committing: the baseline must be a real ancestor of the merge, and the new
 # version must satisfy the same tag contract the release workflow enforces.
 bash release/verify_release_version.sh "${new_version}" refs/heads/debug
-bash release/verify_upstream_baseline.sh
+bash release/verify_upstream_baseline.sh --pending-merge
 
-git add release/UPSTREAM_BASELINE release/HYDRACORE_VERSION
+git add release/UPSTREAM_BASELINE release/HYDRACORE_VERSION experimental/libbox/hydracore_build_info.go
 git commit -m "release(sbe): merge ${tag} (${new_version})" >/dev/null
+bash release/verify_upstream_baseline.sh
 
 printf 'upgraded to %s; version %s\n' "${tag}" "${new_version}"
 printf 'sbe_tag=%s\n' "${tag}"

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-mux"
+	"github.com/sagernet/sing-snell"
 	"github.com/sagernet/sing/common"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -90,7 +92,11 @@ func (s *HistoryStorage) Close() error {
 func URLTest(ctx context.Context, link string, detour N.Dialer) (uint16, error) {
 	multiplexOutbound, isMultiplexOutbound := common.Cast[adapter.OutboundWithMultiplex](detour)
 	if isMultiplexOutbound && multiplexOutbound.MultiplexEnabled() {
-		_, err := urlTest(ctx, link, detour)
+		warmContext := adapter.ContextWithKeepSession(ctx)
+		warmContext = mux.ContextWithKeepSession(warmContext)
+		warmContext = contextWithQUICKeepSession(warmContext)
+		warmContext = snell.ContextWithKeepSession(warmContext)
+		_, err := urlTest(warmContext, link, detour)
 		if err != nil {
 			return 0, err
 		}

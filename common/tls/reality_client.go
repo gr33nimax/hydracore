@@ -367,5 +367,5 @@ func (c *realityClientConnWrapper) ReaderReplaceable() bool {
 }
 
 func (c *realityClientConnWrapper) WriterReplaceable() bool {
-	return true
+	return false
 }

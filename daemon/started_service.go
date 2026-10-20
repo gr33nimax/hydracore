@@ -22,6 +22,7 @@ import (
 	"github.com/sagernet/sing-box/experimental/locale"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/protocol/group"
+	"github.com/sagernet/sing-box/service/oomkiller"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/observable"
 	"github.com/sagernet/sing/service"
@@ -285,15 +286,22 @@ func (s *StartedService) StartOrReloadService(ctx context.Context, profileConten
 		s.updateStatus(ServiceStatus_STOPPING)
 		s.serviceAccess.Unlock()
 		s.cancelURLTestSessionsForInstance(oldInstance, "runtime_reloaded")
+		oomRecorder := service.FromContext[*oomkiller.Recorder](s.ctx)
+		if oomRecorder != nil {
+			oomRecorder.BeginReload()
+			defer oomRecorder.EndReload()
+		}
 		_ = oldInstance.Close()
 		runtimeDebug.FreeOSMemory()
 		s.serviceAccess.Lock()
 	}
 	s.startInterrupted = false
 	s.updateStatus(ServiceStatus_STARTING)
-	s.resetLogs()
+	if oldInstance == nil {
+		s.resetLogs()
+	}
 	s.serviceAccess.Unlock()
-	instance, err := s.newInstance(ctx, profileContent, options)
+	instance, err := s.newInstance(ctx, profileContent, options, oldInstance != nil)
 	if err != nil {
 		s.serviceAccess.Lock()
 		s.updateStatusError(err)

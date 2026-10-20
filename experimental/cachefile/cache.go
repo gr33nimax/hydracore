@@ -148,10 +148,16 @@ func (c *CacheFile) SetDisableExpire(disableExpire bool) {
 	c.disableExpire = disableExpire
 }
 
-func (c *CacheFile) Start(stage adapter.StartStage) error {
+func (c *CacheFile) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	switch stage {
 	case adapter.StartStateInitialize:
-		return c.start()
+		err := c.start()
+		if err != nil {
+			return err
+		}
+		scope.Add(func() error {
+			return c.Close()
+		})
 	case adapter.StartStateStart:
 		c.startCacheCleanup()
 	}

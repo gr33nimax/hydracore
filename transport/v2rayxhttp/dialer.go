@@ -113,7 +113,11 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 		method = c.options.GetNormalizedUplinkHTTPMethod() // stream-up/one
 	}
 	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	req, _ := http.NewRequestWithContext(reqCtx, method, url, body)
+	req, err := http.NewRequestWithContext(reqCtx, method, url, body)
+	if err != nil {
+		cancel()
+		return nil, nil, nil, err
+	}
 	FillStreamRequest(req, sessionId, "", c.options)
 	wrc = &WaitReadCloser{Wait: make(chan struct{}), Cancel: cancel}
 	// The request runs in its own goroutine while this call returns as soon as the

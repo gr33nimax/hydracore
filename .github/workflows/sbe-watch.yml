@@ -42,6 +42,8 @@ jobs:
       # repository alone, which the schedule relies on and this keeps honest.
       - name: Test the watch rule
         run: bash release/sbe_watch_test.sh
+      - name: Test the sing-box-extended upgrade
+        run: bash release/upgrade_sbe_test.sh
       - name: Prepare the upgrade
         id: upgrade
         if: startsWith(steps.upstream.outputs.line, 'update ')

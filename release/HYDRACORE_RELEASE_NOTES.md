@@ -1,10 +1,11 @@
-# HydraCore 1.14.0 release notes
+# HydraCore 1.14.3 release notes
 
 HydraCore is the network runtime behind Hydra: the `vk_parasite` transport that carries
 QUIC inside VK call datagrams, plus the Android runtime the client application loads. The
-VPS side is a single `sing-box` binary; the client side is a libbox AAR. This release moves
-the core onto sing-box-extended `v1.14.0-extended-2.7.1` and is the first stable release
-published under the readable tag contract.
+VPS side is a single `sing-box` binary; the client side is a libbox AAR. This build integrates
+sing-box-extended `v1.14.3-extended-2.7.3` while preserving the existing `vk_parasite`
+transport and the local TURN, DTLS and AmneziaWG patches. Runtime events and managed
+URL tests retain their HydraCore behaviour under the new upstream resource lifecycle.
 
 ## Compatibility — read before upgrading
 

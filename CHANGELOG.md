@@ -1,5 +1,10 @@
 # Changelog
 
+## hydracore-sbe-1.14.3-stable-1
+
+- Promote the code of `hydracore-sbe-1.14.3-debug-2` to the stable branch. The runtime code, pinned SBE 1.14.3 baseline, wire version 10, client ABI 2 and Call transport are unchanged by this promotion.
+- Include the SBE 1.14.3 integration and stable automatic-route/runtime-event fixes described below.
+
 ## hydracore-sbe-1.14.3-debug-2
 
 - Integrate stable runtime fixes: publish the initial automatic route on every connection and subscribe before reading or sending the first runtime snapshot.

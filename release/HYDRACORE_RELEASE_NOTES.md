@@ -1,8 +1,8 @@
-# HydraCore 1.14.3 release notes
+# HydraCore 1.14.3 stable revision 1 release notes
 
 This build carries the stable runtime fixes into the sing-box-extended
-`v1.14.3-extended-2.7.3` baseline. The debug build is
-`hydracore-sbe-1.14.3-debug-2`; the Call transport and local TURN, DTLS and
+`v1.14.3-extended-2.7.3` baseline. The stable revision is
+`hydracore-sbe-1.14.3-stable-1`; the Call transport and local TURN, DTLS and
 AmneziaWG patches are unchanged.
 
 ## Automatic route and runtime events
@@ -31,5 +31,6 @@ Linux amd64 and arm64 archives, and a signed bundle manifest.
 
 ## Rollback
 
-The previous debug build is `hydracore-sbe-1.14.3-debug-1` on the same SBE baseline.
+The previous stable release is `hydracore-sbe-1.14.1-stable-1`, on the
+`v1.14.1-extended-2.7.2` baseline with the same wire version and client ABI.
 Earlier release history remains in `CHANGELOG.md`.

@@ -60,11 +60,14 @@ HydraCore publishes from two branches (`.github/workflows/hydracore.yml`):
 | Branch | Tag form | GitHub release |
 | --- | --- | --- |
 | `debug` | `hydracore-sbe-<sbe>-debug-<n>` or `-rc-<n>` | prerelease |
-| `main` | `hydracore-sbe-<sbe>` | latest, non-prerelease |
+| `main` | `hydracore-sbe-<sbe>-stable-<n>` (legacy: `hydracore-sbe-<sbe>`) | latest, non-prerelease |
 
 Publishing is manual (`workflow_dispatch` with `publish=true`); the tag contract and the
 Ed25519-signed bundle manifest gate it. Client and VPS artifacts must come from one
 release.
+
+The SBE version identifies the pinned upstream baseline. Stable fork revisions increment
+their own counter; they do not increase the upstream version merely to publish a fix.
 
 ## Where the truth lives
 

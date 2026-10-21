@@ -1,11 +1,27 @@
 # Changelog
 
+## hydracore-sbe-1.14.3-debug-2
+
+- Integrate stable runtime fixes: publish the initial automatic route on every connection and subscribe before reading or sending the first runtime snapshot.
+- Carry stable revision version validation and baseline consistency checks into the SBE 1.14.3 debug branch. Preserve scoped lifecycle cleanup and the unchanged Call transport.
+
 ## hydracore-sbe-1.14.3-debug-1
 
 - Merge sing-box-extended `v1.14.3-extended-2.7.3` and adapt HydraCore runtime events, managed URL tests and protocol adapters to the upstream scoped lifecycle.
 - Preserve the Call transport and local TURN/DTLS/WireGuard forks, including explicit AmneziaWG boolean values and endpoint resource limits.
 - Preserve bounded Sudoku backpressure and complete writes when integrating upstream half-close and keepalive changes.
 - Verify pending upstream merges before committing, update client build provenance with the baseline, and test unattended upgrades against a local upstream fixture.
+
+## hydracore-sbe-1.14.0
+
+- First stable release under the readable tag contract
+  `hydracore-sbe-<sbe-version>` (prereleases add `-<channel>-<n>`): the version file, the version the
+  core prints, the release tag and the bundle manifest all carry `hydracore-sbe-1.14.0`.
+- This build carries the code already validated as `hydracore-sbe-1.14.0-rc-1`, which froze the code
+  the debug channel published as `hydracore-sbe-1.14.0-debug-1`; only the release identity changed,
+  no behaviour change.
+- An operator rolling back from this release returns to its named rollback target
+  `v1.14.0-extended-2.7.1-hydracore.12-debug.11`, which is published and installable today.
 
 ## hydracore-sbe-1.14.0-rc-1
 

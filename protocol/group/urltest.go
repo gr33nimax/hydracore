@@ -148,6 +148,8 @@ func (s *URLTest) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		s.group = group
 		scope.Add(s.group.Close)
 	case adapter.StartStateStarted:
+		// Publish the initial route for every instance before background probes.
+		s.group.performUpdateCheck()
 		if !urltest.BackgroundChecksDisabled(s.ctx) {
 			s.group.PostStart()
 		}
@@ -735,23 +737,25 @@ func (g *URLTestGroup) performUpdateCheck() {
 	defer g.updateAccess.Unlock()
 	nextTCP, tcpExists := g.Select(N.NetworkTCP)
 	nextUDP, udpExists := g.Select(N.NetworkUDP)
-	var updated, selected bool
+	var updated, changed bool
 	g.selectionAccess.Lock()
 	if nextTCP != nil && (g.selectedOutboundTCP == nil || (tcpExists && nextTCP != g.selectedOutboundTCP)) {
 		updated = g.selectedOutboundTCP != nil
 		g.selectedOutboundTCP = nextTCP
-		selected = true
+		changed = true
 	}
 	if nextUDP != nil && (g.selectedOutboundUDP == nil || (udpExists && nextUDP != g.selectedOutboundUDP)) {
 		updated = updated || g.selectedOutboundUDP != nil
 		g.selectedOutboundUDP = nextUDP
-		selected = true
+		changed = true
 	}
 	g.selectionAccess.Unlock()
 	if updated {
 		g.interruptGroup.Interrupt(g.interruptExternalConnections)
 	}
-	if selected {
+	if changed {
+		// Probe history is announced before the selection is committed. Announce
+		// the committed choice too, so runtime streams invalidate their group cache.
 		g.history.NotifyUpdated()
 	}
 }

@@ -8,6 +8,11 @@ cd "${repository_root}"
 # shellcheck disable=SC1091
 source release/UPSTREAM_BASELINE
 
+sbe_version="${UPSTREAM_TAG#v}"
+sbe_version="${sbe_version%%-extended-*}"
+release_version="$(tr -d '\r\n' < release/HYDRACORE_VERSION)"
+bash release/verify_release_version.sh "$release_version" "" "$sbe_version"
+
 git cat-file -e "${UPSTREAM_COMMIT}^{commit}"
 if [[ "${1:-}" == "--pending-merge" && $# -eq 1 ]]; then
   # HEAD still points at the pre-merge fork until the merge commit is created.

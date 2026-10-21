@@ -39,16 +39,20 @@ an upgrade must move both together.
 
 ## The tag contract
 
-`release/verify_release_version.sh` enforces exactly three forms, tied to their branch:
+`release/verify_release_version.sh` enforces the channel forms, tied to their branch:
 
 | Source | Tag | Release kind |
 | --- | --- | --- |
 | `debug` ordinary prerelease | `hydracore-sbe-<sbe>-debug-<n>` | prerelease |
 | `debug` frozen candidate | `hydracore-sbe-<sbe>-rc-<n>` | prerelease |
-| `main` stable | `hydracore-sbe-<sbe>` | latest, non-prerelease |
+| `main` stable revision | `hydracore-sbe-<sbe>-stable-<n>` | latest, non-prerelease |
+| `main` legacy stable | `hydracore-sbe-<sbe>` | latest, non-prerelease |
 
 `<sbe>` is the selected sing-box-extended version; `<n>` is a monotonic counter that
-restarts at 1 on each new SBE baseline. Debug pruning keeps a rolling window of the ten
+restarts at 1 for each channel on each new SBE baseline. A fork-only fix increments the
+stable revision without changing `<sbe>`. Existing bare stable tags are retained; the
+first subsequent stable revision is `-stable-1`. The baseline verification step also
+rejects a release whose `<sbe>` differs from `UPSTREAM_BASELINE`. Debug pruning keeps a rolling window of the ten
 most recent current-contract debug prereleases and never deletes stable releases or
 release candidates.
 

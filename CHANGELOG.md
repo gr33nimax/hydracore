@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Include the existing `with_v2ray_api` implementation in non-Android/VPS builds. HYDRA's scoped VLESS/AnyTLS cascades use its cumulative authenticated-user counters to prove the exit path and bill only the entry context. The API remains opt-in and has no listener until configured; HYDRA binds it to loopback. No wire-version or client-ABI change.
+
 ## hydracore-sbe-1.14.3-stable-1
 
 - Promote the code of `hydracore-sbe-1.14.3-debug-2` to the stable branch. The runtime code, pinned SBE 1.14.3 baseline, wire version 10, client ABI 2 and Call transport are unchanged by this promotion.
